@@ -1,0 +1,402 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model igreja {
+  id                 String              @id @default(uuid())
+  cnpj               String?             @unique(map: "igreja_cnpj_UNIQUE") @db.VarChar(14)
+  nome               String              @db.VarChar(255)
+  url_logo           String?             @db.VarChar(255)
+  congregacao        Boolean             @default(false)
+  vinculada_a        String?
+  cep                String?             @db.VarChar(8)
+  logradouro         String?             @db.VarChar(255)
+  numero             String?             @db.VarChar(20)
+  complemento        String?             @db.VarChar(100)
+  bairro             String?             @db.VarChar(100)
+  cidade             String?             @db.VarChar(100)
+  estado             estados_brasil?
+  ativa              Boolean             @default(true)
+  created_at         DateTime            @default(now())
+  updated_at         DateTime            @updatedAt
+
+  // Autorrelacionamento: Uma congregação pertence a uma matriz
+  igreja_matriz      igreja?             @relation("MatrizCongregacoes", fields: [vinculada_a], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "igreja_matriz_fk")
+  congregacoes       igreja[]            @relation("MatrizCongregacoes")
+
+  // Relacionamentos globais (Multi-tenant)
+  acoes              acoes[]
+  contas             contas[]
+  despesas           despesas[]
+  receitas           receitas[]
+  grupos_familiares  grupos_familiares[]
+  lancamentos        lancamentos[]
+  logs_atividades    logs_atividades[]
+  pessoas            pessoas[]
+  cat_despesa        cat_despesa[]
+  cat_receita        cat_receita[]
+  usuarios           usuarios[]
+  vinculos_membresia vinculos_membresia[]
+
+  @@index([vinculada_a], map: "igreja_vinculada_a_idx")
+}
+
+model acoes {
+  id                    String   @id @default(uuid())
+  igreja_id             String
+  nome                  String   @db.VarChar(255)
+  descricao_detalhada   String?  @db.Text
+  cor_hex               String?  @db.VarChar(7)
+  responsavel_pessoa_id String
+  conta_id              String
+  data_inicio           DateTime @db.Date
+  data_fim              DateTime? @db.Date
+  orcamento_receita     Decimal  @default(0.00) @db.Decimal(10, 2)
+  orcamento_despesa     Decimal  @default(0.00) @db.Decimal(10, 2)
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+  
+  igreja                igreja   @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "acoes_igreja_fk")
+  pessoas               pessoas  @relation(fields: [responsavel_pessoa_id], references: [id], onUpdate: NoAction, map: "acoes_ibfk_1")
+  contas                contas   @relation(fields: [conta_id], references: [id], onUpdate: NoAction, map: "acoes_ibfk_2")
+  lancamentos           lancamentos[]
+
+  @@index([igreja_id], map: "acoes_igreja_id")
+  @@index([responsavel_pessoa_id], map: "acoes_responsavel_pessoa_id")
+  @@index([conta_id], map: "acoes_conta_id")
+}
+
+model contas {
+  id            String        @id @default(uuid())
+  igreja_id     String
+  descricao     String        @db.VarChar(100)
+  banco         String?       @db.VarChar(100)
+  tipo_conta    tipo_conta
+  num_conta     String?       @db.VarChar(15)
+  agencia       String?       @db.VarChar(7)
+  saldo_inicial Decimal       @default(0.00) @db.Decimal(10, 2)
+  cor_hex       String?       @db.VarChar(7)
+  created_at    DateTime      @default(now())
+  updated_at    DateTime      @updatedAt
+  
+  igreja        igreja        @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "contas_igreja_fk")
+  lancamentos   lancamentos[]
+  acoes         acoes[]
+
+  @@index([igreja_id], map: "contas_igreja_id")
+}
+
+model despesas {
+  id                 Int           @id @default(autoincrement())
+  igreja_id          String
+  nome               String        @db.VarChar(100)
+  cat_despesa_id     Int
+  cor_hex            String?       @db.VarChar(7)
+  requer_pessoa      Boolean       @default(false)
+  requer_acao        Boolean       @default(false)
+  requer_conta       Boolean       @default(false)
+  requer_comprovante Boolean       @default(false)
+  created_at         DateTime      @default(now())
+  updated_at         DateTime      @updatedAt
+  
+  igreja             igreja        @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "despesas_igreja_fk")
+  cat_despesa        cat_despesa   @relation(fields: [cat_despesa_id], references: [id], onUpdate: NoAction, map: "despesas_ibfk_1")
+  lancamentos        lancamentos[]
+
+  // O nome deve ser único apenas DENTRO da mesma igreja
+  @@unique([igreja_id, nome], map: "despesas_igreja_nome_UNIQUE")
+  @@index([igreja_id], map: "despesas_igreja_id")
+  @@index([cat_despesa_id], map: "despesas_cat_despesa_id")
+}
+
+model receitas {
+  id                 Int           @id @default(autoincrement())
+  igreja_id          String
+  nome               String        @db.VarChar(100)
+  cat_receita_id     Int
+  cor_hex            String?       @db.VarChar(7)
+  requer_pessoa      Boolean       @default(false)
+  requer_acao        Boolean       @default(false)
+  requer_conta       Boolean       @default(false)
+  requer_comprovante Boolean       @default(false)
+  created_at         DateTime      @default(now())
+  updated_at         DateTime      @updatedAt
+  
+  igreja             igreja        @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "receitas_igreja_fk")
+  cat_receita        cat_receita   @relation(fields: [cat_receita_id], references: [id], onUpdate: NoAction, map: "receitas_ibfk_1")
+  lancamentos        lancamentos[]
+
+  // O nome deve ser único apenas DENTRO da mesma igreja
+  @@unique([igreja_id, nome], map: "receitas_igreja_nome_UNIQUE")
+  @@index([igreja_id], map: "receitas_igreja_id")
+  @@index([cat_receita_id], map: "receitas_cat_receita_id")
+}
+
+model grupos_familiares {
+  id           String    @id @default(uuid())
+  igreja_id    String
+  nome_familia String    @db.VarChar(255)
+  created_at   DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+  
+  igreja       igreja    @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "grupos_familiares_igreja_fk")
+  pessoas      pessoas[]
+
+  @@index([igreja_id], map: "grupos_familiares_igreja_id")
+}
+
+model lancamentos {
+  id                    String                     @id @default(uuid())
+  igreja_id             String
+  data_transacao        DateTime                   @db.Date
+  valor                 Decimal                    @db.Decimal(10, 2)
+  tipo_transacao        lancamentos_tipo_transacao
+  conta_id              String
+  acao_id               String?
+  receita_id            Int?
+  despesa_id            Int?
+  pessoa_id             String?
+  observacao            String?                    @db.Text
+  comprovante_url       String?                    @db.VarChar(255)
+  usuario_id            String
+  created_at            DateTime                   @default(now())
+  updated_at            DateTime                   @updatedAt
+  
+  igreja                igreja                     @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "lancamentos_igreja_fk")
+  contas                contas                     @relation(fields: [conta_id], references: [id], onUpdate: NoAction, map: "lancamentos_ibfk_1")
+  acoes                 acoes?                     @relation(fields: [acao_id], references: [id], onUpdate: NoAction, map: "lancamentos_ibfk_2")
+  receitas              receitas?                  @relation(fields: [receita_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "lancamentos_ibfk_3")
+  despesas              despesas?                  @relation(fields: [despesa_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "lancamentos_ibfk_4")
+  pessoas               pessoas?                   @relation(fields: [pessoa_id], references: [id], onUpdate: NoAction, map: "lancamentos_ibfk_5")
+  usuarios              usuarios                   @relation(fields: [usuario_id], references: [id], onUpdate: NoAction, map: "lancamentos_ibfk_6")
+
+  @@index([igreja_id], map: "lancamentos_igreja_id")
+  @@index([conta_id], map: "lancamentos_conta_id")
+  @@index([despesa_id], map: "lancamentos_despesa_id")
+  @@index([receita_id], map: "lancamentos_receita_id")
+  @@index([acao_id], map: "lancamentos_acao_id")
+  @@index([pessoa_id], map: "lancamentos_pessoa_id")
+  @@index([usuario_id], map: "lancamentos_usuario_id")
+}
+
+model logs_atividades {
+  id             BigInt               @id @default(autoincrement())
+  igreja_id      String
+  usuario_id     String
+  ip_address     String?              @db.VarChar(45)
+  acao           logs_atividades_acao
+  tabela_afetada String               @db.VarChar(100)
+  registro_id    String?              // Mudado para String para comportar UUIDs
+  dados_antigos  Json?
+  dados_novos    Json?
+  created_at     DateTime             @default(now())
+  
+  igreja         igreja               @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "logs_igreja_fk")
+  usuarios       usuarios             @relation(fields: [usuario_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "logs_atividades_ibfk_1")
+
+  @@index([igreja_id], map: "logs_atividades_igreja_id")
+  @@index([usuario_id], map: "logs_atividades_usuario_id")
+}
+
+model pessoas {
+  id                 String               @id @default(uuid())
+  igreja_id          String
+  nome_completo      String               @db.VarChar(255)
+  url_foto           String?              @db.VarChar(255)
+  cpf                String?              @db.VarChar(11)
+  data_nascimento    DateTime             @db.Date
+  sexo               pessoas_sexo
+  estado_civil       pessoas_estado_civil?
+  email              String?              @db.VarChar(255)
+  telefone_celular   String?              @db.VarChar(15)
+  cep                String?              @db.VarChar(8)
+  logradouro         String?              @db.VarChar(255)
+  numero             String?              @db.VarChar(20)
+  complemento        String?              @db.VarChar(100)
+  bairro             String?              @db.VarChar(100)
+  cidade             String?              @db.VarChar(100)
+  estado             estados_brasil?      // Atualizado para usar o Enum
+  grupo_familiar_id  String?
+  created_at         DateTime             @default(now())
+  updated_at         DateTime             @updatedAt
+  
+  igreja             igreja               @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "pessoas_igreja_fk")
+  lancamentos        lancamentos[]
+  acoes              acoes[]
+  grupos_familiares  grupos_familiares?   @relation(fields: [grupo_familiar_id], references: [id], onUpdate: NoAction, map: "pessoas_ibfk_1")
+  vinculos_membresia vinculos_membresia[]
+
+  // Um CPF ou Email só deve ser único DENTRO da mesma igreja
+  @@unique([igreja_id, cpf], map: "pessoas_igreja_cpf_UNIQUE")
+  @@unique([igreja_id, email], map: "pessoas_igreja_email_UNIQUE")
+  @@index([igreja_id], map: "pessoas_igreja_id")
+  @@index([grupo_familiar_id], map: "pessoas_grupo_familiar_id")
+}
+
+model cat_despesa {
+  id                  Int                   @id @default(autoincrement())
+  igreja_id           String
+  nome                String                @db.VarChar(100)
+  cor_hex             String?               @db.VarChar(7)
+  created_at          DateTime              @default(now())
+  updated_at          DateTime              @updatedAt
+  
+  igreja              igreja                @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "cat_despesa_igreja_fk")
+  despesas            despesas[]
+
+  @@unique([igreja_id, nome], map: "cat_despesa_igreja_nome_UNIQUE")
+  @@index([igreja_id], map: "cat_despesa_igreja_id")
+}
+
+model cat_receita {
+  id                  Int                   @id @default(autoincrement())
+  igreja_id           String
+  nome                String                @db.VarChar(100)
+  cor_hex             String?               @db.VarChar(7)
+  created_at          DateTime              @default(now())
+  updated_at          DateTime              @updatedAt
+  
+  igreja              igreja                @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "cat_receita_igreja_fk")
+  receitas            receitas[]
+
+  @@unique([igreja_id, nome], map: "cat_receita_igreja_nome_UNIQUE")
+  @@index([igreja_id], map: "cat_receita_igreja_id")
+}
+
+model usuarios {
+  id                String            @id @default(uuid())
+  igreja_id         String
+  nome_usuario      String            @db.VarChar(255)
+  email_login       String            @db.VarChar(255)
+  url_imagem_perfil String?           @db.VarChar(255)
+  senha_hash        String            @db.VarChar(255)
+  perfil            usuarios_perfil
+  ativo             Boolean           @default(true)
+  created_at        DateTime          @default(now())
+  updated_at        DateTime          @updatedAt
+  
+  igreja            igreja            @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "usuarios_igreja_fk")
+  lancamentos       lancamentos[]
+  logs_atividades   logs_atividades[]
+
+  @@unique([igreja_id, email_login], map: "usuarios_igreja_email_UNIQUE")
+  @@index([igreja_id], map: "usuarios_igreja_id")
+}
+
+model vinculos_membresia {
+  id                  String                                  @id @default(uuid())
+  igreja_id           String
+  pessoa_id           String
+  rol                 vinculos_membresia_rol
+  data_admissao       DateTime                                @db.Date
+  forma_admissao      vinculos_membresia_forma_admissao
+  igreja_origem       String?                                 @db.VarChar(255)
+  data_exclusao       DateTime?                               @db.Date
+  modalidade_exclusao vinculos_membresia_modalidade_exclusao?
+  igreja_destino      String?                                 @db.VarChar(255)
+  vinculo_ativo       Boolean                                 @default(true)
+  created_at          DateTime                                @default(now())
+  updated_at          DateTime                                @updatedAt
+  
+  igreja              igreja                                  @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "vinculos_igreja_fk")
+  pessoas             pessoas                                 @relation(fields: [pessoa_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "vinculos_membresia_ibfk_1")
+
+  @@index([igreja_id], map: "vinculos_membresia_igreja_id")
+  @@index([pessoa_id], map: "vinculos_membresia_pessoa_id")
+}
+
+// ---------------- ENUMS ---------------- //
+
+enum estados_brasil {
+  AC
+  AL
+  AP
+  AM
+  BA
+  CE
+  DF
+  ES
+  GO
+  MA
+  MT
+  MS
+  MG
+  PA
+  PB
+  PR
+  PE
+  PI
+  RJ
+  RN
+  RS
+  RO
+  RR
+  SC
+  SP
+  SE
+  TO
+}
+
+enum vinculos_membresia_rol {
+  COMUNGANTE
+  NAO_COMUNGANTE
+  ROL_SEPARADO
+}
+
+enum logs_atividades_acao {
+  CRIACAO
+  ATUALIZACAO
+  EXCLUSAO
+  LOGIN_SUCESSO
+  LOGIN_FALHA
+}
+
+enum lancamentos_tipo_transacao {
+  RECEITA
+  DESPESA
+}
+
+enum usuarios_perfil {
+  ADMINISTRADOR
+  GESTOR
+  TESOUREIRO
+  OPERADOR
+  AUDITOR
+  SECRETARIO
+}
+
+enum vinculos_membresia_forma_admissao {
+  TRANSFERENCIA
+  BATISMO
+  PROFISSAO_DE_FE
+}
+
+enum pessoas_sexo {
+  MASCULINO
+  FEMININO
+}
+
+enum pessoas_estado_civil {
+  SOLTEIRO
+  CASADO
+  DIVORCIADO
+  VIUVO
+}
+
+enum vinculos_membresia_modalidade_exclusao {
+  TRANSFERENCIA
+  EXCOMUNHAO
+  MUDANCA_ROL
+}
+
+enum tipo_conta {
+  CORRENTE
+  POUPANCA
+  INVESTIMENTO
+  CAIXA
+}
