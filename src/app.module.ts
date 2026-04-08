@@ -17,6 +17,7 @@ import { VinculosMembresiaModule } from './vinculos-membresia/vinculos-membresia
 import { AcoesModule } from './acoes/acoes.module';
 import { LancamentosModule } from './lancamentos/lancamentos.module';
 import { LogsModule } from './logs/logs.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
 
@@ -41,6 +42,7 @@ import { join } from 'path';
     AcoesModule,
     LancamentosModule,
     LogsModule,
+    DashboardModule,
   ],
   controllers: [AppController],
   providers: [AppService, PrismaService],
