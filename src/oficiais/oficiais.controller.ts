@@ -1,0 +1,389 @@
+import { RevisaoEleitoralService } from './revisao-eleitoral.service';
+import { InsercaoRetroativaOficialService } from './insercao-retroativa-oficial.service';
+import { CorrecaoConteudoService } from './correcao-conteudo.service';
+import { InsercaoRetroativaService } from './insercao-retroativa.service';
+import { BadRequestException, Body, ConflictException, Controller, Get, Header, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { Prisma, usuarios_perfil as Perfil } from '@prisma/client';
+import { AuthGuard } from '../auth/auth.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { RolesGuard } from '../auth/guards/roles/roles.guard';
+import { PrismaService } from '../prisma/prisma.service';
+import { GovernancaGuard } from './governanca.guard';
+import { AlertasOficiaisService } from './alertas.service';
+import { NotificacoesMandatoService } from './notificacoes-mandato.service';
+import { IdentidadePastoralService } from './identidade-pastoral.service';
+import { OrdenacaoMembresiaService } from './ordenacao-membresia.service';
+import { CorrecaoMembresiaService } from './correcao-membresia.service';
+import { AcervoHistoricoService } from './acervo-historico.service';
+import { AcessoSensivelService } from './acesso-sensivel.service';
+import { OficiaisService } from './oficiais.service';
+import { MandatoService } from './mandato.service';
+import { PoliticaEleicaoService } from '../elegibilidade/politica-eleicao.service';
+import { ConferenciaEleicaoService } from '../elegibilidade/conferencia-eleicao.service';
+import { SituacaoExercicioService } from './situacao-exercicio.service';
+
+@Controller('oficiais')
+@UseGuards(AuthGuard, RolesGuard, GovernancaGuard)
+@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+export class OficiaisController {
+  constructor(private readonly revisoesEleitorais: RevisaoEleitoralService, private readonly insercoesOficial: InsercaoRetroativaOficialService, private readonly correcoesConteudo: CorrecaoConteudoService, private readonly insercoesRetroativas: InsercaoRetroativaService, private readonly prisma: PrismaService, private readonly alertas: AlertasOficiaisService, private readonly exercicio: SituacaoExercicioService, private readonly oficiais: OficiaisService, private readonly mandatos: MandatoService, private readonly politicas: PoliticaEleicaoService, private readonly conferencias: ConferenciaEleicaoService, private readonly acessoSensivel: AcessoSensivelService, private readonly acervo: AcervoHistoricoService, private readonly correcoes: CorrecaoMembresiaService, private readonly identidadePastoral: IdentidadePastoralService, private readonly notificacoes: NotificacoesMandatoService, private readonly ordenacoes: OrdenacaoMembresiaService) {}
+
+  @Get()
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  async listar(@Request() req, @Query('cursor') cursor?: string) {
+    if (cursor && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cursor)) throw new BadRequestException('Cursor inválido.');
+    if (cursor && !await this.prisma.oficial.findFirst({ where: { id: cursor, igreja_id: req.user.igreja_id }, select: { id: true } })) throw new BadRequestException('Cursor inválido.');
+    const rows = await this.prisma.oficial.findMany({ where: { igreja_id: req.user.igreja_id }, select: { id: true, tipo: true, pessoa: { select: { id: true, nome_completo: true } } }, orderBy: { id: 'asc' }, take: 51, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
+    const itens = rows.slice(0, 50);
+    return { itens, proximo_cursor: rows.length > 50 ? itens[itens.length - 1].id : null };
+  }
+
+  @Get('notificacoes')
+  @Header('Cache-Control', 'private, no-store')
+  minhasNotificacoes(@Request() req) {
+    return this.notificacoes.minhas(req.user.igreja_id, req.user.sub);
+  }
+
+  @Patch('notificacoes/:id/lida')
+  marcarNotificacao(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.notificacoes.marcarLida(req.user.igreja_id, req.user.sub, id);
+  }
+
+  @Get('configuracao-alertas')
+  @Roles(Perfil.ADMINISTRADOR)
+  @Header('Cache-Control', 'private, no-store')
+  configuracaoAlertas(@Request() req) {
+    return this.notificacoes.configuracao(req.user.igreja_id, req.user.sub);
+  }
+
+  @Post('configuracao-alertas')
+  @Roles(Perfil.ADMINISTRADOR)
+  configurarAlertas(@Request() req, @Body() dados: Parameters<NotificacoesMandatoService['configurar']>[2]) {
+    return this.comando(() => this.notificacoes.configurar(req.user.igreja_id, req.user.sub, dados));
+  }
+
+  @Post('destinatarios-alertas')
+  @Roles(Perfil.ADMINISTRADOR)
+  adicionarDestinatario(@Request() req, @Body() dados: Parameters<NotificacoesMandatoService['adicionarDestinatario']>[2]) {
+    return this.comando(() => this.notificacoes.adicionarDestinatario(req.user.igreja_id, req.user.sub, dados));
+  }
+
+  @Patch('destinatarios-alertas/:id/remover')
+  @Roles(Perfil.ADMINISTRADOR)
+  removerDestinatario(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.notificacoes.removerDestinatario(req.user.igreja_id, req.user.sub, id);
+  }
+
+  @Get('acessos-sensiveis')
+  @Roles(Perfil.ADMINISTRADOR)
+  @Header('Cache-Control', 'private, no-store')
+  listarAcessos(@Request() req) {
+    return this.prisma.acesso_eventos_sensiveis.findMany({ where: { igreja_id: req.user.igreja_id }, select: { id: true, usuario_id: true, pode_consultar: true, pode_registrar: true, fundamento: true, concedido_em: true, revogado_em: true, usuario: { select: { nome_usuario: true } } }, orderBy: [{ concedido_em: 'desc' }, { id: 'asc' }], take: 100 });
+  }
+
+  @Get('meu-acesso-sensivel')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  async meuAcesso(@Request() req) {
+    const acesso = await this.prisma.acesso_eventos_sensiveis.findFirst({ where: { igreja_id: req.user.igreja_id, usuario_id: req.user.sub, revogado_em: null }, select: { pode_consultar: true, pode_registrar: true } });
+    return acesso ? { ...acesso, pode_registrar: req.user.perfil === Perfil.AUDITOR ? false : acesso.pode_registrar } : { pode_consultar: false, pode_registrar: false };
+  }
+
+  @Get(':id/insercoes-retroativas')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  insercoesRetroativasOficial(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.insercoesOficial.listar(req.user.igreja_id, req.user.sub, id);
+  }
+  @Post(':id/insercoes-retroativas/previa')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  previaInsercaoOficial(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<InsercaoRetroativaOficialService['previa']>[3]) {
+    return this.comando(() => this.insercoesOficial.previa(req.user.igreja_id, req.user.sub, id, dados));
+  }
+  @Post(':id/insercoes-retroativas/aplicar')
+  aplicarInsercaoOficial(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<InsercaoRetroativaOficialService['aplicar']>[3]) {
+    return this.comando(() => this.insercoesOficial.aplicar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Get(':id/eventos-sensiveis')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  eventosSensiveis(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.acessoSensivel.consultarEventos(req.user.igreja_id, req.user.sub, id);
+  }
+
+  @Post('acessos-sensiveis')
+  @Roles(Perfil.ADMINISTRADOR)
+  concederAcesso(@Request() req, @Body() dados: Parameters<AcessoSensivelService['conceder']>[2]) {
+    return this.comando(() => this.acessoSensivel.conceder(req.user.igreja_id, req.user.sub, dados));
+  }
+
+  @Patch('acessos-sensiveis/:id/revogar')
+  @Roles(Perfil.ADMINISTRADOR)
+  revogarAcesso(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<AcessoSensivelService['revogar']>[3]) {
+    return this.comando(() => this.acessoSensivel.revogar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Post('revisoes-eleitorais/:id/concluir')
+  concluirRevisaoEleitoral(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<RevisaoEleitoralService['concluir']>[3]) {
+    return this.comando(() => this.revisoesEleitorais.concluir(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Get('pessoas/:id/revisoes-eleitorais')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  revisoesEleitoraisPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.revisoesEleitorais.listar(req.user.igreja_id, req.user.sub, id);
+  }
+  @Post('pessoas/:id/revisoes-eleitorais')
+  registrarRevisaoEleitoral(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<RevisaoEleitoralService['registrar']>[3]) {
+    return this.comando(() => this.revisoesEleitorais.registrar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Get('pessoas/:id/correcoes-conteudo')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  correcoesConteudoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.correcoesConteudo.listar(req.user.igreja_id, req.user.sub, id);
+  }
+  @Post('pessoas/:id/correcoes-conteudo/previa')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  previaConteudoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoConteudoService['previa']>[3]) {
+    return this.comando(() => this.correcoesConteudo.previa(req.user.igreja_id, req.user.sub, id, dados));
+  }
+  @Post('pessoas/:id/correcoes-conteudo/aplicar')
+  aplicarConteudoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoConteudoService['aplicar']>[3]) {
+    return this.comando(() => this.correcoesConteudo.aplicar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Get('pessoas/:id/insercoes-retroativas')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  insercoesPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.insercoesRetroativas.listar(req.user.igreja_id, req.user.sub, id);
+  }
+  @Post('pessoas/:id/insercoes-retroativas/previa')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  previaInsercaoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<InsercaoRetroativaService['previa']>[3]) {
+    return this.comando(() => this.insercoesRetroativas.previa(req.user.igreja_id, req.user.sub, id, dados));
+  }
+  @Post('pessoas/:id/insercoes-retroativas/aplicar')
+  aplicarInsercaoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<InsercaoRetroativaService['aplicar']>[3]) {
+    return this.comando(() => this.insercoesRetroativas.aplicar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Get('pessoas/:id/correcoes-data')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  correcoesPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.correcoes.listarCorrecoes(req.user.igreja_id, req.user.sub, id, true);
+  }
+  @Post('pessoas/:id/correcoes-data/previa')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  previaCorrecaoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoMembresiaService['previa']>[3]) {
+    return this.comando(() => this.correcoes.previa(req.user.igreja_id, req.user.sub, id, dados, true));
+  }
+  @Post('pessoas/:id/correcoes-data/aplicar')
+  aplicarCorrecaoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoMembresiaService['aplicar']>[3]) {
+    return this.comando(() => this.correcoes.aplicar(req.user.igreja_id, req.user.sub, id, dados, true));
+  }
+
+  @Get('pessoas/:id/eventos-para-ordem')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  eventosPessoaParaOrdem(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.ordenacoes.eventosPessoa(req.user.igreja_id, req.user.sub, id);
+  }
+  @Get('pessoas/:id/ordenacoes-dia')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  ordenacoesPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.ordenacoes.listar(req.user.igreja_id, req.user.sub, id, true);
+  }
+  @Post('pessoas/:id/ordenacoes-dia/previa')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  previaOrdemPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OrdenacaoMembresiaService['previa']>[3]) {
+    return this.comando(() => this.ordenacoes.previa(req.user.igreja_id, req.user.sub, id, dados, true));
+  }
+  @Post('pessoas/:id/ordenacoes-dia/aplicar')
+  aplicarOrdemPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OrdenacaoMembresiaService['aplicar']>[3]) {
+    return this.comando(() => this.ordenacoes.aplicar(req.user.igreja_id, req.user.sub, id, dados, true));
+  }
+
+  @Get(':id/ordenacoes-dia')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  listarOrdenacoes(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.ordenacoes.listar(req.user.igreja_id, req.user.sub, id);
+  }
+
+  @Post(':id/ordenacoes-dia/previa')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  previaOrdenacao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OrdenacaoMembresiaService['previa']>[3]) {
+    return this.comando(() => this.ordenacoes.previa(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Post(':id/ordenacoes-dia/aplicar')
+  aplicarOrdenacao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OrdenacaoMembresiaService['aplicar']>[3]) {
+    return this.comando(() => this.ordenacoes.aplicar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Get(':id/membresia-para-correcao')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  eventosParaCorrecao(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.correcoes.listarEventos(req.user.igreja_id, req.user.sub, id);
+  }
+
+  @Get(':id/correcoes-data')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  correcoesRegistradas(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.correcoes.listarCorrecoes(req.user.igreja_id, req.user.sub, id);
+  }
+
+  @Post(':id/correcoes-data/previa')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  previaCorrecao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoMembresiaService['previa']>[3]) {
+    return this.comando(() => this.correcoes.previa(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Post(':id/correcoes-data/aplicar')
+  aplicarCorrecao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoMembresiaService['aplicar']>[3]) {
+    return this.comando(() => this.correcoes.aplicar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Get(':id/identidade-pastoral')
+  @Header('Cache-Control', 'private, no-store')
+  identidadeLocal(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.identidadePastoral.local(req.user.igreja_id, req.user.sub, id);
+  }
+
+  @Post(':id/identidade-pastoral/convites')
+  @Header('Cache-Control', 'private, no-store')
+  convidarIdentidade(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<IdentidadePastoralService['convidar']>[3]) {
+    return this.comando(() => this.identidadePastoral.convidar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Post(':id/identidade-pastoral/receber')
+  @Header('Cache-Control', 'private, no-store')
+  receberIdentidade(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<IdentidadePastoralService['receber']>[3]) {
+    return this.comando(() => this.identidadePastoral.receber(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Patch(':id/identidade-pastoral/revogar')
+  revogarIdentidade(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<IdentidadePastoralService['revogar']>[3]) {
+    return this.comando(() => this.identidadePastoral.revogar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Get(':id/acervo-historico')
+  @Header('Cache-Control', 'private, no-store')
+  listarAcervo(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.acervo.listar(req.user.igreja_id, id);
+  }
+
+  @Get('acervo-historico/:id/detalhe')
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Header('Cache-Control', 'private, no-store')
+  detalheAcervo(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.acervo.detalhe(req.user.igreja_id, req.user.sub, id);
+  }
+
+  @Post(':id/acervo-historico')
+  registrarAcervo(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<AcervoHistoricoService['registrar']>[3]) {
+    return this.comando(() => this.acervo.registrar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Get('politicas')
+  @Header('Cache-Control', 'private, no-store')
+  listarPoliticas(@Request() req) {
+    return this.prisma.politica_eleicao_oficial.findMany({ where: { igreja_id: req.user.igreja_id }, select: { id: true, versao: true, fonte: true, vigente_desde: true, vigente_ate: true }, orderBy: [{ vigente_desde: 'desc' }, { id: 'asc' }] });
+  }
+
+  @Get('conferencias/:pessoaId')
+  @Header('Cache-Control', 'private, no-store')
+  async listarConferencias(@Request() req, @Param('pessoaId', ParseUUIDPipe) pessoaId: string) {
+    const pessoa = await this.prisma.pessoas.findFirst({ where: { id: pessoaId, igreja_id: req.user.igreja_id }, select: { id: true } });
+    if (!pessoa) throw new NotFoundException('Pessoa não encontrada nesta igreja.');
+    const conferencias = await this.prisma.conferencia_eleicao_oficial.findMany({ where: { igreja_id: req.user.igreja_id, pessoa_id: pessoaId }, select: { id: true, data_eleicao: true, politica_id: true, mandato: { select: { id: true } }, revisoes_pendentes: { where: { OR: [{ revisado_em: null }, { permite_reutilizacao: false }] }, select: { revisado_em: true } } }, orderBy: [{ data_eleicao: 'desc' }, { id: 'asc' }] });
+    return conferencias.map(({ revisoes_pendentes, ...c }) => ({ ...c, revisao_pendente: revisoes_pendentes.some(r => r.revisado_em === null), impedida_para_mandato: revisoes_pendentes.length > 0 }));
+  }
+
+  @Get(':id/periodos')
+  @Header('Cache-Control', 'private, no-store')
+  async listarPeriodos(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
+    const oficial = await this.prisma.oficial.findFirst({ where: { id, igreja_id: req.user.igreja_id }, select: { id: true } });
+    if (!oficial) throw new NotFoundException('Oficial não encontrado nesta igreja.');
+    const [mandatos, vinculos] = await Promise.all([
+      this.prisma.mandato_oficial.findMany({ where: { igreja_id: req.user.igreja_id, oficial_id: id }, select: { id: true, data_eleicao: true, data_posse: true, termino_previsto: true, termino_efetivo: true, revisoes_pendentes: { where: { revisado_em: null }, select: { id: true }, take: 1 } }, orderBy: { data_posse: 'desc' } }),
+      this.prisma.vinculo_pastoral.findMany({ where: { igreja_id: req.user.igreja_id, oficial_id: id }, select: { id: true, modalidade: true, concilio: true, data_inicio: true, data_fim: true, exercicio_institucional: true }, orderBy: { data_inicio: 'desc' } }),
+    ]);
+    return { mandatos: mandatos.map(({ revisoes_pendentes, ...m }) => ({ ...m, revisao_pendente: revisoes_pendentes.length > 0 })), vinculos };
+  }
+
+  @Get('alertas')
+  @Header('Cache-Control', 'private, no-store')
+  async consultarAlertas(@Request() req, @Query('data') data: string, @Query('dias') dias: string) {
+    if (!/^\d{1,3}$/.test(dias ?? '')) throw new BadRequestException('Período inválido.');
+    return this.alertas.mandatos(req.user.igreja_id, req.user.sub, data, Number(dias));
+  }
+
+  @Get(':id/exercicio')
+  @Header('Cache-Control', 'private, no-store')
+  async consultarExercicio(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Query('data') data: string) {
+    const resultado = await this.exercicio.consultar(req.user.igreja_id, req.user.sub, id, data);
+    // A razão pode conter informação disciplinar; não divulgar sem política específica de sigilo.
+    return { situacao: resultado.situacao, data_referencia: resultado.data_referencia, revisao_pendente: 'revisao_pendente' in resultado && resultado.revisao_pendente === true };
+  }
+
+  private async comando<T>(operacao: () => Promise<T>): Promise<T> {
+    try { return await operacao(); }
+    catch (erro) {
+      if (erro instanceof Prisma.PrismaClientKnownRequestError && ['P2002', 'P2003', 'P2004'].includes(erro.code)) throw new ConflictException('O registro conflita com dados existentes ou com restrições de integridade.');
+      throw erro;
+    }
+  }
+
+  @Post()
+  cadastrar(@Request() req, @Body() dados: Parameters<OficiaisService['cadastrar']>[2]) {
+    return this.comando(() => this.oficiais.cadastrar(req.user.igreja_id, req.user.sub, dados));
+  }
+
+  @Post('politicas')
+  @Roles(Perfil.ADMINISTRADOR)
+  politica(@Request() req, @Body() dados: Parameters<PoliticaEleicaoService['registrar']>[2]) {
+    return this.comando(() => this.politicas.registrar(req.user.igreja_id, req.user.sub, dados));
+  }
+
+  @Post('conferencias')
+  conferencia(@Request() req, @Body() dados: Parameters<ConferenciaEleicaoService['registrar']>[2]) {
+    return this.comando(() => this.conferencias.registrar(req.user.igreja_id, req.user.sub, dados));
+  }
+
+  @Post(':id/eventos')
+  evento(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OficiaisService['registrarEvento']>[3]) {
+    return this.comando(() => this.oficiais.registrarEvento(req.user.igreja_id, req.user.sub, id, dados, dados?.tipo !== 'ORDENACAO'));
+  }
+
+  @Post(':id/mandatos')
+  mandato(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<MandatoService['registrar']>[3]) {
+    return this.comando(() => this.mandatos.registrar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Post(':id/vinculos-pastorais')
+  vinculo(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OficiaisService['registrarVinculoPastoral']>[3]) {
+    return this.comando(() => this.oficiais.registrarVinculoPastoral(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Patch('mandatos/:id/encerrar')
+  encerrarMandato(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<MandatoService['encerrar']>[3]) {
+    return this.comando(() => this.mandatos.encerrar(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+  @Patch('vinculos-pastorais/:id/encerrar')
+  encerrarVinculo(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OficiaisService['encerrarVinculoPastoral']>[3]) {
+    return this.comando(() => this.oficiais.encerrarVinculoPastoral(req.user.igreja_id, req.user.sub, id, dados));
+  }
+
+}

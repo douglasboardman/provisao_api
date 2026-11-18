@@ -1,6 +1,6 @@
 {
   "name": "provisao_api",
-  "version": "0.0.1",
+  "version": "0.11.1",
   "description": "",
   "author": "",
   "private": true,
@@ -11,18 +11,24 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main",
+    "start:prod": "node dist/src/main.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "worker:dev": "ts-node -r tsconfig-paths/register src/worker.ts",
+    "worker:prod": "node dist/src/worker.js",
+    "mfa:recuperacao-offline": "node dist/src/mfa/recovery-cli.js",
+    "arquivos:reconciliar": "node scripts/reconciliar-arquivos.cjs",
+    "seed:secretaria": "ts-node -r tsconfig-paths/register prisma/seed-secretaria.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
   },
   "dependencies": {
+    "@fontsource/noto-serif": "5.3.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.0.1",
@@ -33,17 +39,22 @@
     "@prisma/client": "^6.11.1",
     "bcrypt": "^6.0.0",
     "express": "^5.2.1",
+    "image-size": "2.1.0",
     "nestjs-zod": "^5.2.1",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^10.5.0",
+    "otplib": "^13.5.0",
+    "pdf-lib": "1.17.1",
+    "playwright": "1.65.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "uuid": "^11.1.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "^0.1.0",
+    "@babel/preset-env": "^7.29.14",
+    "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.18.0",
-    "@nestjs/cli": "^11.0.24",
+    "@nestjs/cli": "^11.0.16",
     "@nestjs/schematics": "^11.0.9",
     "@nestjs/testing": "^11.0.1",
     "@types/express": "^5.0.0",
@@ -52,7 +63,7 @@
     "@types/node": "^22.10.7",
     "@types/nodemailer": "^8.0.0",
     "@types/supertest": "^6.0.2",
-    "eslint": "^10.8.0",
+    "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",
     "globals": "^16.0.0",
@@ -61,7 +72,7 @@
     "prisma": "^6.11.1",
     "source-map-support": "^0.5.21",
     "supertest": "^7.0.0",
-    "ts-jest": "^29.1.2",
+    "ts-jest": "^29.2.5",
     "ts-loader": "^9.5.2",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
@@ -84,12 +95,36 @@
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
-      "^.+\\.(t|j)s$": "ts-jest"
+      "^.+\\.ts$": "ts-jest",
+      "^.+\\.js$": [
+        "babel-jest",
+        {
+          "presets": [
+            [
+              "@babel/preset-env",
+              {
+                "targets": {
+                  "node": "current"
+                },
+                "modules": "commonjs"
+              }
+            ]
+          ],
+          "babelrc": false,
+          "configFile": false
+        }
+      ]
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "moduleNameMapper": {
+      "^src/(.*)$": "<rootDir>/$1"
+    },
+    "transformIgnorePatterns": [
+      "node_modules/(?!(@scure|@noble|@otplib)/)"
+    ]
   }
 }

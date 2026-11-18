@@ -13,7 +13,7 @@ import { AuthGuard } from 'src/auth/auth.guard';
  */
 @Controller('grupos-familiares')
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.OPERADOR)
+@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.OPERADOR, Perfil.SECRETARIO, Perfil.TESOUREIRO, Perfil.AUDITOR)
 export class GruposFamiliaresController {
   constructor(private readonly gruposFamiliaresService: GruposFamiliaresService) {}
 
@@ -23,7 +23,7 @@ export class GruposFamiliaresController {
    * Rota: POST /grupos-familiares
    */
   @Post()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
   create(@Request() req, @Body() createGruposFamiliareDto: CreateGruposFamiliareDto) {
     return this.gruposFamiliaresService.create(req.user.igreja_id, createGruposFamiliareDto);
   }
@@ -52,7 +52,7 @@ export class GruposFamiliaresController {
    * Rota: PATCH /grupos-familiares/:id
    */
   @Patch(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
   update(@Request() req, @Param('id') id: string, @Body() updateGruposFamiliareDto: UpdateGruposFamiliareDto) {
     return this.gruposFamiliaresService.update(id, req.user.igreja_id, updateGruposFamiliareDto);
   }
@@ -62,7 +62,7 @@ export class GruposFamiliaresController {
    * Rota: DELETE /grupos-familiares/:id
    */
   @Delete(':id')
-  @Roles(Perfil.ADMINISTRADOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
   remove(@Request() req, @Param('id') id: string) {
     return this.gruposFamiliaresService.remove(id, req.user.igreja_id);
   }

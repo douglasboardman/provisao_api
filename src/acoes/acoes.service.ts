@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { CreateAcoeDto } from './dto/create-acoe.dto';
 import { UpdateAcoeDto } from './dto/update-acoe.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -83,7 +84,14 @@ export class AcoesService {
    */
   async remove(id: string, igreja_id: string): Promise<{ message: string }> {
     await this.findOne(id, igreja_id);
-    await this.prisma.acoes.delete({ where: { id } });
+    try {
+      await this.prisma.acoes.delete({ where: { id } });
+    } catch (erro) {
+      if (erro instanceof Prisma.PrismaClientKnownRequestError && erro.code === 'P2003') {
+        throw new ConflictException('A ação possui registros associados que precisam ser preservados.');
+      }
+      throw erro;
+    }
     return { message: `Ação com ID ${id} removida com sucesso.` };
   }
 }

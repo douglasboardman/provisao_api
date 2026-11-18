@@ -1,0 +1,57 @@
+import { createHash, randomUUID } from 'crypto';
+import { PrismaService } from '../src/prisma/prisma.service';
+import { IdentidadePastoralService } from '../src/oficiais/identidade-pastoral.service';
+const integration = process.env.E00_INTEGRATION === '1' ? describe : describe.skip;
+const igrejaA = 'e0000000-0000-4000-8000-000000000001', igrejaB = 'e0000000-0000-4000-8000-000000000002';
+const adminA = 'e1000000-0000-4000-8000-000000000001', adminB = 'e1000000-0000-4000-8000-000000000002';
+integration('E02: identidade pastoral entre igrejas', () => {
+  const p = new PrismaService(), service = new IdentidadePastoralService(p);
+  const pessoaA = randomUUID(), pessoaB = randomUUID(), pessoaB2 = randomUUID(), oficialA = randomUUID(), oficialB = randomUUID(), oficialB2 = randomUUID();
+  const ids = [oficialA, oficialB, oficialB2];
+  beforeAll(async () => {
+    if (process.env.DATABASE_URL !== 'postgresql://provisao_test:provisao_test@127.0.0.1:55439/provisao_test?schema=public') throw new Error('Exige banco descartável E00.');
+    await p.$connect();
+    for (const [id, igreja] of [[pessoaA, igrejaA], [pessoaB, igrejaB], [pessoaB2, igrejaB]]) await p.pessoas.create({ data: { id, igreja_id: igreja, nome_completo: 'Pessoa sintética', data_nascimento: new Date('1990-01-01'), sexo: 'MASCULINO' } });
+    for (const [id, igreja, pessoa] of [[oficialA, igrejaA, pessoaA], [oficialB, igrejaB, pessoaB], [oficialB2, igrejaB, pessoaB2]]) await p.oficial.create({ data: { id, igreja_id: igreja, pessoa_id: pessoa, tipo: 'PRESBITERO_DOCENTE' } });
+  });
+  afterAll(async () => {
+    const refs = await p.referencia_identidade_pastoral.findMany({ where: { oficial_id: { in: ids } }, select: { id: true, identidade_id: true } });
+    const identidades = [...new Set(refs.map(r => r.identidade_id))];
+    const convites = await p.convite_identidade_pastoral.findMany({ where: { identidade_id: { in: identidades } }, select: { id: true } });
+    await p.logs_atividades.deleteMany({ where: { registro_id: { in: [...refs.map(r => r.id), ...convites.map(c => c.id)] } } });
+    await p.convite_identidade_pastoral.deleteMany({ where: { identidade_id: { in: identidades } } });
+    await p.referencia_identidade_pastoral.deleteMany({ where: { id: { in: refs.map(r => r.id) } } });
+    await p.identidade_pastoral.deleteMany({ where: { id: { in: identidades } } });
+    await p.oficial.deleteMany({ where: { id: { in: ids } } });
+    await p.pessoas.deleteMany({ where: { id: { in: [pessoaA, pessoaB, pessoaB2] } } }); await p.$disconnect();
+  });
+  it('vincula apenas após confirmação local e protege códigos, escopo e repetição', async () => {
+    const origem = { destino_igreja_id: igrejaB, autoridade: 'Conselho A', evidencia: 'Registro A' };
+    const destino = { autoridade: 'Conselho B', evidencia: 'Registro B' };
+    await expect(service.convidar(igrejaB, adminB, oficialA, origem)).rejects.toThrow();
+    const primeiro = await service.convidar(igrejaA, adminA, oficialA, origem);
+    const segundo = await service.convidar(igrejaA, adminA, oficialA, origem);
+    const hash = createHash('sha256').update(segundo.codigo).digest('hex');
+    const guardado = await p.convite_identidade_pastoral.findUniqueOrThrow({ where: { token_hash: hash } });
+    expect(guardado.token_hash).not.toBe(segundo.codigo);
+    expect(guardado.autoridade).toBe('Conselho A');
+    expect(JSON.stringify(await p.logs_atividades.findMany({ where: { registro_id: guardado.id }, select: { dados_novos: true, dados_antigos: true } }))).not.toContain(segundo.codigo);
+    await expect(service.receber(igrejaB, adminB, oficialB, { ...destino, codigo: primeiro.codigo })).rejects.toThrow();
+    await expect(service.receber(igrejaA, adminA, oficialA, { ...destino, codigo: segundo.codigo })).rejects.toThrow();
+    const tentativas = await Promise.allSettled([service.receber(igrejaB, adminB, oficialB, { ...destino, codigo: segundo.codigo }), service.receber(igrejaB, adminB, oficialB, { ...destino, codigo: segundo.codigo })]);
+    expect(tentativas.filter(t => t.status === 'fulfilled')).toHaveLength(1);
+    const localA = await service.local(igrejaA, adminA, oficialA), localB = await service.local(igrejaB, adminB, oficialB);
+    expect(localA.referencia).toBeTruthy(); expect(localB.referencia).toBeTruthy();
+    expect(JSON.stringify(localB)).not.toContain(pessoaA);
+    await expect(service.local(igrejaB, adminB, oficialA)).rejects.toThrow();
+    const terceiro = await service.convidar(igrejaA, adminA, oficialA, origem);
+    const terceiroHash = createHash('sha256').update(terceiro.codigo).digest('hex');
+    await p.$executeRaw`UPDATE convite_identidade_pastoral SET criado_em = clock_timestamp() - interval '30 minutes', expira_em = clock_timestamp() - interval '1 minute' WHERE token_hash = ${terceiroHash}`;
+    await expect(service.receber(igrejaB, adminB, oficialB2, { ...destino, codigo: terceiro.codigo })).rejects.toThrow();
+    const quarto = await service.convidar(igrejaA, adminA, oficialA, origem);
+    await service.revogar(igrejaA, adminA, oficialA, { motivo: 'Encerramento sintético' });
+    await expect(service.receber(igrejaB, adminB, oficialB2, { ...destino, codigo: quarto.codigo })).rejects.toThrow();
+    expect((await service.local(igrejaA, adminA, oficialA)).referencia).toBeNull();
+    expect((await service.local(igrejaB, adminB, oficialB)).referencia).toBeTruthy();
+  });
+});

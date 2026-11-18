@@ -20,10 +20,32 @@ export class LancamentosController {
   }
 
   @Get()
-  findAll(@Request() req, @Query('tipo') tipo?: string, @Query('conta_id') conta_id?: string, @Query('page') page?: string) {
+  findAll(
+    @Request() req,
+    @Query('tipo') tipo?: string,
+    @Query('conta_id') conta_id?: string,
+    @Query('page') page?: string,
+    @Query('mes') mes?: string,
+    @Query('ano') ano?: string,
+  ) {
     return this.lancamentosService.findAll(req.user.igreja_id, {
-      tipo, conta_id, page: page ? (parseInt(page) || 1) : 1,
+      tipo,
+      conta_id,
+      page: page ? (parseInt(page) || 1) : 1,
+      mes: mes ? parseInt(mes) : undefined,
+      ano: ano ? parseInt(ano) : undefined,
     });
+  }
+
+  @Get('balanco')
+  balanco(
+    @Request() req,
+    @Query('mes') mes: string,
+    @Query('ano') ano: string,
+  ) {
+    const mesNum = parseInt(mes) || new Date().getMonth() + 1;
+    const anoNum = parseInt(ano) || new Date().getFullYear();
+    return this.lancamentosService.balanco(req.user.igreja_id, mesNum, anoNum);
   }
 
   @Get(':id')

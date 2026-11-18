@@ -1,53 +1,63 @@
-import { Injectable, UnauthorizedException, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
 import { PrismaService } from 'src/prisma/prisma.service';
-import { EmailService } from 'src/email/email.service';
-import { Email } from 'src/core/classes/email.class';
-import { usuarios_perfil } from '@prisma/client';
+import { OutboxService } from 'src/outbox/outbox.service';
+import { LogsService } from 'src/logs/logs.service';
+import { logs_atividades_acao } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto';
-
-/** Sufixo adicionado ao JWT_SECRET para tokens de operações de senha.
- *  Impede que tokens de autenticação sejam reutilizados como tokens de redefinição. */
-const PWD_TOKEN_SUFFIX = '_PWD_OPS';
 
 /** Número de rounds do bcrypt para hash de senhas. */
 const BCRYPT_SALT_ROUNDS = 10;
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
-    private readonly configService: ConfigService,
-    private readonly emailService: EmailService,
+    private readonly outbox: OutboxService,
+    private readonly logsService: LogsService,
   ) {}
 
   // ─── Autenticação ────────────────────────────────────────────────────────────
 
   /**
    * Autentica um usuário e retorna um token JWT de sessão.
-   * @param login E-mail ou nome de usuário.
+   * @param login E-mail cadastrado na igreja.
    * @param pass Senha em texto plano.
+   * @param igreja_id Igreja selecionada pelo usuário.
    * @returns Objeto com o `access_token` de sessão.
    * @throws {UnauthorizedException} Se as credenciais forem inválidas ou a conta estiver inativa.
    */
-  async signIn(login: string, pass: string): Promise<{ access_token: string }> {
-    const isEmail = Email.isEmail(login);
-
-    const user = isEmail
-      ? await this.prisma.usuarios.findFirst({ where: { email_login: login } })
-      : await this.prisma.usuarios.findFirst({ where: { nome_usuario: login } });
+  async signIn(login: string, pass: string, igreja_id: string): Promise<{ access_token: string }> {
+    const ids = await this.prisma.$queryRaw<{ id: string }[]>`SELECT id FROM usuarios WHERE igreja_id = ${igreja_id} AND lower(btrim(email_login)) = lower(btrim(${login})) LIMIT 2`;
+    const user = ids.length === 1 ? await this.prisma.usuarios.findUnique({ where: { id: ids[0].id } }) : null;
 
     if (!user) throw new UnauthorizedException('Credenciais inválidas.');
 
     if (!user.ativo) {
-      throw new UnauthorizedException('Conta inativa. Aguarde a aprovação do administrador.');
+      await this.logsService.registrar({
+        igreja_id: user.igreja_id,
+        usuario_id: user.id,
+        acao: logs_atividades_acao.LOGIN_FALHA,
+        tabela_afetada: 'auth',
+        registro_id: user.id,
+      });
+      throw new UnauthorizedException('Credenciais inválidas.');
     }
 
     const isPasswordMatching = await bcrypt.compare(pass, user.senha_hash);
-    if (!isPasswordMatching) throw new UnauthorizedException('Credenciais inválidas.');
+    if (!isPasswordMatching) {
+      await this.logsService.registrar({
+        igreja_id: user.igreja_id,
+        usuario_id: user.id,
+        acao: logs_atividades_acao.LOGIN_FALHA,
+        tabela_afetada: 'auth',
+        registro_id: user.id,
+      });
+      throw new UnauthorizedException('Credenciais inválidas.');
+    }
 
     const payload = {
       sub: user.id,
@@ -55,88 +65,62 @@ export class AuthService {
       login: user.email_login,
       perfil: user.perfil,
       igreja_id: user.igreja_id,
+      auth_version: user.auth_version,
     };
 
-    return { access_token: await this.jwtService.signAsync(payload) };
+    const access_token = await this.jwtService.signAsync(payload);
+
+
+    return { access_token };
   }
 
-  // ─── Registro de novo usuário ─────────────────────────────────────────────────
-
-  /**
-   * Registra uma solicitação de cadastro de novo usuário.
-   * O usuário é criado com `ativo: false` e sem senha definida.
-   * O administrador precisará aprovar e ativar a conta.
-   * @param nome_usuario Nome de usuário desejado.
-   * @param email_login E-mail do solicitante.
-   * @param igreja_id ID da igreja à qual o usuário deseja se vincular.
-   * @returns Mensagem de confirmação do registro.
-   * @throws {ConflictException} Se o e-mail já estiver cadastrado na mesma igreja.
-   */
-  async register(nome_usuario: string, email_login: string, igreja_id: string): Promise<{ message: string }> {
-    const existing = await this.prisma.usuarios.findFirst({ where: { email_login, igreja_id } });
-    if (existing) {
-      throw new ConflictException('Este e-mail já está cadastrado nesta igreja.');
-    }
-
-    // Gera um hash placeholder impossível de ser utilizado para login direto
-    const placeholderHash = await bcrypt.hash(
-      crypto.randomBytes(32).toString('hex'),
-      BCRYPT_SALT_ROUNDS,
-    );
-
-    await this.prisma.usuarios.create({
-      data: {
-        nome_usuario,
-        email_login,
-        igreja_id,
-        senha_hash: placeholderHash,
-        perfil: usuarios_perfil.OPERADOR,
-        ativo: false,
-      },
-    });
-
-    return {
-      message: 'Solicitação de cadastro enviada com sucesso. Aguarde a aprovação do administrador.',
-    };
+  async logSuccessfulLogin(userId: string, igrejaId: string): Promise<void> {
+    await this.logsService.registrar({ igreja_id: igrejaId, usuario_id: userId, acao: logs_atividades_acao.LOGIN_SUCESSO, tabela_afetada: 'auth', registro_id: userId });
   }
 
   // ─── Ativação e definição de senha ───────────────────────────────────────────
 
-  /**
-   * Gera um token de configuração de senha (usado na ativação pelo admin)
-   * e envia o e-mail de boas-vindas com o link de acesso.
-   * Deve ser chamado APÓS `ativo` já ter sido definido como `true`.
-   * @param userId ID do usuário.
-   * @param igreja_id ID da igreja (para verificação de posse).
-   */
-  async sendPasswordSetupEmail(userId: string, igreja_id: string): Promise<void> {
-    const user = await this.prisma.usuarios.findFirst({ where: { id: userId, igreja_id } });
-    if (!user) throw new NotFoundException('Usuário não encontrado.');
+  /** Aprovação e enfileiramento são atômicos; SMTP é executado pelo worker. */
+  async activateAndQueue(userId: string, igrejaId: string, actorId: string): Promise<void> {
+    await this.createPasswordToken(userId, igrejaId, null, 'password_setup', 48 * 60 * 60 * 1000, true, actorId);
+  }
 
-    const token = await this.signPasswordToken(user.id, 'password_setup', '48h');
-    const frontendUrl = this.configService.get<string>('FRONTEND_URL');
-    const setupUrl = `${frontendUrl}/auth/set-password?token=${token}`;
-
-    await this.emailService.sendPasswordSetup(user.nome_usuario, user.email_login, setupUrl);
+  async reissueSetup(userId: string, igrejaId: string, actorId: string): Promise<void> {
+    const user = await this.prisma.usuarios.findFirst({ where: { id: userId, igreja_id: igrejaId, ativo: true } });
+    if (!user) throw new NotFoundException('Conta não encontrada ou inativa.');
+    await this.createPasswordToken(userId, igrejaId, user.email_login, 'password_setup', 48 * 60 * 60 * 1000, false, actorId);
   }
 
   /**
    * Define ou redefine a senha do usuário a partir de um token válido.
    * Aceita tokens de `password_setup` (ativação) e `password_reset` (esqueci minha senha).
-   * @param token Token JWT de operação de senha.
+   * @param token Token aleatório de operação de senha.
    * @param novaSenha Nova senha em texto plano.
    * @returns Mensagem de confirmação.
    */
   async setPassword(token: string, novaSenha: string): Promise<{ message: string }> {
-    const payload = await this.verifyPasswordToken(token, ['password_setup', 'password_reset']);
-
-    const user = await this.prisma.usuarios.findUnique({ where: { id: payload.sub } });
-    if (!user || !user.ativo) {
-      throw new UnauthorizedException('Token inválido ou conta inativa.');
-    }
-
+    if (!/^[a-f0-9]{64}$/.test(token)) throw new UnauthorizedException('Token inválido ou expirado.');
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
     const senha_hash = await bcrypt.hash(novaSenha, BCRYPT_SALT_ROUNDS);
-    await this.prisma.usuarios.update({ where: { id: user.id }, data: { senha_hash } });
+    await this.prisma.$transaction(async tx => {
+      const candidate = await tx.token_senha.findUnique({ where: { hash } });
+      if (!candidate) throw new UnauthorizedException('Token inválido ou expirado.');
+      // Serializa consumo e emissão com alterações de conta que usam UPDATE.
+      await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${candidate.usuario_id} FOR UPDATE`;
+      const user = await tx.usuarios.findUnique({ where: { id: candidate.usuario_id } });
+      if (!user || !user.ativo || user.auth_version !== candidate.auth_version ||
+          !['password_setup', 'password_reset'].includes(candidate.finalidade)) {
+        throw new UnauthorizedException('Token inválido ou expirado.');
+      }
+      const result = await tx.token_senha.updateMany({
+        where: { id: candidate.id, consumido_em: null, revogado_em: null, expira_em: { gt: new Date() } },
+        data: { consumido_em: new Date() },
+      });
+      if (result.count !== 1) throw new UnauthorizedException('Token inválido ou expirado.');
+      await tx.usuarios.update({ where: { id: user.id }, data: { senha_hash, auth_version: { increment: 1 } } });
+      await tx.solicitacao_acesso.updateMany({ where: { usuario_id: user.id, igreja_id: user.igreja_id, estado: 'APROVADA', situacao_acesso: 'CONVITE_PENDENTE' }, data: { situacao_acesso: 'ATIVADA' } });
+      await tx.token_senha.updateMany({ where: { usuario_id: user.id, consumido_em: null, revogado_em: null }, data: { revogado_em: new Date() } });
+    });
 
     return { message: 'Senha definida com sucesso. Você já pode fazer login.' };
   }
@@ -149,65 +133,50 @@ export class AuthService {
    * a uma conta ativa. Por segurança, sempre retorna a mesma resposta
    * independentemente de o e-mail existir ou não (evita enumeração).
    * @param email_login E-mail do usuário.
+   * @param igreja_id Igreja selecionada pelo usuário.
    * @returns Mensagem genérica de confirmação.
    */
-  async forgotPassword(email_login: string): Promise<{ message: string }> {
+  async forgotPassword(email_login: string, igreja_id: string): Promise<{ message: string }> {
     const genericResponse = {
       message: 'Se o e-mail informado estiver cadastrado, você receberá as instruções em breve.',
     };
 
-    const user = await this.prisma.usuarios.findFirst({
-      where: { email_login, ativo: true },
-    });
-
-    if (!user) return genericResponse;
+    const ids = await this.prisma.$queryRaw<{ id: string }[]>`SELECT id FROM usuarios WHERE igreja_id = ${igreja_id} AND lower(btrim(email_login)) = lower(btrim(${email_login})) LIMIT 2`;
+    const user = ids.length === 1 ? await this.prisma.usuarios.findUnique({ where: { id: ids[0].id } }) : null;
+    if (!user || !user.ativo) return genericResponse;
 
     try {
-      const token = await this.signPasswordToken(user.id, 'password_reset', '1h');
-      const frontendUrl = this.configService.get<string>('FRONTEND_URL');
-      const resetUrl = `${frontendUrl}/auth/set-password?token=${token}`;
-
-      await this.emailService.sendPasswordReset(user.nome_usuario, user.email_login, resetUrl);
+      await this.createPasswordToken(user.id, user.igreja_id, user.email_login, 'password_reset', 60 * 60 * 1000, false);
     } catch {
-      // Falha silenciosa: não expõe se o e-mail existe no sistema
+      // Resposta pública não informa se a conta existe; erro operacional é sanitizado.
+      this.logger.warn('Falha ao enfileirar recuperação de senha.');
     }
 
     return genericResponse;
   }
 
-  // ─── Helpers privados ─────────────────────────────────────────────────────────
-
-  /**
-   * Assina um token JWT de operação de senha com secret dedicado e expiração definida.
-   */
-  private async signPasswordToken(userId: string, purpose: string, expiresIn: string): Promise<string> {
-    const secret = this.configService.get<string>('JWT_SECRET') + PWD_TOKEN_SUFFIX;
-    return this.jwtService.signAsync({ sub: userId, purpose }, { secret, expiresIn });
-  }
-
-  /**
-   * Verifica e decodifica um token JWT de operação de senha,
-   * garantindo que seu propósito (`purpose`) esteja na lista de propósitos aceitos.
-   * @throws {UnauthorizedException} Se o token for inválido, expirado ou com propósito incorreto.
-   */
-  private async verifyPasswordToken(
-    token: string,
-    allowedPurposes: string[],
-  ): Promise<{ sub: string; purpose: string }> {
-    let payload: { sub: string; purpose: string };
-
-    try {
-      const secret = this.configService.get<string>('JWT_SECRET') + PWD_TOKEN_SUFFIX;
-      payload = await this.jwtService.verifyAsync<{ sub: string; purpose: string }>(token, { secret });
-    } catch {
-      throw new UnauthorizedException('Token inválido ou expirado.');
-    }
-
-    // Verificação de propósito fora do try/catch para não ser engolida pelo handler genérico
-    if (!allowedPurposes.includes(payload.purpose)) {
-      throw new UnauthorizedException('Token inválido para esta operação.');
-    }
-
-    return payload;
+  // O token é mantido como hash; seu conteúdo na fila é cifrado com chave externa ao banco.
+  private async createPasswordToken(userId: string, igrejaId: string, email: string | null, finalidade: 'password_setup' | 'password_reset', lifetimeMs: number, activate: boolean, actorId?: string): Promise<void> {
+    const token = crypto.randomBytes(32).toString('hex');
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    const placeholder = activate ? await bcrypt.hash(crypto.randomBytes(32).toString('hex'), BCRYPT_SALT_ROUNDS) : undefined;
+    await this.prisma.$transaction(async tx => {
+      if (actorId) {
+        await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${actorId} AND igreja_id = ${igrejaId} FOR UPDATE`;
+        const actor = await tx.usuarios.findFirst({ where: { id: actorId, igreja_id: igrejaId, ativo: true, perfil: 'ADMINISTRADOR' }, select: { id: true } });
+        if (!actor) throw new UnauthorizedException('Ação não autorizada.');
+      }
+      await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${userId} FOR UPDATE`;
+      const found = await tx.usuarios.findFirst({ where: { id: userId, igreja_id: igrejaId } });
+      if (!found) throw new NotFoundException('Conta não encontrada.');
+      if (activate && found.ativo) throw new BadRequestException('Esta conta já está ativa.');
+      if (!activate && (!found.ativo || found.email_login !== email)) throw new UnauthorizedException('Conta indisponível.');
+      const user = activate
+        ? await tx.usuarios.update({ where: { id: userId }, data: { ativo: true, senha_hash: placeholder, auth_version: { increment: 1 } } })
+        : found;
+      await tx.token_senha.updateMany({ where: { usuario_id: userId, finalidade, consumido_em: null, revogado_em: null }, data: { revogado_em: new Date() } });
+      const entry = await tx.token_senha.create({ data: { usuario_id: userId, hash, finalidade, auth_version: user.auth_version, expira_em: new Date(Date.now() + lifetimeMs) } });
+      await this.outbox.enqueue(tx, entry.id, token);
+    });
   }
 }

@@ -18,7 +18,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
  */
 @Controller('pessoas')
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.OPERADOR)
+@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.OPERADOR, Perfil.SECRETARIO, Perfil.TESOUREIRO, Perfil.AUDITOR)
 export class PessoasController {
   constructor(
     private readonly pessoasService: PessoasService,
@@ -31,7 +31,7 @@ export class PessoasController {
    * Rota: POST /pessoas
    */
   @Post()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
   create(@Request() req, @Body() createPessoaDto: CreatePessoaDto) {
     return this.pessoasService.create(req.user.igreja_id, createPessoaDto);
   }
@@ -59,7 +59,7 @@ export class PessoasController {
    * Rota: PATCH /pessoas/:id
    */
   @Patch(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
   update(@Request() req, @Param('id') id: string, @Body() updatePessoaDto: UpdatePessoaDto) {
     return this.pessoasService.update(id, req.user.igreja_id, updatePessoaDto);
   }
@@ -69,7 +69,7 @@ export class PessoasController {
    * Rota: DELETE /pessoas/:id
    */
   @Delete(':id')
-  @Roles(Perfil.ADMINISTRADOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
   remove(@Request() req, @Param('id') id: string) {
     return this.pessoasService.remove(id, req.user.igreja_id);
   }
@@ -79,7 +79,7 @@ export class PessoasController {
    * Rota: PATCH /pessoas/atrib-foto-pessoa/:id
    */
   @Patch('atrib-foto-pessoa/:id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
   @UseInterceptors(FileInterceptor('file'))
   async uploadFotoPessoa(
     @Request() req,
@@ -99,7 +99,7 @@ export class PessoasController {
    * Rota: PATCH /pessoas/atrib-grupo-familiar/:idPessoa/:idFamilia
    */
   @Patch('atrib-grupo-familiar/:idPessoa/:idFamilia')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
   setFamilia(
     @Request() req,
     @Param('idPessoa') idPessoa: string,

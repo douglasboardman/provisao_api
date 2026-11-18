@@ -1,0 +1,1 @@
+ALTER TYPE "logs_atividades_acao" ADD VALUE IF NOT EXISTS 'CONSULTA';

@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { CreateContaDto } from './dto/create-conta.dto';
 import { UpdateContaDto } from './dto/update-conta.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -77,7 +78,14 @@ export class ContasService {
    */
   async remove(id: string, igreja_id: string): Promise<{ message: string }> {
     await this.findOne(id, igreja_id);
-    await this.prisma.contas.delete({ where: { id } });
+    try {
+      await this.prisma.contas.delete({ where: { id } });
+    } catch (erro) {
+      if (erro instanceof Prisma.PrismaClientKnownRequestError && erro.code === 'P2003') {
+        throw new ConflictException('A conta possui registros associados que precisam ser preservados.');
+      }
+      throw erro;
+    }
     return { message: `Conta com ID ${id} removida com sucesso.` };
   }
 }

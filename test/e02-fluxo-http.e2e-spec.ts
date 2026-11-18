@@ -1,0 +1,51 @@
+import { randomUUID } from 'crypto';
+import { Test } from '@nestjs/testing';
+import { INestApplication } from '@nestjs/common';
+import { ZodValidationPipe } from 'nestjs-zod';
+import * as request from 'supertest';
+import { AppModule } from '../src/app.module';
+import { PrismaService } from '../src/prisma/prisma.service';
+import { SessionService } from '../src/auth/session.service';
+const integration = process.env.E00_INTEGRATION === '1' ? describe : describe.skip;
+const igreja = 'e0000000-0000-4000-8000-000000000001', usuario = 'e1000000-0000-4000-8000-000000000001';
+integration('E02: fluxo HTTP completo com dados sintéticos', () => {
+  let app: INestApplication, cookie: string, oficialId = '', politicaId = '', conferenciaId = '', mandatoId = '';
+  const pessoaId = randomUUID(), membroId = randomUUID(), anterior = process.env.FEATURE_GOVERNANCA;
+  beforeAll(async () => {
+    if (process.env.DATABASE_URL !== 'postgresql://provisao_test:provisao_test@127.0.0.1:55439/provisao_test?schema=public') throw new Error('Exige banco descartável E00.');
+    process.env.FEATURE_GOVERNANCA = 'true';
+    const module = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    app = module.createNestApplication(); app.useGlobalPipes(new ZodValidationPipe()); await app.init();
+    const prisma = app.get(PrismaService), user = await prisma.usuarios.findUniqueOrThrow({ where: { id: usuario } });
+    cookie = `provisao_session=${await app.get(SessionService).create(usuario, igreja, user.auth_version)}`;
+    await prisma.pessoas.create({ data: { id: pessoaId, igreja_id: igreja, nome_completo: 'Pessoa Fluxo Sintética', data_nascimento: new Date('1990-01-01'), sexo: 'MASCULINO' } });
+    await prisma.eventos_membresia.create({ data: { id: membroId, igreja_id: igreja, pessoa_id: pessoaId, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: new Date('2039-01-01') } });
+  });
+  afterAll(async () => {
+    if (anterior === undefined) delete process.env.FEATURE_GOVERNANCA; else process.env.FEATURE_GOVERNANCA = anterior;
+    if (!app) return;
+    const p = app.get(PrismaService);
+    const eventos = await p.evento_oficial.findMany({ where: { oficial_id: oficialId }, select: { id: true } });
+    await p.logs_atividades.deleteMany({ where: { registro_id: { in: [oficialId, politicaId, conferenciaId, mandatoId, ...eventos.map(e => e.id)].filter(Boolean) } } });
+    await p.mandato_oficial.deleteMany({ where: { id: mandatoId } });
+    await p.evento_oficial.deleteMany({ where: { oficial_id: oficialId } });
+    await p.oficial.deleteMany({ where: { id: oficialId } });
+    await p.conferencia_eleicao_oficial.deleteMany({ where: { id: conferenciaId } });
+    await p.politica_eleicao_oficial.deleteMany({ where: { id: politicaId } });
+    await p.eventos_membresia.deleteMany({ where: { id: membroId } });
+    await p.pessoas.deleteMany({ where: { id: pessoaId } });
+    await app.close();
+  });
+  it('registra política, ordenação, conferência, posse e encerramento sem omitir a igreja', async () => {
+    const post = (url: string, dados: Record<string, unknown>) => request(app.getHttpServer()).post(url).set('Cookie', cookie).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send(dados);
+    const p = await post('/oficiais/politicas', { versao: randomUUID(), fonte: 'Norma sintética', autoridade: 'Conselho', idade_minima: 18, aniversario_bissexto: 'DIA_28_FEVEREIRO', vigente_desde: '2040-01-01', vigente_ate: '2049-12-31' }).expect(201); politicaId = p.body.id;
+    const o = await post('/oficiais', { pessoa_id: pessoaId, tipo: 'DIACONO' }).expect(201); oficialId = o.body.id;
+    await post(`/oficiais/${oficialId}/eventos`, { tipo: 'SUSPENSAO', data_efeito: '2040-01-01', ordem: 1, autoridade: 'Conselho', evidencia: 'Ata sintética' }).expect(403);
+    await post(`/oficiais/${oficialId}/eventos`, { tipo: 'ORDENACAO', data_efeito: '2040-01-01', ordem: 1, autoridade: 'Conselho', evidencia: 'Ata sintética' }).expect(201);
+    const c = await post('/oficiais/conferencias', { pessoa_id: pessoaId, politica_id: politicaId, data_eleicao: '2040-01-01', data_recepcao: '2039-01-01', evidencia_recepcao: 'Livro sintético', capacidade_confirmada: true, evidencia_capacidade: 'Declaração sintética' }).expect(201); conferenciaId = c.body.id;
+    const m = await post(`/oficiais/${oficialId}/mandatos`, { conferencia_id: conferenciaId, data_posse: '2040-02-01', autoridade: 'Assembleia', evidencia: 'Ata sintética', evidencia_capacidade_posse: 'Declaração sintética' }).expect(201); mandatoId = m.body.id;
+    const periodos = await request(app.getHttpServer()).get(`/oficiais/${oficialId}/periodos`).set('Cookie', cookie).expect(200);
+    expect(periodos.body.mandatos[0].id).toBe(mandatoId);
+    await request(app.getHttpServer()).patch(`/oficiais/mandatos/${mandatoId}/encerrar`).set('Cookie', cookie).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ data_efeito: '2041-01-01', motivo: 'Pedido sintético', autoridade: 'Conselho', evidencia: 'Ata sintética' }).expect(200);
+  });
+});

@@ -6,13 +6,13 @@ import { Roles } from 'src/auth/decorators/roles.decorator';
 import { usuarios_perfil as Perfil } from '@prisma/client';
 
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.GESTOR, Perfil.OPERADOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
 @Controller('logs')
 export class LogsController {
-    constructor(private readonly logsService: LogsService) { }
+  constructor(private readonly logsService: LogsService) {}
 
-    @Get()
-    findAll(@Request() req, @Query('page') page?: string) {
-        return this.logsService.findAll(req.user.igreja_id, page ? (parseInt(page) || 1) : 1);
-    }
+  @Get()
+  findAll(@Request() req, @Query('page') page?: string) {
+    return this.logsService.findAll(req.user.igreja_id, page ? (parseInt(page) || 1) : 1);
+  }
 }

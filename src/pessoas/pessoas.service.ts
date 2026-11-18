@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { CreatePessoaDto } from './dto/create-pessoa.dto';
 import { UpdatePessoaDto } from './dto/update-pessoa.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -24,6 +25,13 @@ export class PessoasService {
   async create(igreja_id: string, createPessoaDto: CreatePessoaDto): Promise<pessoas> {
     const { data_nascimento, cpf, ...restOfDto } = createPessoaDto;
 
+    if (restOfDto.conjuge_id) {
+      const conjuge = await this.prisma.pessoas.findFirst({ where: { id: restOfDto.conjuge_id, igreja_id } });
+      if (!conjuge) {
+        throw new NotFoundException(`Pessoa (cônjuge) com o ID ${restOfDto.conjuge_id} não encontrada.`);
+      }
+    }
+
     return this.prisma.pessoas.create({
       data: {
         ...restOfDto,
@@ -40,7 +48,10 @@ export class PessoasService {
    * @returns Lista de pessoas.
    */
   async findAll(igreja_id: string): Promise<pessoas[]> {
-    return this.prisma.pessoas.findMany({ where: { igreja_id } });
+    return this.prisma.pessoas.findMany({
+      where: { igreja_id },
+      include: { grupos_familiares: true, tratamentos: true },
+    });
   }
 
   /**
@@ -69,6 +80,16 @@ export class PessoasService {
     await this.findOne(id, igreja_id);
 
     const { data_nascimento, cpf, ...restOfDto } = updatePessoaDto;
+
+    if (restOfDto.conjuge_id) {
+      if (restOfDto.conjuge_id === id) {
+        throw new NotFoundException(`Uma pessoa não pode ser cônjuge de si mesma.`);
+      }
+      const conjuge = await this.prisma.pessoas.findFirst({ where: { id: restOfDto.conjuge_id, igreja_id } });
+      if (!conjuge) {
+        throw new NotFoundException(`Pessoa (cônjuge) com o ID ${restOfDto.conjuge_id} não encontrada.`);
+      }
+    }
     const dataToUpdate: Record<string, unknown> = { ...restOfDto };
 
     if (data_nascimento) {
@@ -89,7 +110,14 @@ export class PessoasService {
    */
   async remove(id: string, igreja_id: string): Promise<{ message: string }> {
     await this.findOne(id, igreja_id);
-    await this.prisma.pessoas.delete({ where: { id } });
+    try {
+      await this.prisma.pessoas.delete({ where: { id } });
+    } catch (erro) {
+      if (erro instanceof Prisma.PrismaClientKnownRequestError && erro.code === 'P2003') {
+        throw new ConflictException('A pessoa possui registros históricos que precisam ser preservados.');
+      }
+      throw erro;
+    }
     return { message: `A pessoa registrada pelo ID ${id} foi removida com sucesso.` };
   }
 

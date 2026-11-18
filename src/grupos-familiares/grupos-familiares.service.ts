@@ -30,7 +30,10 @@ export class GruposFamiliaresService {
    * @param igreja_id ID da igreja extraído do token JWT.
    */
   async findAll(igreja_id: string): Promise<grupos_familiares[]> {
-    return this.prisma.grupos_familiares.findMany({ where: { igreja_id } });
+    return this.prisma.grupos_familiares.findMany({
+      where: { igreja_id },
+      include: { _count: { select: { pessoas: true } } },
+    });
   }
 
   /**

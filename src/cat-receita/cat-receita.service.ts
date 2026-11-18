@@ -27,8 +27,11 @@ export class CatReceitaService {
    * Retorna todas as categorias de receita da igreja do solicitante.
    * @param igreja_id ID da igreja extraído do token JWT.
    */
-  async findAll(igreja_id: string): Promise<cat_receita[]> {
-    return this.prisma.cat_receita.findMany({ where: { igreja_id } });
+  async findAll(igreja_id: string) {
+    return this.prisma.cat_receita.findMany({
+      where: { igreja_id },
+      include: { _count: { select: { receitas: true } } },
+    });
   }
 
   /**

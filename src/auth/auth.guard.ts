@@ -1,54 +1,26 @@
-import { 
-  CanActivate, 
-  ExecutionContext, 
-  Injectable, 
-  UnauthorizedException 
-} from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
+import { CanActivate, ExecutionContext, Injectable, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
+import { SessionService } from './session.service';
+import { assertCsrf, sessionCookie } from './csrf';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
-  constructor(
-    private jwtService: JwtService,
-    private configService: ConfigService,
-  ){}
-
-  /**
-   * Método principal do Guard. Determina se a requisição pode prosseguir.
-   * @param context O contexto da execução atual (contém a requisição).
-   * @returns Um booleano indicando se a rota está liberada.
-   */
+  constructor(private readonly sessions: SessionService, private readonly config: ConfigService) {}
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    // 1. Extrai o objeto da requisição (request) do contexto.
-    const request = context.switchToHttp().getRequest();
-
-    // 2. Extrai o token do cabeçalho da requisição.
-    const token = this.extractTokenFromHeader(request);
-    if (!token) {
-      throw new UnauthorizedException('Token não encontrado.');
+    const request = context.switchToHttp().getRequest<Request>();
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+      assertCsrf(request, this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3001');
     }
-
-    try {
-      // 3. Verifica se o token é válido usando o segredo do .env.
-      const payload = await this.jwtService.verifyAsync(token, {
-        secret: this.configService.get<string>('JWT_SECRET')
-      });
-
-      // 4. Se o token for válido, anexa o payload (dados do usuário)
-      // à requisição. Isso permite que os controllers acessem o usuário logado.
-      request['user'] = payload;
-    } catch {
-      throw new UnauthorizedException('Token inválido.');
+    const token = sessionCookie(request);
+    if (!token) throw new UnauthorizedException('Sessão não encontrada.');
+    const user = await this.sessions.verify(token);
+    if (user.mfa_enrollment_required) {
+      const allowed = (request.method === 'GET' && ['/auth/profile', '/auth/mfa'].includes(request.path)) ||
+        (request.method === 'POST' && ['/auth/mfa/setup', '/auth/mfa/activate', '/auth/logout'].includes(request.path));
+      if (!allowed) throw new ForbiddenException('Configure a autenticação em duas etapas para continuar.');
     }
-
-    // 5. Se nenhuma das cláusulas de guarda foi acionada, permite que a requisição continue
+    request['user'] = { sub: user.id, igreja_id: user.igreja_id, perfil: user.perfil, auth_version: user.auth_version, username: user.nome_usuario, login: user.email_login, mfa_enrollment_required: user.mfa_enrollment_required, mfa_recovery_recent: user.mfa_recovery_recent, sessao_id: user.sessao_id };
     return true;
-  }
-
-  private extractTokenFromHeader(request: Request): string | undefined {
-    const [type, token] = request.headers.authorization?.split(' ') ?? [];
-    return type === 'Bearer' ? token : undefined;
   }
 }

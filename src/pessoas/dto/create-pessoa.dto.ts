@@ -20,6 +20,8 @@ export const CreatePessoaSchema = z.object({
   cidade: z.string().optional(),
   estado: z.nativeEnum(Estado, { error: 'O estado informado é inválido.' }).optional(),
   grupo_familiar_id: z.string().uuid('O grupo familiar precisa ser um UUID válido.').optional(),
+  tratamento_id: z.number().int().positive().optional(),
+  conjuge_id: z.string().uuid('O cônjuge precisa ser um UUID válido.').optional(),
 });
 
 export class CreatePessoaDto extends createZodDto(CreatePessoaSchema) {}

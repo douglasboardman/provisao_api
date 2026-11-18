@@ -27,8 +27,11 @@ export class CatDespesaService {
    * Retorna todas as categorias de despesa da igreja do solicitante.
    * @param igreja_id ID da igreja extraído do token JWT.
    */
-  async findAll(igreja_id: string): Promise<cat_despesa[]> {
-    return this.prisma.cat_despesa.findMany({ where: { igreja_id } });
+  async findAll(igreja_id: string) {
+    return this.prisma.cat_despesa.findMany({
+      where: { igreja_id },
+      include: { _count: { select: { despesas: true } } },
+    });
   }
 
   /**

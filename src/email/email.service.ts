@@ -6,6 +6,10 @@ import * as nodemailer from 'nodemailer';
  * Serviço centralizado para envio de e-mails transacionais do sistema ProVisão.
  * Utiliza nodemailer com transporte SMTP configurado via variáveis de ambiente.
  */
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -13,16 +17,32 @@ export class EmailService {
   private readonly from: string;
 
   constructor(private readonly configService: ConfigService) {
-    const port = this.configService.get<number>('SMTP_PORT');
+    const port = Number(this.configService.get('SMTP_PORT'));
     this.from = this.configService.get<string>('SMTP_FROM') ?? '';
     this.transporter = nodemailer.createTransport({
       host: this.configService.get<string>('SMTP_HOST'),
       port,
       secure: port === 465,
+      connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000,
       auth: {
         user: this.configService.get<string>('SMTP_USER'),
         pass: this.configService.get<string>('SMTP_PASS'),
       },
+    });
+  }
+
+  async sendAccessConfirmation(nome: string, email: string, url: string): Promise<void> {
+    await this.transporter.sendMail({ from: this.from, to: email, subject: 'ProVisão — Confirme sua solicitação de acesso',
+      html: `<p>Olá, ${escapeHtml(nome)}.</p><p>Use o link para confirmar o e-mail ou cancelar a solicitação antes da análise. O link vale por 24 horas.</p><p><a href="${url}">Abrir solicitação</a></p><p>Se não solicitou acesso, ignore esta mensagem.</p>` });
+  }
+
+  async sendSignatureInvitation(nome: string, email: string, url: string, id: string): Promise<void> {
+    await this.transporter.sendMail({
+      from: this.from, to: email, subject: 'ProVisão — Convite individual para assinatura',
+      messageId: `<assinatura-${id}@provisao>`,
+      text: `Olá, ${nome}. Leia a versão aprovada no portal do ProVisão para decidir se deseja assinar. O link individual vale por 48 horas.
+${url}`,
+      html: `<p>Olá, ${escapeHtml(nome)}.</p><p>Leia a versão aprovada para decidir se deseja assinar. Guarde este link individual. Ele vale por 48 horas.</p><p><a href="${escapeHtml(url)}">Abrir portal de assinatura</a></p>`,
     });
   }
 
@@ -42,7 +62,7 @@ export class EmailService {
         subject: 'Bem-vindo ao ProVisão — Defina sua senha de acesso',
         html: `
           <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>Bem-vindo ao ProVisão, ${nomeUsuario}!</h2>
+            <h2>Bem-vindo ao ProVisão, ${escapeHtml(nomeUsuario)}!</h2>
             <p>
               Seu cadastro foi aprovado pelo administrador da sua igreja.
               Clique no botão abaixo para definir sua senha e ter acesso ao sistema:
@@ -64,7 +84,7 @@ export class EmailService {
         `,
       });
     } catch (error) {
-      this.logger.error(`Falha ao enviar e-mail de configuração de senha para ${emailLogin}`, error);
+      this.logger.error('Falha ao enviar e-mail de configuração de senha.');
       throw error;
     }
   }
@@ -86,7 +106,7 @@ export class EmailService {
         html: `
           <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
             <h2>Redefinição de senha — ProVisão</h2>
-            <p>Olá, <strong>${nomeUsuario}</strong>!</p>
+            <p>Olá, <strong>${escapeHtml(nomeUsuario)}</strong>!</p>
             <p>
               Recebemos uma solicitação para redefinir a senha da sua conta.
               Clique no botão abaixo para criar uma nova senha:
@@ -108,7 +128,7 @@ export class EmailService {
         `,
       });
     } catch (error) {
-      this.logger.error(`Falha ao enviar e-mail de redefinição de senha para ${emailLogin}`, error);
+      this.logger.error('Falha ao enviar e-mail de redefinição de senha.');
       throw error;
     }
   }

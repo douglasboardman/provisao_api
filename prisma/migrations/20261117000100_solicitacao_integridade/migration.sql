@@ -1,0 +1,2 @@
+ALTER TABLE "solicitacao_acesso" ADD CONSTRAINT "solicitacao_acesso_usuario_igreja_fkey" FOREIGN KEY ("usuario_id", "igreja_id") REFERENCES "usuarios"("id", "igreja_id") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "solicitacao_acesso" ADD CONSTRAINT "solicitacao_acesso_analista_igreja_fkey" FOREIGN KEY ("analisado_por", "igreja_id") REFERENCES "usuarios"("id", "igreja_id") ON DELETE RESTRICT ON UPDATE RESTRICT;

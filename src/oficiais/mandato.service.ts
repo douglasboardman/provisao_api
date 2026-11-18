@@ -1,0 +1,102 @@
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { logs_atividades_acao, membresia_rol, Prisma, usuarios_perfil } from '@prisma/client';
+import { z } from 'zod';
+import { PrismaService } from '../prisma/prisma.service';
+import { avaliarEleicaoOficial } from '../elegibilidade/eleicao-oficial';
+import { eventoVigente } from '../eventos-membresia/estado-temporal';
+import { avaliarExercicio } from './exercicio';
+
+const dia = z.iso.date().refine(s => { const d = new Date(`${s}T00:00:00.000Z`); return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === s; });
+const schema = z.object({ conferencia_id: z.string().uuid(), data_posse: dia, autoridade: z.string().trim().min(1).max(1000), evidencia: z.string().trim().min(1).max(1000), evidencia_capacidade_posse: z.string().trim().min(1).max(1000) }).strict();
+const excecaoSchema = z.object({ oficialTransferido: z.boolean(), autoridade: z.string().trim().min(1), evidencia: z.string().trim().min(1) }).strict();
+const encerramentoSchema = z.object({ data_efeito: dia, motivo: z.string().trim().min(1).max(1000), autoridade: z.string().trim().min(1).max(1000), evidencia: z.string().trim().min(1).max(1000) }).strict();
+type Entrada = z.infer<typeof schema>;
+type Encerramento = z.infer<typeof encerramentoSchema>;
+const data = (s: string) => new Date(`${s}T00:00:00.000Z`);
+const civil = (d: Date) => d.toISOString().slice(0, 10);
+function terminoCincoAnos(inicio: Date, marco: 'DIA_28_FEVEREIRO' | 'DIA_01_MARCO') {
+  const ano = inicio.getUTCFullYear() + 5, mes = inicio.getUTCMonth(), diaMes = inicio.getUTCDate();
+  const fimMes = new Date(Date.UTC(ano, mes + 1, 0)).getUTCDate();
+  const limite = diaMes > fimMes && marco === 'DIA_01_MARCO' ? new Date(Date.UTC(ano, mes + 1, 1)) : new Date(Date.UTC(ano, mes, Math.min(diaMes, fimMes)));
+  limite.setUTCDate(limite.getUTCDate() - 1);
+  return limite;
+}
+
+/** Registro documental de eleição e posse; não representa deliberação nem votação pelo sistema. */
+@Injectable()
+export class MandatoService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async encerrar(igrejaId: string, usuarioId: string, mandatoId: string, dados: Encerramento) {
+    const parsed = encerramentoSchema.safeParse(dados);
+    if (!parsed.success) throw new BadRequestException('Dados de encerramento inválidos.');
+    const v = parsed.data, efeito = data(v.data_efeito);
+    return this.prisma.$transaction(async tx => {
+      const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO] } }, select: { id: true } });
+      if (!operador) throw new ForbiddenException('Operador não autorizado nesta igreja.');
+      // Serializa o encerramento com prévias e inclusões de eventos do oficial.
+      await tx.$queryRaw`SELECT o.id FROM oficial o JOIN mandato_oficial m ON m.oficial_id = o.id AND m.igreja_id = o.igreja_id WHERE m.id = ${mandatoId} AND m.igreja_id = ${igrejaId} FOR UPDATE OF o`;
+      const mandatos = await tx.$queryRaw<Array<{ id: string; data_posse: Date; termino_previsto: Date; termino_efetivo: Date | null }>>`
+        SELECT id, data_posse, termino_previsto, termino_efetivo FROM mandato_oficial WHERE id = ${mandatoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
+      const atual = mandatos[0];
+      if (!atual) throw new NotFoundException('Mandato não encontrado nesta igreja.');
+      if (atual.termino_efetivo || efeito < atual.data_posse || efeito > atual.termino_previsto) throw new BadRequestException('Mandato já encerrado ou data de encerramento inválida.');
+      const encerrado = await tx.mandato_oficial.update({ where: { id: mandatoId }, data: { termino_efetivo: efeito, motivo_encerramento: v.motivo } });
+      await tx.logs_atividades.create({ data: { igreja_id: igrejaId, usuario_id: usuarioId, acao: logs_atividades_acao.ATUALIZACAO, tabela_afetada: 'mandato_oficial', registro_id: mandatoId,
+        dados_antigos: { termino_efetivo: null, motivo_encerramento: null }, dados_novos: { termino_efetivo: v.data_efeito, motivo: v.motivo, autoridade: v.autoridade, evidencia: v.evidencia } } });
+      return encerrado;
+    });
+  }
+
+  async registrar(igrejaId: string, usuarioId: string, oficialId: string, dados: Entrada) {
+    const parsed = schema.safeParse(dados);
+    if (!parsed.success) throw new BadRequestException('Dados do mandato inválidos.');
+    const v = parsed.data, posse = data(v.data_posse);
+    return this.prisma.$transaction(async tx => {
+      const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO] } }, select: { id: true } });
+      if (!operador) throw new ForbiddenException('Operador não autorizado nesta igreja.');
+      // A mesma linha é bloqueada pelo trigger de alterações de membresia.
+      const oficiais = await tx.$queryRaw<Array<{ id: string; pessoa_id: string; tipo: string; data_nascimento: Date }>>`
+        SELECT o.id, o.pessoa_id, o.tipo, p.data_nascimento FROM oficial o
+        JOIN pessoas p ON p.id = o.pessoa_id AND p.igreja_id = o.igreja_id
+        WHERE o.id = ${oficialId} AND o.igreja_id = ${igrejaId} FOR UPDATE OF o, p`;
+      const oficial = oficiais[0];
+      if (!oficial) throw new NotFoundException('Oficial não encontrado nesta igreja.');
+      if (oficial.tipo === 'PRESBITERO_DOCENTE') throw new BadRequestException('Docente segue vínculo pastoral próprio.');
+      await tx.$queryRaw`SELECT id FROM conferencia_eleicao_oficial WHERE id = ${v.conferencia_id} AND igreja_id = ${igrejaId} FOR SHARE`;
+      const conferencia = await tx.conferencia_eleicao_oficial.findFirst({ where: { id: v.conferencia_id, igreja_id: igrejaId, pessoa_id: oficial.pessoa_id }, include: { politica: true } });
+      if (!conferencia) throw new NotFoundException('Conferência não encontrada para esta pessoa e igreja.');
+      if (await tx.revisao_eleitoral_item.findFirst({ where: { igreja_id: igrejaId, conferencia_id: conferencia.id, OR: [{ revisado_em: null }, { permite_reutilizacao: false }] }, select: { id: true } })) throw new BadRequestException('Conferência sinalizada para revisão institucional não pode ser usada em novo mandato.');
+      await tx.$queryRaw`SELECT id FROM politica_eleicao_oficial WHERE id = ${conferencia.politica_id} AND igreja_id = ${igrejaId} FOR SHARE`;
+      // Releitura após obter o bloqueio evita usar uma política alterada enquanto aguardava.
+      const politicaAtual = await tx.politica_eleicao_oficial.findFirst({ where: { id: conferencia.politica_id, igreja_id: igrejaId } });
+      if (!politicaAtual) throw new NotFoundException('Política normativa não encontrada.');
+      const eleicao = conferencia.data_eleicao, politica = politicaAtual;
+      if (posse < eleicao || politica.vigente_desde > eleicao || (politica.vigente_ate && politica.vigente_ate < posse)) throw new BadRequestException('Datas incompatíveis com eleição ou política.');
+      const excecao = conferencia.excecao_transferencia === null ? undefined : excecaoSchema.safeParse(conferencia.excecao_transferencia);
+      if (excecao && !excecao.success) throw new BadRequestException('Exceção de transferência inválida.');
+      const norma = { idadeMinima: politica.idade_minima, fonte: politica.fonte, versao: politica.versao, vigenteDesde: civil(politica.vigente_desde), aniversarioBissexto: politica.aniversario_bissexto === 'DIA_28_FEVEREIRO' ? '28_FEVEREIRO' as const : '01_MARCO' as const };
+      const base = { dataRecepcao: civil(conferencia.data_recepcao), evidenciaRecepcao: conferencia.evidencia_recepcao, dataNascimento: civil(oficial.data_nascimento), capacidadeConfirmada: conferencia.capacidade_confirmada, evidenciaCapacidade: conferencia.evidencia_capacidade, excecaoTransferencia: excecao?.success ? excecao.data : undefined };
+      let avaliacaoEleicao: ReturnType<typeof avaliarEleicaoOficial>, avaliacaoPosse: ReturnType<typeof avaliarEleicaoOficial>;
+      try {
+        avaliacaoEleicao = avaliarEleicaoOficial({ ...base, dataEleicao: civil(eleicao) }, norma);
+        avaliacaoPosse = avaliarEleicaoOficial({ ...base, dataEleicao: v.data_posse, capacidadeConfirmada: true, evidenciaCapacidade: v.evidencia_capacidade_posse }, norma);
+      } catch { throw new BadRequestException('Dados históricos inconsistentes com a eleição ou posse.'); }
+      if (!avaliacaoEleicao.requisitosAtendidos || !avaliacaoPosse.requisitosAtendidos) throw new BadRequestException('Requisitos eleitorais ou da posse não atendidos.');
+      const conferirRol = async (referencia: Date) => {
+        const eventos = await tx.eventos_membresia.findMany({ where: { igreja_id: igrejaId, pessoa_id: oficial.pessoa_id, data_evento: { lte: referencia } }, orderBy: { data_evento: 'desc' }, select: { id: true, data_evento: true, ordem_dia: true, rol: true } });
+        const vigente = eventoVigente(eventos, referencia);
+        if (vigente.situacao !== 'DEFINIDO' || vigente.evento.rol !== membresia_rol.COMUNGANTES) throw new BadRequestException('Membresia comungante não comprovada ou ordem de eventos ambígua.');
+        return vigente.evento.id;
+      };
+      const [rolEleicao, rolPosse, eventosOficiais] = await Promise.all([conferirRol(eleicao), conferirRol(posse), tx.evento_oficial.findMany({ where: { igreja_id: igrejaId, oficial_id: oficialId }, orderBy: [{ data_efeito: 'asc' }, { ordem: 'asc' }] })]);
+      const termino = terminoCincoAnos(posse, politica.aniversario_bissexto);
+      const exercicio = avaliarExercicio({ data_posse: posse, termino_previsto: termino, termino_efetivo: null }, eventosOficiais, posse);
+      if (!exercicio.em_exercicio) throw new BadRequestException(`Ofício não está apto à posse: ${exercicio.motivo}.`);
+      const avaliacao = { eleicao: avaliacaoEleicao, posse: avaliacaoPosse, rol_eleicao_evento_id: rolEleicao, rol_posse_evento_id: rolPosse, conferencia_id: conferencia.id, evidencia_capacidade_posse: v.evidencia_capacidade_posse };
+      const mandato = await tx.mandato_oficial.create({ data: { igreja_id: igrejaId, oficial_id: oficialId, conferencia_id: conferencia.id, data_eleicao: eleicao, data_posse: posse, termino_previsto: termino, autoridade: v.autoridade, evidencia: v.evidencia, avaliacao_eleicao: avaliacao } });
+      await tx.logs_atividades.create({ data: { igreja_id: igrejaId, usuario_id: usuarioId, acao: logs_atividades_acao.CRIACAO, tabela_afetada: 'mandato_oficial', registro_id: mandato.id, dados_novos: { oficial_id: oficialId, conferencia_id: conferencia.id, data_eleicao: civil(eleicao), data_posse: v.data_posse, termino_previsto: civil(termino) } } });
+      return mandato;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+  }
+}
