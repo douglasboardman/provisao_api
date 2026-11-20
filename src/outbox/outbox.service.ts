@@ -116,16 +116,21 @@ export class OutboxService {
         const { nome } = signature.arrolado.retrato as { nome: string };
         const url = new URL('/assinaturas/convite', base);
         url.hash = token;
-        await this.email.sendSignatureInvitation(nome, signature.email, url.toString(), signature.id);
+        await this.email.sendSignatureInvitation(nome, signature.email, url.toString(), signature.id, signature.expira_em);
       } else if (job.confirmacao) {
-        const access = job.confirmacao.solicitacao;
-        await this.email.sendAccessConfirmation(access.nome_usuario, access.email_login, `${base}/auth/confirm-access?token=${token}${job.confirmacao.cancelamento_hash ? `&cancel_token=${cancelToken(token)}` : ""}`);
+        const { solicitacao, cancelamento_hash, expira_em } = job.confirmacao;
+        const url = new URL(`${base}/auth/confirm-access`);
+        url.searchParams.set('token', token);
+        if (cancelamento_hash) url.searchParams.set('cancel_token', cancelToken(token));
+        await this.email.sendAccessConfirmation(solicitacao.nome_usuario, solicitacao.email_login, url.toString(), expira_em);
       } else if (job.token) {
-        const user = job.token.usuario;
+        const { usuario, finalidade, expira_em } = job.token;
         const url = `${base}/auth/set-password?token=${token}`;
-        if (job.token.finalidade === 'password_setup') await this.email.sendPasswordSetup(user.nome_usuario, user.email_login, url);
-        else if (job.token.finalidade === 'password_reset') await this.email.sendPasswordReset(user.nome_usuario, user.email_login, url);
-        else throw new Error('finalidade inválida');
+        if (finalidade === 'password_setup') {
+          await this.email.sendPasswordSetup(usuario.nome_usuario, usuario.email_login, url, expira_em);
+        } else if (finalidade === 'password_reset') {
+          await this.email.sendPasswordReset(usuario.nome_usuario, usuario.email_login, url, expira_em);
+        } else throw new Error('finalidade inválida');
       }
       await this.prisma.outbox_email.updateMany({ where: { id: job.id, reserva_id: lease, estado: 'PROCESSANDO' }, data: { estado: 'ENVIADO', enviado_em: new Date(), payload: null, reserva_id: null, reserva_ate: null, ultimo_erro: null } });
     } catch {
