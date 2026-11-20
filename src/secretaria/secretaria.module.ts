@@ -1,3 +1,4 @@
+import { PerfilController } from './perfil.controller';
 import { Module } from '@nestjs/common';
 import { PrivateStorageModule } from '../private-storage/private-storage.module';
 import { ComposicaoService } from '../orgaos/composicao.service';
@@ -19,5 +20,5 @@ import { ReferenciasAtaController } from './referencias-ata.controller';
 import { ReferenciasAtaService } from './referencias-ata.service';
 import { AtasLegadasService } from './atas-legadas.service';
 
-@Module({ imports: [PrivateStorageModule], controllers: [ReferenciasAtaController, SecretariaController, LivrosController, AssinaturasController, PortalAssinaturasController], providers: [ReferenciasAtaService, SecretariaGuard, SecretariaBaseService, SecretariaCadastrosService, DocumentosService, AtasLegadasService, ComposicaoService, AssinaturasService, ExpedicaoArquivos, AtuacaoService, RascunhosService, LivrosService, ExpedicaoWorkerService], exports: [SecretariaBaseService, RascunhosService, LivrosService, ExpedicaoWorkerService] })
+@Module({ imports: [PrivateStorageModule], controllers: [PerfilController, ReferenciasAtaController, SecretariaController, LivrosController, AssinaturasController, PortalAssinaturasController], providers: [ReferenciasAtaService, SecretariaGuard, SecretariaBaseService, SecretariaCadastrosService, DocumentosService, AtasLegadasService, ComposicaoService, AssinaturasService, ExpedicaoArquivos, AtuacaoService, RascunhosService, LivrosService, ExpedicaoWorkerService], exports: [SecretariaBaseService, RascunhosService, LivrosService, ExpedicaoWorkerService] })
 export class SecretariaModule {}

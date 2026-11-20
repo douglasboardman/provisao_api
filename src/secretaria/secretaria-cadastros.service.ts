@@ -27,6 +27,27 @@ export class SecretariaCadastrosService {
     });
   }
 
+  resumoContexto(a: AtorSecretaria, contexto_id: string) {
+    return this.base.prisma.$transaction(async tx => {
+      await this.base.operador(tx, a);
+      await this.base.contexto(tx, a, contexto_id);
+      const restritos = (await this.base.concessoes(tx, a, contexto_id)).some(c => c.pode_consultar_restritos);
+      const where = { igreja_id: a.igreja_id, contexto_id, ...(restritos ? {} : { restrito: false }) };
+      const [documentos, atas, em_edicao, reunioes] = await Promise.all([
+        tx.documento.count({ where }), tx.documento.count({ where: { ...where, tipo: 'ATA' } }),
+        tx.documento.count({ where: { ...where, estado: 'EM_EDICAO' } }), tx.reuniao.count({ where }),
+      ]);
+      return { documentos, atas, em_edicao, reunioes };
+    }, { isolationLevel: 'RepeatableRead' });
+  }
+
+  consultarReuniao(a: AtorSecretaria, id: string) {
+    return this.base.prisma.$transaction(async tx => {
+      await this.base.operador(tx, a);
+      return this.reuniao(tx, a, id);
+    });
+  }
+
   async listarContextos(a: AtorSecretaria) {
     return this.base.prisma.$transaction(async tx => {
       const u = await this.base.operador(tx, a);

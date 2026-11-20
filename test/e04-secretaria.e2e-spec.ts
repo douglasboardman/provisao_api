@@ -154,6 +154,10 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     const salvo = (await detalhe(id)).versoes[0];
     expect(salvo.conteudo.estrutura.cabecalho[0].arquivo_id).toBe(upload.body.id);
     expect(salvo.anexos[0].arquivo_id).toBe(upload.body.id);
+    const imagem = `documentos/${id}/versoes/${salvo.id}/anexos/${upload.body.id}?visualizacao=imagem`;
+    const inline = await get(imagem).expect(200).expect('Content-Type', /image\/png/);
+    expect(inline.body).toEqual(png);
+    await get(imagem, 'outra').expect(404);
     const job = await post(`documentos/${id}/rascunhos`).send({ revisao: 1 }).expect(201);
     expect(await processarAte(job.body.id)).toMatchObject({ estado: 'CONCLUIDO' });
   }, 60000);
@@ -364,4 +368,31 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     await post('documentos', 'gestor').send(entradaRestrita).expect(404);
     await post(`documentos/${d.id}/cancelar`, 'gestor').send(cmd(1)).expect(404);
   });
+  it('conta somente o acervo visível e limita o perfil à pessoa da sessão', async () => {
+    await get(`contextos/${contexto}/resumo`, 'outra').expect(404);
+    const resumo = (await get(`contextos/${contexto}/resumo`, 'auditor').expect(200)).body;
+    expect(resumo.documentos).toBe(await p.documento.count({ where: { igreja_id: igreja, contexto_id: contexto, restrito: false } }));
+    await get(`reunioes/${reuniao}`, 'outra').expect(404);
+    const perfil = (user: string) => request(app.getHttpServer()).get('/perfil').set('Cookie', cookies[user]);
+    expect((await perfil('gestor').expect(200)).body.pessoa.id).toBe(pessoa);
+    expect((await perfil('outra').query({ pessoa_id: pessoa }).expect(200)).body.pessoa).toBeNull();
+    await request(app.getHttpServer()).get('/perfil').expect(401);
+  });
+
+  it('altera a senha pela própria sessão e exige novo login', async () => {
+    const bcrypt = await import('bcrypt');
+    const login = admin + '@example.invalid';
+    const atual = 'senha-atual-de-teste';
+    const nova = 'senha-nova-de-teste';
+    await p.usuarios.update({ where: { id: admin }, data: { senha_hash: await bcrypt.hash(atual, 4) } });
+    const alterar = (senha_atual: string) => request(app.getHttpServer()).post('/auth/alterar-senha')
+      .set('Cookie', cookies.admin).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1')
+      .send({ senha_atual, nova_senha: nova });
+    await alterar('incorreta').expect(400);
+    await alterar(atual).expect(204);
+    await request(app.getHttpServer()).get('/auth/profile').set('Cookie', cookies.admin).expect(401);
+    await request(app.getHttpServer()).post('/auth/login').set('Origin', 'http://localhost:3001')
+      .set('X-Provisao-Request', '1').send({ igreja_id: igreja, login, senha: nova }).expect(200);
+  });
+
 });

@@ -15,7 +15,7 @@ import { AuthService } from './auth.service';
 import { SignInDto } from './dto/sign-in.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
-import { ResetPasswordDto } from './dto/reset-password.dto';
+import { AlterarSenhaDto, ResetPasswordDto } from './dto/reset-password.dto';
 import { AuthGuard } from './auth.guard';
 import { MfaService } from 'src/mfa/mfa.service';
 import { MfaSetupDto, MfaActivateDto, MfaRecoveryDto, MfaPolicyDto, MfaResumeDto, MfaConfirmRecoveryDto } from 'src/mfa/mfa.dto';
@@ -49,6 +49,14 @@ export class AuthController {
     await this.authService.logSuccessfulLogin(user.id, user.igreja_id);
     res.cookie('provisao_session', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/', maxAge: SessionService.lifetimeMs });
     return { sub: user.id, igreja_id: user.igreja_id, perfil: user.perfil, username: user.nome_usuario, login: user.email_login, mfa_enrollment_required: user.mfa_enrollment_required, mfa_recovery_recent: user.mfa_recovery_recent, recursos: recursosDaSessao(user.igreja_id) };
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('alterar-senha')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async alterarSenha(@Request() req, @Body() dados: AlterarSenhaDto, @Res({ passthrough: true }) res: Response) {
+    await this.authService.alterarSenha(req.user.sub, req.user.igreja_id, req.user.auth_version, dados.senha_atual, dados.nova_senha);
+    res.clearCookie('provisao_session', { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', path: '/' });
   }
 
   @UseGuards(AuthGuard)

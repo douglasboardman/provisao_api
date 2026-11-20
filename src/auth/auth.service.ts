@@ -98,6 +98,19 @@ export class AuthService {
    * @param novaSenha Nova senha em texto plano.
    * @returns Mensagem de confirmação.
    */
+  async alterarSenha(id: string, igreja_id: string, auth_version: number, atual: string, nova: string) {
+    const where = { id, igreja_id, ativo: true, auth_version };
+    const usuario = await this.prisma.usuarios.findFirst({ where, select: { senha_hash: true } });
+    if (!usuario || !await bcrypt.compare(atual, usuario.senha_hash)) throw new BadRequestException('Senha atual incorreta.');
+    if (await bcrypt.compare(nova, usuario.senha_hash)) throw new BadRequestException('Escolha uma senha diferente da atual.');
+    const senha_hash = await bcrypt.hash(nova, BCRYPT_SALT_ROUNDS);
+    await this.prisma.$transaction(async tx => {
+      const alterados = await tx.usuarios.updateMany({ where, data: { senha_hash, auth_version: { increment: 1 } } });
+      if (alterados.count !== 1) throw new UnauthorizedException('A conta foi alterada. Entre novamente.');
+      await tx.token_senha.updateMany({ where: { usuario_id: id, consumido_em: null, revogado_em: null }, data: { revogado_em: new Date() } });
+    });
+  }
+
   async setPassword(token: string, novaSenha: string): Promise<{ message: string }> {
     if (!/^[a-f0-9]{64}$/.test(token)) throw new UnauthorizedException('Token inválido ou expirado.');
     const hash = crypto.createHash('sha256').update(token).digest('hex');

@@ -40,6 +40,21 @@ export class OficiaisController {
     return { itens, proximo_cursor: rows.length > 50 ? itens[itens.length - 1].id : null };
   }
 
+  @Get('mandatos-vigentes')
+  @Header('Cache-Control', 'private, no-store')
+  quadro(@Request() req, @Query('data') referencia: string) {
+    const data = new Date(referencia + 'T00:00:00Z');
+    if (!Number.isFinite(data.getTime()) || data.toISOString().slice(0, 10) !== referencia) throw new BadRequestException('Data inválida.');
+    return this.prisma.mandato_oficial.findMany({
+      where: { igreja_id: req.user.igreja_id, data_posse: { lte: data }, OR: [
+        { termino_efetivo: { gte: data } }, { termino_efetivo: null, termino_previsto: { gte: data } },
+      ] },
+      select: { id: true, data_posse: true, termino_previsto: true, termino_efetivo: true,
+        oficial: { select: { tipo: true, pessoa: { select: { nome_completo: true } } } } },
+      orderBy: [{ termino_previsto: 'asc' }, { id: 'asc' }],
+    });
+  }
+
   @Get('notificacoes')
   @Header('Cache-Control', 'private, no-store')
   minhasNotificacoes(@Request() req) {

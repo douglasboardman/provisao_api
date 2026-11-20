@@ -1,3 +1,4 @@
+import { tipoImagemDocumental } from './imagens-documentais';
 import { Body, Controller, Get, Header, HttpCode, Param, ParseIntPipe, ParseUUIDPipe, Patch, Post, Query, Request, Res, UseGuards, DefaultValuePipe, BadRequestException } from '@nestjs/common';
 import { usuarios_perfil as Perfil } from '@prisma/client';
 import { Response } from 'express';
@@ -56,6 +57,12 @@ export class SecretariaController {
 
   @Header('Cache-Control', 'private, no-store')
   @Get('contextos') contextos(@Request() req: RequestSecretaria) { return this.cadastros.listarContextos(req.user); }
+  @Get('contextos/:id/resumo')
+  @Header('Cache-Control', 'private, no-store')
+  resumo(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string) { return this.cadastros.resumoContexto(req.user, id); }
+  @Get('reunioes/:id')
+  @Header('Cache-Control', 'private, no-store')
+  reuniao(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string) { return this.cadastros.consultarReuniao(req.user, id); }
   @Post('contextos') criarContexto(@Request() req: RequestSecretaria, @Body() b: unknown) { return this.cadastros.criarContexto(req.user, b); }
   @Header('Cache-Control', 'private, no-store')
   @Get('competencias') competencias(@Request() req: RequestSecretaria) { return this.cadastros.listarCompetencias(req.user); }
@@ -109,13 +116,14 @@ export class SecretariaController {
   @Post('documentos/:id/deliberar') deliberar(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() b: unknown) { return this.documentos.deliberar(req.user, id, b); }
   @Header('Cache-Control', 'private, no-store')
   @Get('documentos/:id/versoes/:versao/anexos/:arquivo')
-  async anexo(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Param('versao', ParseUUIDPipe) versao: string, @Param('arquivo', ParseUUIDPipe) arquivo: string, @Res() res: Response) {
+  async anexo(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Param('versao', ParseUUIDPipe) versao: string, @Param('arquivo', ParseUUIDPipe) arquivo: string, @Res() res: Response, @Query('visualizacao') visualizacao?: string) {
     // A autorização é a do documento, nunca a de um UUID de arquivo isolado.
     const d = await this.documentos.detalhe(req.user, id);
     const anexo = d.versoes.find(v => v.id === versao)?.anexos.find(f => f.arquivo_id === arquivo);
     if (!anexo) throw new BadRequestException('Anexo não pertence à versão.');
     const data = await this.storage.readAuthorized(req.user, { id: arquivo, igreja_id: d.igreja_id, ...anexo.arquivo }, 'anexo_documento_consulta');
-    res.set({ 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(anexo.nome)}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+    const inline = visualizacao === 'imagem';
+    res.set({ 'Content-Type': inline ? tipoImagemDocumental(data).mime : 'application/octet-stream', 'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(anexo.nome)}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
     res.send(data);
   }
   private pagina(p: number) { if (p < 0 || p > 100000) throw new BadRequestException('Página inválida.'); }

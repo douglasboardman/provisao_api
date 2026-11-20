@@ -6,15 +6,20 @@ import { imageSize } from 'image-size';
 
 const limiteImagem = 2 * 1024 * 1024;
 export const limitePixelsDocumento = 32_000_000;
-export function decodificarImagemDocumental(bytes: Buffer) {
+export function tipoImagemDocumental(bytes: Buffer) {
   try {
     if (bytes.length > limiteImagem) throw new Error();
     const { type, width, height } = imageSize(bytes);
     if (!type || !['png', 'jpg', 'webp'].includes(type) || width * height > 16000000) throw new Error();
-    return { uri: `data:image/${type === 'jpg' ? 'jpeg' : type};base64,${bytes.toString('base64')}`, pixels: width * height };
+    return { mime: `image/${type === 'jpg' ? 'jpeg' : type}`, pixels: width * height };
   } catch {
     throw new BadRequestException('Imagem inválida. Use PNG, JPEG ou WebP de até 2 MB e 16 megapixels.');
   }
+}
+
+export function decodificarImagemDocumental(bytes: Buffer) {
+  const { mime, pixels } = tipoImagemDocumental(bytes);
+  return { uri: `data:${mime};base64,${bytes.toString('base64')}`, pixels };
 }
 
 export function imagemDocumental(bytes: Buffer) { return decodificarImagemDocumental(bytes).uri; }
