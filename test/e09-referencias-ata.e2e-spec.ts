@@ -670,8 +670,33 @@ integracao('E09 – referências documentais', () => {
     expect(pendencias.body.itens.some((a) => a.alvo_id === mandato && a.etapa === 'ELEICAO')).toBe(false);
   });
 
-  it('confere uma ata sem modelo, preserva sua referência e permite indexá-la em livro depois', async () => {
+  it('vincula uma reunião regular do Conselho à ata legada e preserva sua referência', async () => {
     const caminho = '/secretaria/atas-legadas';
+    const dadosReuniao = {
+      restrito: false,
+      modalidade: 'REGULAR',
+      data,
+      local: 'Templo',
+      pauta: 'Deliberação do Conselho',
+      competencia: 'Conselho',
+      universo_informado: 1,
+      quorum_minimo: 1,
+      quorum_conferido: true,
+      fundamento_quorum: 'Conferido',
+      resultado: '',
+      participantes: [{ pessoa_id: pessoa, presente: true, papeis: ['SECRETARIO'] }],
+    };
+    for (const contexto_id of [assembleia, junta]) {
+      await http('post', '/secretaria/reunioes')
+        .send({ contexto_id, idempotencia: randomUUID(), dados: dadosReuniao })
+        .expect(400);
+    }
+    const reuniao = await http('post', '/secretaria/reunioes')
+      .send({ contexto_id: conselho, idempotencia: randomUUID(), dados: dadosReuniao })
+      .expect(201);
+    expect(await prisma.reuniao.findUnique({ where: { id: reuniao.body.id } })).toMatchObject({
+      contexto_id: conselho, modalidade: 'REGULAR', dados: { modalidade: 'REGULAR' },
+    });
     const pdf = await PDFDocument.create();
     pdf.addPage().drawText('Teor do documento historico');
     const bytes = Buffer.from(await pdf.save());
@@ -700,7 +725,8 @@ integracao('E09 – referências documentais', () => {
       assunto: 'Ata histórica do Conselho',
       data_documento: data,
       restrito: false,
-      reuniao: { data, local: 'Templo', modalidade: 'ORDINARIA', inicio: null, fim: null, pauta: null },
+      reuniao_id: reuniao.body.id,
+      reuniao: { data, local: 'Templo', modalidade: 'REGULAR', inicio: null, fim: null, pauta: dadosReuniao.pauta },
       teor: 'Teor conferido do documento histórico.',
       pdf: { arquivo_id, nome: 'ata-legada.pdf' },
       arrolados: [{ pessoa_id: pessoa, papeis: ['SECRETARIO'], fundamento: 'Assinatura no original' }],
@@ -718,6 +744,9 @@ integracao('E09 – referências documentais', () => {
       conferida: true,
     };
     await http('post', caminho, 'auditor').send(entrada).expect(403);
+    await http('post', caminho)
+      .send({ ...entrada, contexto_id: assembleia, reuniao_id: null })
+      .expect(400);
     await http('post', caminho)
       .send({ ...entrada, conferida: false })
       .expect(400);
@@ -742,7 +771,8 @@ integracao('E09 – referências documentais', () => {
           numero_original: entrada.numero_original,
           livro_id: null,
           conteudo: { teor: entrada.teor },
-          fonte_congelada: { legado: { reuniao: { local: 'Templo' }, sha256: sha256(bytes) } },
+          reuniao_id: reuniao.body.id,
+          fonte_congelada: { legado: { reuniao: { local: 'Templo', modalidade: 'REGULAR' }, sha256: sha256(bytes) } },
           arrolados: [{ pessoa_id: pessoa, papeis: ['SECRETARIO'] }],
           resolucoes: [{ assunto: 'Admissão', proponentes: [{ arrolado: { pessoa_id: pessoa } }] }],
         },

@@ -112,12 +112,7 @@ export class AtasLegadasService {
         ) {
           throw new BadRequestException('A reunião vinculada tem contexto, sigilo ou dados incompatíveis com a ata.');
         }
-        if (
-          v.reuniao.modalidade &&
-          (contexto.tipo === 'ASSEMBLEIA_GERAL') !== ['AGO', 'AGE'].includes(v.reuniao.modalidade)
-        ) {
-          throw new BadRequestException('Modalidade da reunião incompatível com o contexto.');
-        }
+        if (v.reuniao.modalidade) this.cadastros.validarModalidadeReuniao(contexto, v.reuniao.modalidade);
         const ids = v.arrolados.map((p) => p.pessoa_id);
         if ((await tx.pessoas.count({ where: { igreja_id: a.igreja_id, id: { in: ids } } })) !== ids.length) {
           throw new BadRequestException('Arrole somente pessoas cadastradas nesta igreja.');

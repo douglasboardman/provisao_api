@@ -38,8 +38,9 @@ const modelo = { tipo: z.enum(['ATA', 'OUTRO']), finalidade: codigo, configuraca
 export const modeloSchema = z.object({ ...chave, contexto_id: z.uuid(), nome, ...modelo }).strict();
 export const modeloVersaoSchema = z.object({ ...chave, ...revisao, ...modelo }).strict();
 const participante = z.object({ pessoa_id: z.uuid(), presente: z.boolean(), papeis: z.array(codigo).min(1).max(20), pode_propor: z.boolean().optional() }).strict();
+export const modalidadeReuniaoSchema = z.enum(['ORDINARIA', 'EXTRAORDINARIA', 'REGULAR', 'AGO', 'AGE']);
 export const reuniaoDadosSchema = z.object({
-  restrito: z.boolean(), modalidade: z.enum(['ORDINARIA', 'EXTRAORDINARIA', 'AGO', 'AGE']), data: dia,
+  restrito: z.boolean(), modalidade: modalidadeReuniaoSchema, data: dia,
   local: nome, inicio: z.iso.datetime({ offset: true }).nullable().default(null), fim: z.iso.datetime({ offset: true }).nullable().default(null),
   pauta: z.string().trim().min(1).max(20000), competencia: texto,
   universo_informado: z.number().int().nonnegative().max(1000000), quorum_minimo: z.number().int().nonnegative().max(1000000),

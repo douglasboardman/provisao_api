@@ -159,9 +159,16 @@ export class SecretariaCadastrosService {
     return r;
   }
 
+  validarModalidadeReuniao(contexto: { tipo: string; orgao: { tipo: string } | null }, modalidade: dto.ReuniaoInput['modalidade']) {
+    const assembleia = modalidade === 'AGO' || modalidade === 'AGE';
+    if ((contexto.tipo === 'ASSEMBLEIA_GERAL') !== assembleia ||
+        (modalidade === 'REGULAR' && contexto.orgao?.tipo !== 'CONSELHO')) {
+      throw new BadRequestException('Modalidade da reunião incompatível com o contexto.');
+    }
+  }
+
   async validarReuniao(tx: Tx, a: AtorSecretaria, contexto: string, v: dto.ReuniaoInput) {
-    const c = await this.base.contexto(tx, a, contexto);
-    if ((c.tipo === 'ASSEMBLEIA_GERAL') !== ['AGO', 'AGE'].includes(v.modalidade)) throw new BadRequestException('Modalidade incompatível com contexto.');
+    this.validarModalidadeReuniao(await this.base.contexto(tx, a, contexto), v.modalidade);
     if (v.restrito) await this.base.competente(tx, a, contexto, 'pode_consultar_restritos');
     const ids = v.participantes.map(p => p.pessoa_id);
     if (new Set(ids).size !== ids.length) throw new BadRequestException('Informe cada pessoa uma única vez, com seus vários papéis.');

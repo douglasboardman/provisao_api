@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { resolucoesSchema } from './resolucoes.dto';
-import { codigo } from './secretaria.dto';
+import { codigo, modalidadeReuniaoSchema } from './secretaria.dto';
 
 const texto = (max: number) => z.string().trim().min(1).max(max);
 const conferencia = { idempotencia: z.uuid(), autoridade: texto(255), evidencia: texto(1000) };
@@ -18,7 +18,7 @@ export const ataLegadaSchema = z
       .object({
         data: z.iso.date().nullable(),
         local: texto(255).nullable(),
-        modalidade: z.enum(['ORDINARIA', 'EXTRAORDINARIA', 'AGO', 'AGE']).nullable(),
+        modalidade: modalidadeReuniaoSchema.nullable(),
         inicio: z.iso.datetime({ offset: true }).nullable(),
         fim: z.iso.datetime({ offset: true }).nullable(),
         pauta: texto(20000).nullable(),
