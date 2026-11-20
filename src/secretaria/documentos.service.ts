@@ -141,8 +141,8 @@ export class DocumentosService {
       if (atual.livro_id) exigirLivros();
       const versao = { ...v.versao, resolucoes: v.versao.resolucoes ?? entradaResolucoes(atual.resolucoes) };
       const { m, config, vinculo } = await this.validarVersao(tx, a, d.contexto_id, id, versao, atual.id, d.restrito);
-      if ((dto.finalidadeTermo(atual.modelo.finalidade) || dto.finalidadeTermo(m.finalidade)) &&
-          (atual.modelo.finalidade !== m.finalidade || atual.livro_id !== v.versao.livro_id)) {
+      if ((dto.finalidadeTermo(atual.modelo?.finalidade) || dto.finalidadeTermo(m.finalidade)) &&
+          (atual.modelo?.finalidade !== m.finalidade || atual.livro_id !== v.versao.livro_id)) {
         throw new BadRequestException('A finalidade e o livro de um termo são definidos na criação.');
       }
       await this.livros.fixarTermo(tx, vinculo);
@@ -160,6 +160,7 @@ export class DocumentosService {
 
   async conferirAprovacao(tx: Tx, a: AtorSecretaria, d: Awaited<ReturnType<SecretariaBaseService['documento']>>) {
     const atual = d.versoes.find(v => v.numero === d.versao_atual)!;
+    if (!atual.modelo_versao_id) throw new BadRequestException('Ata legada já conferida no acervo.');
     const entrada = { modelo_versao_id: atual.modelo_versao_id, livro_id: atual.livro_id, reuniao_id: atual.reuniao_id, motivador_id: atual.motivador_id, assunto: atual.assunto, data_documento: atual.data_documento.toISOString().slice(0, 10), conteudo: dto.validar(dto.conteudoSchema, atual.conteudo), resolucoes: dto.validar(resolucoesSchema, entradaResolucoes(atual.resolucoes)) };
     const { config, c, vinculo } = await this.validarVersao(tx, a, d.contexto_id, d.id, entrada, atual.id, d.restrito);
     const estrutura = entrada.conteudo.estrutura;
@@ -252,11 +253,11 @@ export class DocumentosService {
         if (operacao === 'cancelar') await cancelarExpedicao(tx, versaoAtual.id);
         if (operacao === 'cancelar' && versaoAtual.livro_id) {
           await this.livros.cancelarReserva(tx, versaoAtual.id);
-          if (dto.finalidadeTermo(versaoAtual.modelo.finalidade)) {
+          if (dto.finalidadeTermo(versaoAtual.modelo?.finalidade)) {
             await tx.livro_atas.update({ where: { id: versaoAtual.livro_id }, data: { revisao: { increment: 1 } } });
           }
         }
-        if (operacao === 'anular' && versaoAtual.livro_id && dto.finalidadeTermo(versaoAtual.modelo.finalidade)) {
+        if (operacao === 'anular' && versaoAtual.livro_id && dto.finalidadeTermo(versaoAtual.modelo?.finalidade)) {
           throw new BadRequestException('Termo efetivado integra o acervo e exige ato complementar.');
         }
         await tx.documento.update({ where: { id }, data: { estado: operacao === 'anular' ? 'ANULADO' : 'CANCELADO', revisao: { increment: 1 } } });
@@ -339,7 +340,7 @@ export class DocumentosService {
       if (!['APROVADO', 'EXPEDIDO', 'ANULADO'].includes(d.estado)) throw new BadRequestException('Retificação exige versão aprovada ou expedida.');
       const atual = d.versoes.find(r => r.numero === d.versao_atual)!;
       if (atual.livro_id) exigirLivros();
-      if (dto.finalidadeTermo(atual.modelo.finalidade)) throw new BadRequestException('Cancele o termo pendente e crie um novo termo, ou vincule um ato complementar ao livro encerrado.');
+      if (dto.finalidadeTermo(atual.modelo?.finalidade)) throw new BadRequestException('Cancele o termo pendente e crie um novo termo, ou vincule um ato complementar ao livro encerrado.');
       const versao = { ...v.versao, resolucoes: v.versao.resolucoes ?? entradaResolucoes(atual.resolucoes) };
       const { m, config } = await this.validarVersao(tx, a, d.contexto_id, id, versao, atual.id, d.restrito);
       if (dto.finalidadeTermo(m.finalidade)) throw new BadRequestException('Termo de livro deve ser criado como novo documento.');
@@ -362,7 +363,7 @@ export class DocumentosService {
     return this.base.prisma.$transaction(async tx => {
       await this.base.operador(tx, a); await this.base.contexto(tx, a, contexto);
       const restritos = (await this.base.concessoes(tx, a, contexto)).some(g => g.pode_consultar_restritos);
-      const rows = await tx.documento.findMany({ where: { igreja_id: a.igreja_id, contexto_id: contexto, ...(!restritos ? { restrito: false } : {}) }, select: { id: true, estado: true, revisao: true, versao_atual: true, tipo: true, numero: true, ano: true, sigla: true, restrito: true, encaminhado_em: true, versoes: { select: { id: true, numero: true, assunto: true, data_documento: true } } }, orderBy: [{ criado_em: 'desc' }, { id: 'asc' }], skip: pagina * 30, take: 30 });
+      const rows = await tx.documento.findMany({ where: { igreja_id: a.igreja_id, contexto_id: contexto, ...(!restritos ? { restrito: false } : {}) }, select: { id: true, estado: true, revisao: true, versao_atual: true, tipo: true, numero: true, ano: true, sigla: true, restrito: true, encaminhado_em: true, versoes: { select: { id: true, numero: true, numero_original: true, assunto: true, data_documento: true } } }, orderBy: [{ criado_em: 'desc' }, { id: 'asc' }], skip: pagina * 30, take: 30 });
       return rows.map(r => ({ ...r, versoes: r.versoes.filter(v => v.numero === r.versao_atual) }));
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }

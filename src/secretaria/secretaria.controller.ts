@@ -13,6 +13,7 @@ import { RascunhosService } from './rascunhos.service';
 import { z } from 'zod';
 import { validar } from './secretaria.dto';
 import { AtuacaoService } from './atuacao.service';
+import { AtasLegadasService } from './atas-legadas.service';
 
 type RequestSecretaria = { user: AtorSecretaria };
 
@@ -20,7 +21,21 @@ type RequestSecretaria = { user: AtorSecretaria };
 @UseGuards(AuthGuard, RolesGuard, SecretariaGuard)
 @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
 export class SecretariaController {
-  constructor(readonly cadastros: SecretariaCadastrosService, readonly documentos: DocumentosService, readonly storage: PrivateStorageService, readonly rascunhos: RascunhosService, readonly atuacao: AtuacaoService) {}
+  constructor(readonly cadastros: SecretariaCadastrosService, readonly documentos: DocumentosService, readonly storage: PrivateStorageService, readonly rascunhos: RascunhosService, readonly atuacao: AtuacaoService, readonly atasLegadas: AtasLegadasService) {}
+  @Post('atas-legadas')
+  criarAtaLegada(@Request() req: RequestSecretaria, @Body() dados: unknown) {
+    return this.atasLegadas.criar(req.user, dados);
+  }
+  @Post('atas-legadas/teor')
+  @HttpCode(200)
+  @Header('Cache-Control', 'private, no-store')
+  extrairAtaLegada(@Request() req: RequestSecretaria, @Body() dados: unknown) {
+    return this.atasLegadas.extrairTeor(req.user, dados);
+  }
+  @Post('atas-legadas/:id/livro')
+  vincularLivroLegado(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() dados: unknown) {
+    return this.atasLegadas.vincularLivro(req.user, id, dados);
+  }
   @Header('Cache-Control', 'private, no-store')
   @Get('atuacao')
   consultarAtuacao(@Request() req: RequestSecretaria, @Query() filtros: unknown) {

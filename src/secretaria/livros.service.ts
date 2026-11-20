@@ -243,7 +243,7 @@ export class LivrosService {
     a: AtorSecretaria,
     contexto: string,
     pagina: number,
-    vinculo?: { serie?: string; restrito: boolean; estado?: livro_estado },
+    vinculo?: { serie?: string; restrito: boolean; estado?: livro_estado; modalidade?: 'FISICO_DIGITALIZADO' },
   ) {
     exigirLivros();
     return this.base.prisma.$transaction(
@@ -257,7 +257,7 @@ export class LivrosService {
             igreja_id: a.igreja_id,
             contexto_id: contexto,
             ...(podeRestritos ? { restrito: vinculo?.restrito } : { restrito: false }),
-            ...(vinculo ? { serie: vinculo.serie, estado: vinculo.estado ?? { not: 'ENCERRADO' } } : {}),
+            ...(vinculo ? { serie: vinculo.serie, modalidade: vinculo.modalidade, estado: vinculo.estado ?? { not: 'ENCERRADO' } } : {}),
           },
           select: {
             id: true,
@@ -295,7 +295,7 @@ export class LivrosService {
             arquivo: { select: { sha256: true } },
           },
         });
-        const [termos, eventos, complementos] = await Promise.all([
+        const [termos, eventos, complementos, atasLegadas] = await Promise.all([
           tx.documento_versao.findMany({
             where: { livro_id: id, modelo: { finalidade: { in: ['TERMO_ABERTURA', 'TERMO_ENCERRAMENTO'] } } },
             select: {
@@ -330,6 +330,12 @@ export class LivrosService {
             },
             orderBy: { criado_em: 'asc' },
           }),
+          tx.documento_versao.findMany({
+            where: { livro_id: id, igreja_id: a.igreja_id, contexto_id: livro.contexto_id,
+              documento: { estado: 'LEGADA_CONFERIDA', restrito: livro.restrito } },
+            select: { documento_id: true, numero_original: true, assunto: true, data_documento: true, folhas_legadas: true },
+            orderBy: [{ data_documento: 'asc' }, { numero_original: 'asc' }, { id: 'asc' }],
+          }),
         ]);
         await tx.logs_atividades.create({
           data: {
@@ -353,6 +359,7 @@ export class LivrosService {
           termos,
           eventos,
           complementos,
+          atas_legadas: atasLegadas,
         };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
@@ -420,7 +427,7 @@ export class LivrosService {
     a: AtorSecretaria,
     contexto: string,
     restrito: boolean,
-    modelo: Versao['modelo'],
+    modelo: NonNullable<Versao['modelo']>,
     config: dto.ConfiguracaoModelo,
     entrada: dto.VersaoInput,
     atualId?: string,
@@ -602,6 +609,7 @@ export class LivrosService {
         versao.numero !== versao.documento.versao_atual ||
         versao.documento.restrito !== livro.restrito ||
         versao.livro_id ||
+        !versao.modelo ||
         (versao.modelo.finalidade !== 'TERMO_EXAME' &&
           versao.modelo.finalidade !== 'RETIFICACAO' &&
           !versao.retifica_versao_id)

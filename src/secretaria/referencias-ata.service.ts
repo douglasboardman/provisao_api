@@ -155,16 +155,23 @@ export class ReferenciasAtaService {
       async (tx) => {
         const acesso = await this.acesso(tx, ator);
         const alvo = await this.alvo(tx, acesso, chave);
-        const [numero, ano, sigla] = f.numero?.split('/') ?? [];
+        const [, numero, ano, sigla] = f.numero?.match(/^(\d{1,10})(?:\/(\d{4})(?:\/([^/]{1,40}))?)?$/) ?? [];
+        const numeroPadrao = numero ? Prisma.sql`
+          OR (d.numero = ${Number(numero)}::bigint
+            ${ano ? Prisma.sql`AND d.ano = ${Number(ano)}` : Prisma.empty}
+            ${sigla ? Prisma.sql`AND lower(d.sigla) = lower(${sigla})` : Prisma.empty})
+        ` : Prisma.empty;
+        const numeroLegado = f.numero && /^\d{1,10}$/.test(f.numero) ? Prisma.sql`
+          OR (v.numero_original ~ '^[0-9]{1,10}$' AND ltrim(v.numero_original, '0') = ${f.numero.replace(/^0+/, '')})
+        ` : Prisma.empty;
         const itens = (await tx.$queryRaw`
         SELECT d.id AS documento_id, v.id AS versao_id, v.numero AS versao, v.assunto,
-          d.numero, d.ano, d.sigla, d.estado, v.data_documento AS data, c.nome AS contexto, c.id AS contexto_id
+          d.numero, d.ano, d.sigla, d.estado, v.data_documento AS data, c.nome AS contexto, c.id AS contexto_id,
+          coalesce(v.numero_original, v.fonte_congelada->>'numero') AS numero_formatado
         ${this.atasCompativeis(acesso, alvo)}
         ${f.contexto ? Prisma.sql`AND c.id = ${f.contexto}` : Prisma.empty}
         ${f.data ? Prisma.sql`AND v.data_documento = ${dataCivil(f.data)}::date` : Prisma.empty}
-        ${numero ? Prisma.sql`AND d.numero = ${Number(numero)}::bigint` : Prisma.empty}
-        ${ano ? Prisma.sql`AND d.ano = ${Number(ano)}` : Prisma.empty}
-        ${sigla ? Prisma.sql`AND lower(d.sigla) = lower(${sigla})` : Prisma.empty}
+        ${f.numero ? Prisma.sql`AND (lower(v.numero_original) = lower(${f.numero}) ${numeroPadrao} ${numeroLegado})` : Prisma.empty}
         ORDER BY v.data_documento DESC, d.id, v.numero DESC OFFSET ${f.pagina * tamanho} LIMIT ${tamanho + 1}
       `) as unknown[];
         const contextos = await tx.$queryRaw`
@@ -185,6 +192,7 @@ export class ReferenciasAtaService {
       WHEN r.referencia_externa IS NOT NULL THEN 'EXTERNA_CONFERIDA'
       WHEN r.versao_id IS NULL THEN 'PENDENTE'
       WHEN d.estado = 'ANULADO' THEN 'ANULADA'
+      WHEN d.estado = 'LEGADA_CONFERIDA' THEN 'LEGADA_CONFERIDA'
       WHEN e.estado = 'CONCLUIDA' AND e.expedido_em IS NOT NULL AND e.arquivo_final_id IS NOT NULL THEN 'FORMALIZADA'
       WHEN d.estado = 'CANCELADO' OR v.numero <> d.versao_atual THEN 'SUPERADA'
       ELSE 'MINUTA_VINCULADA' END`;
@@ -198,7 +206,7 @@ export class ReferenciasAtaService {
           'documento_id', d.id, 'numero', d.numero, 'ano', d.ano, 'sigla', d.sigla,
           'data', v.data_documento, 'versao', v.numero, 'estado', d.estado,
           'contexto', coalesce(v.fonte_congelada #>> '{contexto,nome}', c.nome),
-          'numero_formatado', v.fonte_congelada->>'numero') END AS ata
+          'numero_formatado', coalesce(v.numero_original, v.fonte_congelada->>'numero')) END AS ata
       FROM e09_referencia r
       JOIN usuarios u ON u.id = r.registrado_por_id AND u.igreja_id = r.igreja_id
       LEFT JOIN documento_versao v ON v.id = r.versao_id AND v.igreja_id = r.igreja_id
@@ -380,7 +388,7 @@ export class ReferenciasAtaService {
         ${this.situacoesAtuais(
           acesso,
           Prisma.sql`(a.acompanha OR r.id IS NOT NULL)
-          AND ${this.situacao()} NOT IN ('FORMALIZADA', 'EXTERNA_CONFERIDA')
+          AND ${this.situacao()} NOT IN ('FORMALIZADA', 'EXTERNA_CONFERIDA', 'LEGADA_CONFERIDA')
           ${grupo ? Prisma.sql`AND a.grupo = ${grupo}` : Prisma.empty}`,
         )}
         ORDER BY a.data DESC NULLS LAST, a.grupo, a.alvo_id, a.etapa OFFSET ${pagina * tamanho} LIMIT ${tamanho + 1}

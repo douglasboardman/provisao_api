@@ -44,11 +44,7 @@ export const buscaAta = z
   .object({
     pagina: paginaAta,
     contexto: uuid.optional(),
-    numero: z
-      .string()
-      .trim()
-      .regex(/^\d{1,10}(?:\/\d{4}(?:\/[^/]{1,40})?)?$/)
-      .optional(),
+    numero: texto(100).optional(),
     data: z.iso.date().optional(),
   })
   .strict();

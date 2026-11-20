@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -150,6 +151,7 @@ integracao('E09 – referências documentais', () => {
       FEATURE_ORGAOS: 'true',
       FEATURE_ORGAOS_GESTAO: 'true',
       FEATURE_SECRETARIA_ASSINATURAS: 'true',
+      FEATURE_SECRETARIA_LIVROS: 'true',
       PRIVATE_STORAGE_ROOT: storage,
       FRONTEND_URL: 'http://localhost:3001',
     });
@@ -666,5 +668,154 @@ integracao('E09 – referências documentais', () => {
     expect((await http('get', path).expect(200)).body.situacao).toBe('FORMALIZADA');
     const pendencias = await http('get', '/secretaria/pendencias-documentais?grupo=MANDATO').expect(200);
     expect(pendencias.body.itens.some((a) => a.alvo_id === mandato && a.etapa === 'ELEICAO')).toBe(false);
+  });
+
+  it('confere uma ata sem modelo, preserva sua referência e permite indexá-la em livro depois', async () => {
+    const caminho = '/secretaria/atas-legadas';
+    const pdf = await PDFDocument.create();
+    pdf.addPage().drawText('Teor do documento historico');
+    const bytes = Buffer.from(await pdf.save());
+    const upload = async (nome: string) =>
+      (await http('post', '/arquivos-privados').attach('file', bytes, nome).expect(201)).body.id as string;
+    const arquivo_id = await upload('ata-legada.pdf');
+    const livroArquivo = await upload('livro-legado.pdf');
+    const extrair = { contexto_id: conselho, arquivo_id };
+    await http('post', caminho + '/teor', 'auditor')
+      .send(extrair)
+      .expect(403);
+    if (spawnSync('pdftotext', ['-v']).error) {
+      await http('post', caminho + '/teor')
+        .send(extrair)
+        .expect(503);
+    } else {
+      const resposta = await http('post', caminho + '/teor')
+        .send(extrair)
+        .expect(200);
+      expect(resposta.body.teor).toBe('Teor do documento historico');
+    }
+    const entrada = {
+      contexto_id: conselho,
+      idempotencia: randomUUID(),
+      numero_original: '004 bis',
+      assunto: 'Ata histórica do Conselho',
+      data_documento: data,
+      restrito: false,
+      reuniao: { data, local: 'Templo', modalidade: 'ORDINARIA', inicio: null, fim: null, pauta: null },
+      teor: 'Teor conferido do documento histórico.',
+      pdf: { arquivo_id, nome: 'ata-legada.pdf' },
+      arrolados: [{ pessoa_id: pessoa, papeis: ['SECRETARIO'], fundamento: 'Assinatura no original' }],
+      resolucoes: [
+        {
+          ordem: 1,
+          assunto: 'Admissão',
+          texto_deliberado: 'Receber membro conforme o registro.',
+          resultado: 'APROVADA',
+          proponentes_pessoas_ids: [pessoa],
+        },
+      ],
+      autoridade: 'Secretaria',
+      evidencia: 'Conferido com o acervo',
+      conferida: true,
+    };
+    await http('post', caminho, 'auditor').send(entrada).expect(403);
+    await http('post', caminho)
+      .send({ ...entrada, conferida: false })
+      .expect(400);
+    const { id, revisao } = (await http('post', caminho).send(entrada).expect(201)).body;
+    expect((await http('post', caminho).send(entrada).expect(201)).body).toEqual({ id, revisao });
+    await http('post', caminho)
+      .send({
+        ...entrada,
+        idempotencia: randomUUID(),
+        pdf: { arquivo_id: await upload('duplicada.pdf'), nome: 'duplicada.pdf' },
+      })
+      .expect(409);
+
+    const documento = '/secretaria/documentos/' + id;
+    const detalhe = (await http('get', documento).expect(200)).body;
+    expect(detalhe).toMatchObject({
+      estado: 'LEGADA_CONFERIDA',
+      numero: null,
+      versoes: [
+        {
+          modelo_versao_id: null,
+          numero_original: entrada.numero_original,
+          livro_id: null,
+          conteudo: { teor: entrada.teor },
+          fonte_congelada: { legado: { reuniao: { local: 'Templo' }, sha256: sha256(bytes) } },
+          arrolados: [{ pessoa_id: pessoa, papeis: ['SECRETARIO'] }],
+          resolucoes: [{ assunto: 'Admissão', proponentes: [{ arrolado: { pessoa_id: pessoa } }] }],
+        },
+      ],
+    });
+    const versao = detalhe.versoes[0].id;
+    await expect(
+      prisma.documento_versao.update({
+        where: { id: versao },
+        data: { assunto: 'Alteração após conferência' },
+      }),
+    ).rejects.toThrow('Versão documental congelada é imutável');
+    const anexo = documento + '/versoes/' + versao + '/anexos/' + arquivo_id;
+    expect((await http('get', anexo).expect(200)).body).toEqual(bytes);
+    await http('get', anexo, 'outra').expect(404);
+    const path = ref('MEMBRESIA', evento);
+    const busca = await http('get', path + '/atas')
+      .query({ numero: '004 bis', data, contexto: conselho })
+      .expect(200);
+    expect(busca.body.itens).toEqual([expect.objectContaining({ documento_id: id, numero_formatado: '004 bis' })]);
+
+    const { id: livro } = (
+      await http('post', '/secretaria/livros/importar')
+        .send({
+          contexto_id: conselho,
+          idempotencia: randomUUID(),
+          numero: 3,
+          serie: 'ATA_PADRAO',
+          capacidade_folhas: 5,
+          faces_por_folha: 1,
+          fonte_normativa: 'Registro histórico',
+          restrito: false,
+          arquivo_historico_id: livroArquivo,
+          data_historica: data,
+          autoridade: 'Secretaria',
+          evidencia: 'Livro original digitalizado',
+        })
+        .expect(201)
+    ).body;
+    const livros = (
+      await http('get', '/secretaria/livros')
+        .query({
+          contexto: conselho,
+          estado: 'ENCERRADO',
+          modalidade: 'FISICO_DIGITALIZADO',
+          restrito: false,
+        })
+        .expect(200)
+    ).body;
+    expect(livros.map((l) => l.id)).toContain(livro);
+    await http('post', caminho + '/' + id + '/livro')
+      .send({
+        idempotencia: randomUUID(),
+        revisao,
+        livro_id: livro,
+        folhas: '2–3',
+        autoridade: 'Secretaria',
+        evidencia: 'Numeração visível',
+      })
+      .expect(201);
+    expect((await http('get', '/secretaria/livros/' + livro).expect(200)).body).toMatchObject({
+      atas_legadas: [{ documento_id: id, folhas_legadas: '2–3' }],
+      registros: [],
+      manifesto_sha256: null,
+    });
+
+    const referenciaLegada = ref('MEMBRESIA', evento);
+    const anterior = (await http('get', referenciaLegada).expect(200)).body.itens[0]?.id ?? null;
+    await http('post', referenciaLegada).send(ligacao({ documento: id, versao }, anterior)).expect(201);
+    const referencia = (await http('get', referenciaLegada).expect(200)).body;
+    expect(referencia.situacao).toBe('LEGADA_CONFERIDA');
+    expect(referencia.itens[0]).toMatchObject({
+      ata_documento_id: id, versao_id: versao, ata: { numero_formatado: '004 bis' },
+    });
   });
 });

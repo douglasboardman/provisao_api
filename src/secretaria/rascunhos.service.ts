@@ -32,6 +32,7 @@ export class RascunhosService {
   constructor(private readonly base: SecretariaBaseService, private readonly storage: PrivateStorageService) {}
 
   private async fonte(tx: Tx, documento: Documento, versao: VersaoFonte, igreja: Igreja, arrolados: SignatarioRenderizacao[], numero: string, contexto: string, finalidade: FonteRenderizacao['finalidade'], vinculo?: Vinculo | null): Promise<FonteTrabalho> {
+    if (!versao.modelo) throw new BadRequestException('A ata legada usa o PDF original do acervo.');
     const modelo = await tx.modelo_documento.findUniqueOrThrow({ where: { id: versao.modelo.modelo_id }, select: { nome: true } });
     const config = validar(configuracaoSchema, versao.modelo.configuracao);
     const conteudo = validar(conteudoSchema, versao.conteudo);

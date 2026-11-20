@@ -40,7 +40,7 @@ export class SecretariaBaseService {
         }
         if (operacao.includes('DOCUMENTO') || ['ENCAMINHAR', 'APROVAR', 'CANCELAR', 'ANULAR', 'DELIBERAR_ATA'].includes(operacao)) {
           const resultado = anterior.resultado as Record<string, unknown>;
-          const documentoId = operacao === 'CRIAR_DOCUMENTO' ? resultado.id : alvo;
+          const documentoId = ['CRIAR_DOCUMENTO', 'CRIAR_DOCUMENTO_LEGADO'].includes(operacao) ? resultado.id : alvo;
           if (typeof documentoId !== 'string') throw new ConflictException('Resultado anterior indisponível.');
           const documento = await this.documento(tx, ator, documentoId);
           if (['CRIAR_DOCUMENTO', 'EDITAR_DOCUMENTO', 'ENCAMINHAR'].includes(operacao)) await this.preparar(tx, ator, documento.contexto_id);

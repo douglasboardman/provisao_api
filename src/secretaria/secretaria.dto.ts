@@ -93,7 +93,7 @@ export function politicaLivro(config: ConfiguracaoModelo) {
   return config.registro_em_livro ?? (config.registro_livro ? 'OBRIGATORIO' : 'NAO_PERMITE');
 }
 
-export function finalidadeTermo(finalidade: string) {
+export function finalidadeTermo(finalidade?: string) {
   if (finalidade === 'TERMO_ABERTURA') return 'ABERTURA';
   if (finalidade === 'TERMO_ENCERRAMENTO') return 'ENCERRAMENTO';
   return null;

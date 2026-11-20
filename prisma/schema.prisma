@@ -1481,6 +1481,7 @@ enum documento_estado {
   EXPEDIDO
   CANCELADO
   ANULADO
+  LEGADA_CONFERIDA
 }
 model contexto_secretaria {
   id String @id @default(uuid())
@@ -1624,7 +1625,9 @@ model documento_versao {
   contexto_id String
   documento_id String
   numero Int
-  modelo_versao_id String
+  modelo_versao_id String?
+  numero_original String? @db.VarChar(100)
+  folhas_legadas String? @db.VarChar(80)
   reuniao_id String?
   motivador_id String?
   retifica_versao_id String?
@@ -1634,7 +1637,7 @@ model documento_versao {
   congelado_em DateTime?
   fonte_congelada Json?
   documento documento @relation(fields: [documento_id, igreja_id, contexto_id], references: [id, igreja_id, contexto_id], onDelete: Restrict, onUpdate: Restrict)
-  modelo modelo_documento_versao @relation(fields: [modelo_versao_id, igreja_id, contexto_id], references: [id, igreja_id, contexto_id], onDelete: Restrict, onUpdate: Restrict)
+  modelo modelo_documento_versao? @relation(fields: [modelo_versao_id, igreja_id, contexto_id], references: [id, igreja_id, contexto_id], onDelete: Restrict, onUpdate: Restrict)
   reuniao reuniao? @relation(fields: [reuniao_id, igreja_id, contexto_id], references: [id, igreja_id, contexto_id], onDelete: Restrict, onUpdate: Restrict)
   motivador documento_versao? @relation("MotivadorDocumento", fields: [motivador_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   motivados documento_versao[] @relation("MotivadorDocumento")
@@ -1648,6 +1651,7 @@ model documento_versao {
   @@unique([id, igreja_id, contexto_id])
   @@unique([documento_id, numero])
   @@index([igreja_id, contexto_id, data_documento])
+  @@unique([igreja_id, contexto_id, data_documento, numero_original], map: "ata_legada_numero_data_uq")
   @@unique([id, igreja_id, documento_id])
 }
 model trabalho_renderizacao {

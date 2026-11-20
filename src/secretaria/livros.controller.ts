@@ -42,6 +42,7 @@ export class LivrosController {
     @Query('pagina', new DefaultValuePipe(0), ParseIntPipe) pagina: number,
     @Query('serie') serie: unknown,
     @Query('estado') estado: unknown,
+    @Query('modalidade') modalidade: unknown,
     @Query('restrito', new ParseBoolPipe({ optional: true })) restrito?: boolean,
   ) {
     if (pagina < 0 || pagina > 100000) throw new BadRequestException('Página inválida.');
@@ -53,7 +54,8 @@ export class LivrosController {
         ? undefined
         : {
             serie: validar(z.optional(codigo), serie),
-            estado: validar(z.enum(['ABERTO', 'EM_PREPARACAO', 'EM_ENCERRAMENTO']).optional(), estado),
+            estado: validar(z.enum(['ABERTO', 'EM_PREPARACAO', 'EM_ENCERRAMENTO', 'ENCERRADO']).optional(), estado),
+            modalidade: validar(z.literal('FISICO_DIGITALIZADO').optional(), modalidade),
             restrito,
           },
     );
