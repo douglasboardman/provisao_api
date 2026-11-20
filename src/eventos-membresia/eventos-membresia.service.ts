@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { ConflictException, Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { valoresDaRegra } from '../regras-relacao-enum/parametros-membresia';
 import { eventoVigente } from './estado-temporal';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegrasRelacaoEnumService } from '../regras-relacao-enum/regras-relacao-enum.service';
@@ -28,12 +29,9 @@ export class EventosMembresiaService {
       throw new BadRequestException('Pessoa não encontrada nesta igreja.');
     }
 
+    const regras = await this.regrasEnum.getRegrasPorModulo('membresia', igrejaId);
     const nomeRegraMotivacao = `Motivações de ${TIPO_EVENTO_LABEL[dto.tipo_evento]}`;
-    const motivacoesPermitidas = await this.regrasEnum.getValoresPermitidos(
-      'membresia',
-      nomeRegraMotivacao,
-      dto.tipo_evento,
-    );
+    const motivacoesPermitidas = valoresDaRegra(regras, nomeRegraMotivacao, dto.tipo_evento);
     if (!motivacoesPermitidas.includes(dto.motivacao_evento)) {
       throw new BadRequestException('Motivação inválida para o tipo de evento.');
     }
@@ -65,30 +63,18 @@ export class EventosMembresiaService {
     };
 
     if (dto.tipo_evento === TipoEvento.DEMISSAO) {
-      const rolMapeado = await this.regrasEnum.getValorMapeado(
-        'membresia',
-        'Rol de Destino por Motivação de Demissão',
-        dto.motivacao_evento,
-      );
+      const rolMapeado = valoresDaRegra(regras, 'Rol de Destino por Motivação de Demissão', dto.motivacao_evento)[0];
       if (!rolMapeado) {
         throw new BadRequestException('Motivação de demissão sem rol de destino configurado.');
       }
       data.rol = rolMapeado;
     } else if (dto.tipo_evento === TipoEvento.MUDANCA_DE_ROL) {
-      const rolsPermitidos = await this.regrasEnum.getValoresPermitidos(
-        'membresia',
-        'Rols de Mudança de Rol',
-        dto.tipo_evento,
-      );
+      const rolsPermitidos = valoresDaRegra(regras, 'Rols de Mudança de Rol', dto.tipo_evento);
       if (!rolsPermitidos.includes(dto.rol)) {
         throw new BadRequestException('Rol inválido para mudança de rol.');
       }
 
-      const motivacoesPorRol = await this.regrasEnum.getValoresPermitidos(
-        'membresia',
-        'Motivações por Rol de Destino',
-        dto.rol,
-      );
+      const motivacoesPorRol = valoresDaRegra(regras, 'Motivações por Rol de Destino', dto.rol);
       if (!motivacoesPorRol.includes(dto.motivacao_evento)) {
         throw new BadRequestException('Motivação inválida para o rol de destino selecionado.');
       }
@@ -97,11 +83,7 @@ export class EventosMembresiaService {
       data.rol_origem = ultimoEvento?.rol ?? null;
       data.rol = dto.rol;
     } else {
-      const rolsPermitidos = await this.regrasEnum.getValoresPermitidos(
-        'membresia',
-        'Rols de Admissão',
-        dto.tipo_evento,
-      );
+      const rolsPermitidos = valoresDaRegra(regras, 'Rols de Admissão', dto.tipo_evento);
       if (!rolsPermitidos.includes(dto.rol)) {
         throw new BadRequestException('Rol inválido para admissão.');
       }
@@ -168,40 +150,25 @@ export class EventosMembresiaService {
     const tipoEfetivo = dto.tipo_evento ?? evento.tipo_evento;
     const motivacaoEfetiva = dto.motivacao_evento ?? evento.motivacao_evento;
 
+    const regras = await this.regrasEnum.getRegrasPorModulo('membresia', igrejaId);
     const nomeRegraMotivacao = `Motivações de ${TIPO_EVENTO_LABEL[tipoEfetivo]}`;
-    const motivacoesPermitidas = await this.regrasEnum.getValoresPermitidos(
-      'membresia',
-      nomeRegraMotivacao,
-      tipoEfetivo,
-    );
+    const motivacoesPermitidas = valoresDaRegra(regras, nomeRegraMotivacao, tipoEfetivo);
     if (!motivacoesPermitidas.includes(motivacaoEfetiva)) {
       throw new BadRequestException('Motivação inválida para este tipo de evento.');
     }
 
     if (tipoEfetivo === TipoEvento.DEMISSAO) {
-      const rolMapeado = await this.regrasEnum.getValorMapeado(
-        'membresia',
-        'Rol de Destino por Motivação de Demissão',
-        motivacaoEfetiva,
-      );
+      const rolMapeado = valoresDaRegra(regras, 'Rol de Destino por Motivação de Demissão', motivacaoEfetiva)[0];
       if (rolMapeado) dto.rol = rolMapeado as any;
     }
 
     if (tipoEfetivo === TipoEvento.MUDANCA_DE_ROL) {
       const rolEfetivo = (dto.rol ?? evento.rol) as MembresiaRol;
-      const rolsPermitidos = await this.regrasEnum.getValoresPermitidos(
-        'membresia',
-        'Rols de Mudança de Rol',
-        tipoEfetivo,
-      );
+      const rolsPermitidos = valoresDaRegra(regras, 'Rols de Mudança de Rol', tipoEfetivo);
       if (!rolsPermitidos.includes(rolEfetivo)) {
         throw new BadRequestException('Rol inválido para mudança de rol.');
       }
-      const motivacoesPorRol = await this.regrasEnum.getValoresPermitidos(
-        'membresia',
-        'Motivações por Rol de Destino',
-        rolEfetivo,
-      );
+      const motivacoesPorRol = valoresDaRegra(regras, 'Motivações por Rol de Destino', rolEfetivo);
       if (!motivacoesPorRol.includes(motivacaoEfetiva)) {
         throw new BadRequestException('Motivação inválida para o rol de destino selecionado.');
       }
@@ -209,7 +176,7 @@ export class EventosMembresiaService {
 
     if (tipoEfetivo === TipoEvento.ADMISSAO) {
       const rolEfetivo = (dto.rol ?? evento.rol) as MembresiaRol;
-      const rolsPermitidos = await this.regrasEnum.getValoresPermitidos('membresia', 'Rols de Admissão', tipoEfetivo);
+      const rolsPermitidos = valoresDaRegra(regras, 'Rols de Admissão', tipoEfetivo);
       if (!rolsPermitidos.includes(rolEfetivo)) {
         throw new BadRequestException('Rol inválido para admissão.');
       }

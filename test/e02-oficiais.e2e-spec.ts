@@ -41,7 +41,15 @@ integration('E02: comandos de oficiais no banco descartável', () => {
     const diacono = ids[0];
     const dados = { modalidade: 'Designação', concilio: 'Presbitério', ato: 'Ato externo', data_inicio: '2026-01-01', exercicio_institucional: true, evidencia: 'Documento externo' };
     await expect(service.registrarVinculoPastoral(igreja, usuario, diacono, dados)).rejects.toThrow();
-    const docente = await service.cadastrar(igreja, usuario, { pessoa_id: pessoaId, tipo: 'PRESBITERO_DOCENTE' }); ids.push(docente.id);
+    const oficioDocente = { pessoa_id: pessoaId, tipo: 'PRESBITERO_DOCENTE' as const };
+    await expect(service.cadastrar(igreja, usuario, oficioDocente)).rejects.toThrow('já tem um ofício ativo');
+    const docente = await service.cadastrar(igreja, usuario, { ...oficioDocente, ativo: false }); ids.push(docente.id);
+    await expect(service.cadastrar(igreja, usuario, { ...oficioDocente, ativo: false })).rejects.toMatchObject({ code: 'P2002' });
+    await expect(service.alterarSituacao(igreja, usuario, docente.id, { ativo: true })).rejects.toThrow('já tem um ofício ativo');
+    await expect(service.alterarSituacao(outra, usuario, diacono, { ativo: false })).rejects.toThrow();
+    await service.alterarSituacao(igreja, usuario, diacono, { ativo: false });
+    expect(await service.alterarSituacao(igreja, usuario, docente.id, { ativo: true })).toEqual({ id: docente.id, ativo: true });
+    expect(await prisma.evento_oficial.count({ where: { oficial_id: diacono } })).toBe(2);
     const vinculo = await service.registrarVinculoPastoral(igreja, usuario, docente.id, dados);
     expect(vinculo.data_fim).toBeNull();
     await expect(service.registrarVinculoPastoral(igreja, usuario, docente.id, dados)).rejects.toThrow();
@@ -52,6 +60,17 @@ integration('E02: comandos de oficiais no banco descartável', () => {
     expect(encerrado.autoridade_fim).toBe('Presbitério');
     await expect(service.encerrarVinculoPastoral(igreja, usuario, vinculo.id, fim)).rejects.toThrow();
     await expect(service.registrarVinculoPastoral(outra, usuario, docente.id, dados)).rejects.toThrow();
+  });
+  it('mantém somente um ofício ativo quando registros distintos são reativados em paralelo', async () => {
+    const [diacono, docente] = ids;
+    await service.alterarSituacao(igreja, usuario, docente, { ativo: false });
+    const resultados = await Promise.allSettled([
+      service.alterarSituacao(igreja, usuario, diacono, { ativo: true }),
+      service.alterarSituacao(igreja, usuario, docente, { ativo: true }),
+    ]);
+    expect(resultados.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(await prisma.oficial.count({ where: { igreja_id: igreja, pessoa_id: pessoaId } })).toBe(2);
+    expect(await prisma.oficial.count({ where: { igreja_id: igreja, pessoa_id: pessoaId, ativo: true } })).toBe(1);
   });
   it('preserva afastamento referenciado mesmo com atualização concorrente', async () => {
     const oficialId = ids[0];

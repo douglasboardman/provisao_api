@@ -41,6 +41,8 @@ model igreja {
   lancamentos        lancamentos[]
   logs_atividades    logs_atividades[]
   pessoas            pessoas[]
+  profissoes         profissoes[]
+  parametros_membresia parametro_membresia_igreja[]
   cat_despesa        cat_despesa[]
   cat_receita        cat_receita[]
   usuarios           usuarios[]
@@ -238,6 +240,7 @@ model pessoas {
   estado             estados_brasil?      // Atualizado para usar o Enum
   grupo_familiar_id  String?
   tratamento_id      Int?
+  profissao_id       String?
   conjuge_id         String?
   created_at         DateTime             @default(now())
   updated_at         DateTime             @updatedAt
@@ -247,6 +250,7 @@ model pessoas {
   acoes              acoes[]
   grupos_familiares  grupos_familiares?   @relation(fields: [grupo_familiar_id], references: [id], onUpdate: NoAction, map: "pessoas_ibfk_1")
   tratamentos        tratamentos?         @relation(fields: [tratamento_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "pessoas_tratamento_fk")
+  profissao          profissoes?          @relation(fields: [profissao_id, igreja_id], references: [id, igreja_id], onDelete: NoAction, onUpdate: NoAction, map: "pessoas_profissao_igreja_fkey")
   conjuge            pessoas?             @relation("PessoaConjuge", fields: [conjuge_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "pessoas_conjuge_fk")
   conjuge_de         pessoas[]            @relation("PessoaConjuge")
   eventos_membresia  eventos_membresia[]
@@ -254,6 +258,7 @@ model pessoas {
   competencias_acesso competencia_acesso[]
   oficiais           oficial[]
   conferencias_eleicao conferencia_eleicao_oficial[]
+  indicacoes_eleicao indicacao_eleicao_oficial[]
   decisoes_eleitorais decisao_revisao_eleitoral[]
   decisoes_orgaos decisao_revisao_orgao[]
   correcoes_conteudo correcao_conteudo_membresia[]
@@ -266,6 +271,7 @@ model pessoas {
   competencias_unidades competencia_unidades[]
 
   @@unique([id, igreja_id])
+  @@index([igreja_id, profissao_id])
   // Um CPF ou Email só deve ser único DENTRO da mesma igreja
   @@unique([igreja_id, cpf], map: "pessoas_igreja_cpf_UNIQUE")
   @@unique([igreja_id, email], map: "pessoas_igreja_email_UNIQUE")
@@ -358,6 +364,7 @@ model usuarios {
   competencias_revogadas competencia_acesso[] @relation("CompetenciaRevogador")
   politicas_eleicao_criadas politica_eleicao_oficial[]
   conferencias_eleicao_criadas conferencia_eleicao_oficial[]
+  indicacoes_eleicao_registradas indicacao_eleicao_oficial[]
   acessos_sensiveis_recebidos acesso_eventos_sensiveis[] @relation("AcessoSensivelTitular")
   acessos_sensiveis_concedidos acesso_eventos_sensiveis[] @relation("AcessoSensivelConcedente")
   acessos_sensiveis_revogados acesso_eventos_sensiveis[] @relation("AcessoSensivelRevogador")
@@ -823,6 +830,16 @@ model eventos_membresia {
   @@index([igreja_id], map: "eventos_membresia_igreja_id")
 }
 
+model profissoes {
+  id         String @id @default(uuid())
+  igreja_id  String
+  nome       String @db.VarChar(120)
+  igreja     igreja @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  pessoas    pessoas[]
+
+  @@unique([id, igreja_id])
+}
+
 model tratamentos {
   id         Int       @id @default(autoincrement())
   descricao  String    @db.VarChar(100)
@@ -845,8 +862,21 @@ model regras_relacao_enum {
   updated_at           DateTime          @updatedAt
 
   valores              relacao_enum_valores[]
+  parametros_igreja    parametro_membresia_igreja[]
 
   @@unique([modulo, nome])
+}
+
+model parametro_membresia_igreja {
+  igreja_id  String
+  regra_id   String
+  valores    Json
+  updated_at DateTime @updatedAt
+  igreja     igreja @relation(fields: [igreja_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  regra      regras_relacao_enum @relation(fields: [regra_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([igreja_id, regra_id])
+  @@index([regra_id])
 }
 
 model relacao_enum_valores {
@@ -999,6 +1029,7 @@ model oficial {
   igreja_id         String
   pessoa_id         String
   tipo              oficio_tipo
+  ativo             Boolean @default(true)
   criado_em         DateTime @default(now())
   pessoa            pessoas @relation(fields: [pessoa_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: NoAction)
   mandatos          mandato_oficial[]
@@ -1011,6 +1042,7 @@ model oficial {
 
   @@unique([id, igreja_id])
   @@unique([igreja_id, pessoa_id, tipo])
+  // A migração oficial_ativo_por_pessoa garante a unicidade de (igreja_id, pessoa_id) onde ativo = true.
 }
 
 model mandato_oficial {
@@ -1028,6 +1060,8 @@ model mandato_oficial {
   avaliacao_eleicao Json
   conferencia_id   String? @unique
   conferencia      conferencia_eleicao_oficial? @relation(fields: [conferencia_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: NoAction)
+  indicacao_id      String? @unique
+  indicacao         indicacao_eleicao_oficial? @relation(fields: [indicacao_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: NoAction)
   criado_em         DateTime @default(now())
   oficial           oficial @relation(fields: [oficial_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: NoAction)
   revisoes_pendentes revisao_eleitoral_item[]
@@ -1035,7 +1069,27 @@ model mandato_oficial {
 
   @@unique([id, igreja_id])
   @@unique([conferencia_id, igreja_id])
+  @@unique([indicacao_id, igreja_id])
   @@index([igreja_id, oficial_id, data_posse])
+}
+
+model indicacao_eleicao_oficial {
+  id                    String @id @default(uuid())
+  igreja_id             String
+  pessoa_id             String
+  oficio                oficio_tipo
+  ata_conselho_versao_id String
+  data_assembleia       DateTime @db.Date
+  registrado_por_id     String
+  criado_em             DateTime @default(now())
+  pessoa                pessoas @relation(fields: [pessoa_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: NoAction)
+  ata_conselho          documento_versao @relation(fields: [ata_conselho_versao_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: NoAction)
+  registrado_por        usuarios @relation(fields: [registrado_por_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: NoAction)
+  mandato               mandato_oficial?
+
+  @@unique([id, igreja_id])
+  @@unique([igreja_id, pessoa_id, oficio, data_assembleia], map: "indicacao_eleicao_pessoa_oficio_assembleia_key")
+  @@index([igreja_id, data_assembleia])
 }
 
 model evento_oficial {
@@ -1610,6 +1664,7 @@ model documento {
   @@index([igreja_id, contexto_id, criado_em])
 }
 model documento_versao {
+  indicacoes_eleicao indicacao_eleicao_oficial[]
   referencias_ata_inst referencia_ata_institucional[]
   referencias_ata_oficial referencia_ata_oficial[]
   referencias_ata_membresia referencia_ata_membresia[]

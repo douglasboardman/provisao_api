@@ -21,6 +21,7 @@ export const CreatePessoaSchema = z.object({
   estado: z.nativeEnum(Estado, { error: 'O estado informado é inválido.' }).optional(),
   grupo_familiar_id: z.string().uuid('O grupo familiar precisa ser um UUID válido.').optional(),
   tratamento_id: z.number().int().positive().optional(),
+  profissao_id: z.uuid('A profissão precisa ser um UUID válido.').nullish(),
   conjuge_id: z.string().uuid('O cônjuge precisa ser um UUID válido.').optional(),
 });
 

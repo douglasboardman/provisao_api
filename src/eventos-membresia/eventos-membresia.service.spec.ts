@@ -24,11 +24,13 @@ const regras = {
 
 const mockPrisma = {
   regras_relacao_enum: {
-    findUnique: jest.fn(async ({ where }) => ({
-      valores: Object.entries(regras[where.modulo_nome.nome] ?? {}).flatMap(
+    findMany: jest.fn(async () => Object.entries(regras).map(([nome, entradas]) => ({
+      nome,
+      parametros_igreja: [],
+      valores: Object.entries(entradas).flatMap(
         ([valor_classificador, valores]) => (valores as string[]).map(valor_classificado => ({ valor_classificador, valor_classificado })),
       ),
-    })),
+    }))),
   },
   pessoas: { findFirst: jest.fn() },
   eventos_membresia: {

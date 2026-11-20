@@ -1,3 +1,4 @@
+import { bloquearRegrasMembresia } from '../regras-relacao-enum/parametros-membresia';
 import { createHash } from 'crypto';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { logs_atividades_acao, Prisma, usuarios_perfil } from '@prisma/client';
@@ -144,8 +145,7 @@ export class DecisaoRevisaoOrgaoService {
       if (!await tx.pessoas.findFirst({ where: { id: pessoa, igreja_id: igreja }, select: { id: true } })) throw new NotFoundException('Pessoa não encontrada nesta igreja.');
       if (v.oficial_id && !await tx.oficial.findFirst({ where: { id: v.oficial_id, igreja_id: igreja, pessoa_id: pessoa }, select: { id: true } })) throw new NotFoundException('Oficial não encontrado para esta pessoa e igreja.');
       if (v.operacao === 'CONTEUDO' || v.operacao === 'INSERCAO') {
-        await tx.$queryRaw`SELECT id FROM regras_relacao_enum WHERE modulo = 'membresia' ORDER BY id FOR UPDATE`;
-        await tx.$queryRaw`SELECT v.id FROM relacao_enum_valores v JOIN regras_relacao_enum r ON r.id = v.regra_id WHERE r.modulo = 'membresia' ORDER BY v.id FOR SHARE OF v`;
+        await bloquearRegrasMembresia(tx, igreja);
       }
       let detalhes: DetalheVinculoOrgao[] = [];
       const coletar = (itens: DetalheVinculoOrgao[]) => { detalhes = itens; };

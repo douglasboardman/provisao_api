@@ -43,7 +43,8 @@ integration('E02: consultas HTTP protegidas', () => {
     await request(app.getHttpServer()).post('/oficiais').set('Cookie', cookieAuditor).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ pessoa_id: pessoaId, tipo: 'PRESBITERO_REGENTE' }).expect(403);
     await request(app.getHttpServer()).post('/oficiais').set('Cookie', cookieB).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ pessoa_id: pessoaId, tipo: 'PRESBITERO_REGENTE' }).expect(404);
     await request(app.getHttpServer()).post('/oficiais').set('Cookie', cookieA).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ pessoa_id: pessoaId, tipo: 'ERRO' }).expect(400);
-    const criacao = await request(app.getHttpServer()).post('/oficiais').set('Cookie', cookieA).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ pessoa_id: pessoaId, tipo: 'PRESBITERO_REGENTE' }).expect(201);
+    await request(app.getHttpServer()).post('/oficiais').set('Cookie', cookieA).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ pessoa_id: pessoaId, tipo: 'PRESBITERO_REGENTE' }).expect(409);
+    const criacao = await request(app.getHttpServer()).post('/oficiais').set('Cookie', cookieA).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ pessoa_id: pessoaId, tipo: 'PRESBITERO_REGENTE', ativo: false }).expect(201);
     oficialCriado = criacao.body.id;
     await request(app.getHttpServer()).post('/oficiais').set('Cookie', cookieA).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ pessoa_id: pessoaId, tipo: 'PRESBITERO_REGENTE' }).expect(409);
     const lista = await request(app.getHttpServer()).get('/oficiais').set('Cookie', cookieA).expect(200);

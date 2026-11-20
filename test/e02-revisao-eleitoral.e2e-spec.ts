@@ -94,7 +94,7 @@ integration('E02: decisão formal e sinalização eleitoral', () => {
     } finally { await appConclusao.close(); if (featureAnterior === undefined) delete process.env.FEATURE_GOVERNANCA; else process.env.FEATURE_GOVERNANCA = featureAnterior; }
     expect(await new SituacaoExercicioService(p).consultar(igreja, usuario, oficial, '2024-02-01')).toMatchObject({ revisao_pendente: false });
     const outroOficial = randomUUID(), outraConferencia = randomUUID();
-    await p.oficial.create({ data: { id: outroOficial, igreja_id: igreja, pessoa_id: pessoa, tipo: 'PRESBITERO_REGENTE' } });
+    await p.oficial.create({ data: { id: outroOficial, igreja_id: igreja, pessoa_id: pessoa, tipo: 'PRESBITERO_REGENTE', ativo: false } });
     await p.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: outroOficial, tipo: 'ORDENACAO', data_efeito: new Date('2020-01-01'), ordem: 1, autoridade: 'Concílio', evidencia: 'Livro' } });
     await p.conferencia_eleicao_oficial.create({ data: { id: outraConferencia, igreja_id: igreja, pessoa_id: pessoa, politica_id: politica, data_eleicao: new Date('2024-04-01'), data_recepcao: new Date('2020-01-01'), evidencia_recepcao: 'Livro', capacidade_confirmada: true, evidencia_capacidade: 'Livro', resultado: {}, criado_por_id: usuario } });
     const itemNovo = await p.revisao_eleitoral_item.create({ data: { igreja_id: igreja, decisao_id: decisaoEfetiva.id, conferencia_id: outraConferencia } });

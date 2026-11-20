@@ -44,6 +44,115 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
     expect(list.body.map((user: { id: string }) => user.id)).not.toContain('e1000000-0000-4000-8000-000000000002');
     await request(app.getHttpServer()).get('/usuarios/e1000000-0000-4000-8000-000000000002').set('Cookie', `provisao_session=${token}`).expect(404);
   });
+  it('mantém o catálogo de profissões por igreja e permite vincular e desvincular uma pessoa', async () => {
+    const prisma = app.get(PrismaService);
+    const outraIgreja = 'e0000000-0000-4000-8000-000000000002';
+    const sufixo = randomUUID();
+    const nome = `Técnica de som ${sufixo}`;
+    const outra = await prisma.profissoes.create({ data: { igreja_id: outraIgreja, nome } });
+    const http = (metodo: 'get' | 'post' | 'patch' | 'delete', rota: string) => request(app.getHttpServer())[metodo](rota)
+      .set('Cookie', `provisao_session=${token}`).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1');
+    let profissaoId: string | undefined;
+    let pessoaId: string | undefined;
+    try {
+      const criada = await http('post', '/profissoes').send({ nome: `  Técnica  de som ${sufixo} ` }).expect(201);
+      profissaoId = criada.body.id;
+      expect(criada.body.nome).toBe(nome);
+      await http('post', '/profissoes').send({ nome: `técnica de som ${sufixo}` }).expect(409);
+      const lista = await http('get', '/profissoes').expect(200);
+      expect(lista.body.map((p: { id: string }) => p.id)).toContain(profissaoId);
+      expect(lista.body.map((p: { id: string }) => p.id)).not.toContain(outra.id);
+      expect(lista.body).toEqual(expect.arrayContaining([expect.objectContaining({ nome: 'Do lar' })]));
+      await http('patch', `/profissoes/${outra.id}`).send({ nome: 'Outro nome' }).expect(404);
+
+      const pessoa = { nome_completo: 'Pessoa sintética', sexo: 'FEMININO', data_nascimento: '1990-01-01' };
+      await http('post', '/pessoas').send({ ...pessoa, profissao_id: outra.id }).expect(400);
+      const cadastro = await http('post', '/pessoas').send({ ...pessoa, profissao_id: profissaoId }).expect(201);
+      pessoaId = cadastro.body.id;
+      expect(cadastro.body.profissao_id).toBe(profissaoId);
+      await http('patch', `/profissoes/${profissaoId}`).send({ nome: `Técnica de áudio ${sufixo}` }).expect(200);
+      await http('delete', `/profissoes/${profissaoId}`).expect(409);
+      const atualizado = await http('patch', `/pessoas/${pessoaId}`).send({ nome_completo: 'Pessoa atualizada' }).expect(200);
+      expect(atualizado.body.profissao_id).toBe(profissaoId);
+      const semProfissao = await http('patch', `/pessoas/${pessoaId}`).send({ profissao_id: null }).expect(200);
+      expect(semProfissao.body.profissao_id).toBeNull();
+      await http('delete', `/profissoes/${profissaoId}`).expect(200);
+    } finally {
+      if (pessoaId) await prisma.pessoas.deleteMany({ where: { id: pessoaId } });
+      await prisma.profissoes.deleteMany({ where: { id: { in: profissaoId ? [outra.id, profissaoId] : [outra.id] } } });
+    }
+  });
+  it('permite ao secretário editar profissões e parâmetros de membresia da própria igreja', async () => {
+    const prisma = app.get(PrismaService);
+    const sessoes = app.get(SessionService);
+    const igreja = 'e0000000-0000-4000-8000-000000000001';
+    const secretarioId = randomUUID();
+    const pessoaId = randomUUID();
+    const regrasCriadas: string[] = [];
+    const regrasUsadas: string[] = [];
+    let profissaoId: string | undefined;
+    const http = (sessao: string, metodo: 'get' | 'post' | 'patch' | 'put' | 'delete', rota: string) =>
+      request(app.getHttpServer())[metodo](rota).set('Cookie', `provisao_session=${sessao}`)
+        .set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1');
+    async function garantirRegra(nome: string, enum_classificado: string, valor_classificado: string) {
+      const existente = await prisma.regras_relacao_enum.findUnique({ where: { modulo_nome: { modulo: 'membresia', nome } } });
+      if (existente) return existente.id;
+      const criada = await prisma.regras_relacao_enum.create({ data: {
+        modulo: 'membresia', nome, tipo_regra: 'FILTRO', enum_classificador: 'membresia_tipo_evento', enum_classificado,
+        valores: { create: { valor_classificador: 'ADMISSAO', valor_classificado } },
+      } });
+      regrasCriadas.push(criada.id);
+      return criada.id;
+    }
+    try {
+      const secretario = await prisma.usuarios.create({ data: {
+        id: secretarioId, igreja_id: igreja, nome_usuario: 'Secretário de teste', email_login: `${secretarioId}@example.invalid`,
+        senha_hash: 'inutilizavel', perfil: 'SECRETARIO', ativo: true,
+      } });
+      const outraConta = await prisma.usuarios.findUniqueOrThrow({ where: { id: 'e1000000-0000-4000-8000-000000000002' } });
+      const sessao = await sessoes.create(secretario.id, igreja, secretario.auth_version);
+      const outraSessao = await sessoes.create(outraConta.id, outraConta.igreja_id, outraConta.auth_version);
+      const rols = await garantirRegra('Rols de Admissão', 'membresia_rol', 'NAO_COMUNGANTES');
+      const motivos = await garantirRegra('Motivações de Admissão', 'membresia_motivacao_evento', 'PROFISSAO_DE_FE');
+      regrasUsadas.push(rols, motivos);
+      const base = '/regras-relacao-enum';
+      const modulo = `${base}/modulo/membresia`;
+      const padrao = (await http(outraSessao, 'get', modulo).expect(200)).body;
+      await http(sessao, 'get', `${base}/enums`).expect(200);
+      await http(sessao, 'put', `${base}/${rols}/valores`).send({ valores: [] }).expect(403);
+      await http(sessao, 'put', `${modulo}/${rols}/valores`).send({ valores: [] }).expect(200);
+      await http(sessao, 'put', `${modulo}/${motivos}/valores`).send({
+        valores: [{ valor_classificador: 'ADMISSAO', valor_classificado: 'PROFISSAO_DE_FE' }],
+      }).expect(200);
+      expect((await http(sessao, 'get', modulo).expect(200)).body).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: rols, valores: [] }),
+      ]));
+      await prisma.pessoas.create({ data: {
+        id: pessoaId, igreja_id: igreja, nome_completo: 'Pessoa de teste', data_nascimento: new Date('1980-01-01'), sexo: 'MASCULINO',
+      } });
+      const admissao = { pessoa_id: pessoaId, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: '2024-02-01' };
+      const bloqueada = await http(sessao, 'post', '/eventos-membresia').send(admissao).expect(400);
+      expect(bloqueada.body.message).toBe('Rol inválido para admissão.');
+      await http(sessao, 'put', `${modulo}/${rols}/valores`).send({
+        valores: [{ valor_classificador: 'ADMISSAO', valor_classificado: 'COMUNGANTES' }],
+      }).expect(200);
+      await http(sessao, 'post', '/eventos-membresia').send(admissao).expect(201);
+      expect((await http(outraSessao, 'get', modulo).expect(200)).body).toEqual(padrao);
+
+      const profissao = await http(sessao, 'post', '/profissoes').send({ nome: `Profissão ${secretarioId}` }).expect(201);
+      profissaoId = profissao.body.id;
+      await http(sessao, 'patch', `/profissoes/${profissaoId}`).send({ nome: `Profissão editada ${secretarioId}` }).expect(200);
+      await http(sessao, 'delete', `/profissoes/${profissaoId}`).expect(200);
+    } finally {
+      await prisma.eventos_membresia.deleteMany({ where: { pessoa_id: pessoaId } });
+      await prisma.pessoas.deleteMany({ where: { id: pessoaId } });
+      if (profissaoId) await prisma.profissoes.deleteMany({ where: { id: profissaoId } });
+      await prisma.parametro_membresia_igreja.deleteMany({ where: { igreja_id: igreja, regra_id: { in: regrasUsadas } } });
+      await prisma.regras_relacao_enum.deleteMany({ where: { id: { in: regrasCriadas } } });
+      await prisma.logs_atividades.deleteMany({ where: { usuario_id: secretarioId } });
+      await prisma.usuarios.deleteMany({ where: { id: secretarioId } });
+    }
+  });
   it('identifica o mesmo e-mail pela igreja selecionada', async () => {
     const prisma = app.get(PrismaService);
     const ids = ['e1000000-0000-4000-8000-000000000001', 'e1000000-0000-4000-8000-000000000002'];

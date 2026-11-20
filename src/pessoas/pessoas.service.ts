@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client';
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { CreatePessoaDto } from './dto/create-pessoa.dto';
 import { UpdatePessoaDto } from './dto/update-pessoa.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -15,6 +15,12 @@ import { pessoas } from '@prisma/client';
 export class PessoasService {
   /** @param prisma O cliente Prisma para interações com o banco de dados. */
   constructor(private readonly prisma: PrismaService) {}
+
+  private async conferirProfissao(igreja_id: string, profissao_id?: string | null) {
+    if (!profissao_id) return;
+    const profissao = await this.prisma.profissoes.findFirst({ where: { id: profissao_id, igreja_id }, select: { id: true } });
+    if (!profissao) throw new BadRequestException('Selecione uma profissão cadastrada nesta igreja.');
+  }
 
   /**
    * Cria um novo registro de pessoa vinculado à igreja do solicitante.
@@ -32,6 +38,7 @@ export class PessoasService {
       }
     }
 
+    await this.conferirProfissao(igreja_id, restOfDto.profissao_id);
     return this.prisma.pessoas.create({
       data: {
         ...restOfDto,
@@ -90,6 +97,7 @@ export class PessoasService {
         throw new NotFoundException(`Pessoa (cônjuge) com o ID ${restOfDto.conjuge_id} não encontrada.`);
       }
     }
+    await this.conferirProfissao(igreja_id, restOfDto.profissao_id);
     const dataToUpdate: Record<string, unknown> = { ...restOfDto };
 
     if (data_nascimento) {

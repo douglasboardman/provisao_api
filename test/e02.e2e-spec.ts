@@ -9,7 +9,7 @@ import { SituacaoExercicioService } from '../src/oficiais/situacao-exercicio.ser
 import { ImpactoRetroativoService } from '../src/oficiais/impacto-retroativo.service';
 const integration = process.env.E00_INTEGRATION === '1' ? describe : describe.skip;
 const igreja = 'e0000000-0000-4000-8000-000000000001', outra = 'e0000000-0000-4000-8000-000000000002';
-const usuario = 'e1000000-0000-4000-8000-000000000001', pessoa = 'e2000000-0000-4000-8000-000000000001';
+const usuario = 'e1000000-0000-4000-8000-000000000001';
 integration('E02: políticas e conferências no banco descartável', () => {
   const prisma = new PrismaService();
   const politicaService = new PoliticaEleicaoService(prisma);
@@ -22,10 +22,11 @@ integration('E02: políticas e conferências no banco descartável', () => {
   let oficialId: string;
   const sufixo = randomUUID();
   let politicaId: string;
-  const eventoId = randomUUID();
+  const pessoa = randomUUID(), eventoId = randomUUID();
   beforeAll(async () => {
     if (process.env.DATABASE_URL !== 'postgresql://provisao_test:provisao_test@127.0.0.1:55439/provisao_test?schema=public') throw new Error('Exige banco descartável E00.');
     await prisma.$connect();
+    await prisma.pessoas.create({ data: { id: pessoa, igreja_id: igreja, nome_completo: 'Pessoa E02 Sintética', data_nascimento: new Date('1990-01-01'), sexo: 'MASCULINO' } });
     await prisma.eventos_membresia.create({ data: { id: eventoId, igreja_id: igreja, pessoa_id: pessoa, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: new Date('2024-01-01') } });
   });
   afterAll(async () => {
@@ -44,6 +45,7 @@ integration('E02: políticas e conferências no banco descartável', () => {
       await prisma.politica_eleicao_oficial.deleteMany({ where: { id: politicaId } });
     }
     await prisma.eventos_membresia.deleteMany({ where: { id: eventoId } });
+    await prisma.pessoas.deleteMany({ where: { id: pessoa } });
     await prisma.$disconnect();
   });
   it('persiste política, rejeita sobreposição e registra conferência auditada no escopo correto', async () => {
@@ -51,9 +53,10 @@ integration('E02: políticas e conferências no banco descartável', () => {
     const criada = await politicaService.registrar(igreja, usuario, policy);
     politicaId = criada.id;
     await expect(politicaService.registrar(igreja, usuario, { ...policy, versao: randomUUID() })).rejects.toThrow();
-    const input = { pessoa_id: pessoa, politica_id: politicaId, data_eleicao: '2026-01-01', data_recepcao: '2024-01-01', evidencia_recepcao: 'Livro sintético', capacidade_confirmada: true, evidencia_capacidade: 'Evidência sintética' };
+    const input = { pessoa_id: pessoa, politica_id: politicaId, data_eleicao: '2026-01-01', data_recepcao: '2024-02-01', evidencia_recepcao: 'Livro sintético', capacidade_confirmada: true, evidencia_capacidade: 'Evidência sintética' };
     const conferencia = await conferenciaService.registrar(igreja, usuario, input);
-    expect(conferencia.resultado).toMatchObject({ situacao: 'REQUISITOS_CONFERIDOS' });
+    expect(conferencia.data_recepcao.toISOString().slice(0, 10)).toBe('2024-01-01');
+    expect(conferencia.resultado).toMatchObject({ situacao: 'REQUISITOS_CONFERIDOS', evento_recepcao_id: eventoId });
     expect(await prisma.logs_atividades.count({ where: { registro_id: conferencia.id, tabela_afetada: 'conferencia_eleicao_oficial' } })).toBe(1);
     await expect(conferenciaService.registrar(outra, usuario, input)).rejects.toThrow();
     const oficial = await oficiais.cadastrar(igreja, usuario, { pessoa_id: pessoa, tipo: 'PRESBITERO_REGENTE' });

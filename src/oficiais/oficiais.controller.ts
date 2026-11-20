@@ -21,12 +21,13 @@ import { MandatoService } from './mandato.service';
 import { PoliticaEleicaoService } from '../elegibilidade/politica-eleicao.service';
 import { ConferenciaEleicaoService } from '../elegibilidade/conferencia-eleicao.service';
 import { SituacaoExercicioService } from './situacao-exercicio.service';
+import { IndicacoesEleicaoService } from './indicacoes-eleicao.service';
 
 @Controller('oficiais')
 @UseGuards(AuthGuard, RolesGuard, GovernancaGuard)
 @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
 export class OficiaisController {
-  constructor(private readonly revisoesEleitorais: RevisaoEleitoralService, private readonly insercoesOficial: InsercaoRetroativaOficialService, private readonly correcoesConteudo: CorrecaoConteudoService, private readonly insercoesRetroativas: InsercaoRetroativaService, private readonly prisma: PrismaService, private readonly alertas: AlertasOficiaisService, private readonly exercicio: SituacaoExercicioService, private readonly oficiais: OficiaisService, private readonly mandatos: MandatoService, private readonly politicas: PoliticaEleicaoService, private readonly conferencias: ConferenciaEleicaoService, private readonly acessoSensivel: AcessoSensivelService, private readonly acervo: AcervoHistoricoService, private readonly correcoes: CorrecaoMembresiaService, private readonly identidadePastoral: IdentidadePastoralService, private readonly notificacoes: NotificacoesMandatoService, private readonly ordenacoes: OrdenacaoMembresiaService) {}
+  constructor(private readonly revisoesEleitorais: RevisaoEleitoralService, private readonly insercoesOficial: InsercaoRetroativaOficialService, private readonly correcoesConteudo: CorrecaoConteudoService, private readonly insercoesRetroativas: InsercaoRetroativaService, private readonly prisma: PrismaService, private readonly alertas: AlertasOficiaisService, private readonly exercicio: SituacaoExercicioService, private readonly oficiais: OficiaisService, private readonly mandatos: MandatoService, private readonly politicas: PoliticaEleicaoService, private readonly conferencias: ConferenciaEleicaoService, private readonly acessoSensivel: AcessoSensivelService, private readonly acervo: AcervoHistoricoService, private readonly correcoes: CorrecaoMembresiaService, private readonly identidadePastoral: IdentidadePastoralService, private readonly notificacoes: NotificacoesMandatoService, private readonly ordenacoes: OrdenacaoMembresiaService, private readonly indicacoes: IndicacoesEleicaoService) {}
 
   @Get()
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
@@ -34,7 +35,7 @@ export class OficiaisController {
   async listar(@Request() req, @Query('cursor') cursor?: string) {
     if (cursor && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cursor)) throw new BadRequestException('Cursor inválido.');
     if (cursor && !await this.prisma.oficial.findFirst({ where: { id: cursor, igreja_id: req.user.igreja_id }, select: { id: true } })) throw new BadRequestException('Cursor inválido.');
-    const rows = await this.prisma.oficial.findMany({ where: { igreja_id: req.user.igreja_id }, select: { id: true, tipo: true, pessoa: { select: { id: true, nome_completo: true } } }, orderBy: { id: 'asc' }, take: 51, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
+    const rows = await this.prisma.oficial.findMany({ where: { igreja_id: req.user.igreja_id }, select: { id: true, tipo: true, ativo: true, pessoa: { select: { id: true, nome_completo: true } } }, orderBy: { id: 'asc' }, take: 51, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
     const itens = rows.slice(0, 50);
     return { itens, proximo_cursor: rows.length > 50 ? itens[itens.length - 1].id : null };
   }
@@ -301,6 +302,34 @@ export class OficiaisController {
     return this.prisma.politica_eleicao_oficial.findMany({ where: { igreja_id: req.user.igreja_id }, select: { id: true, versao: true, fonte: true, vigente_desde: true, vigente_ate: true }, orderBy: [{ vigente_desde: 'desc' }, { id: 'asc' }] });
   }
 
+  @Get('indicacoes/atas')
+  @Header('Cache-Control', 'private, no-store')
+  atasDeEleicao(@Request() req, @Query('tipo') tipo: string, @Query('busca') busca?: string) {
+    return this.indicacoes.listarAtas(req.user, tipo, busca);
+  }
+
+  @Get('indicacoes/candidatos')
+  @Header('Cache-Control', 'private, no-store')
+  candidatosDeEleicao(@Request() req, @Query('ata') ata: string, @Query('busca') busca?: string) {
+    return this.indicacoes.candidatos(req.user, ata, busca);
+  }
+
+  @Get('indicacoes')
+  @Header('Cache-Control', 'private, no-store')
+  listarIndicacoes(@Request() req, @Query('assembleia') assembleia?: string) {
+    return this.indicacoes.listar(req.user, assembleia);
+  }
+
+  @Post('indicacoes')
+  registrarIndicacao(@Request() req, @Body() dados: unknown) {
+    return this.comando(() => this.indicacoes.registrar(req.user, dados));
+  }
+
+  @Post('indicacoes/mandatos')
+  registrarMandatoPorIndicacao(@Request() req, @Body() dados: unknown) {
+    return this.comando(() => this.indicacoes.registrarMandato(req.user, dados));
+  }
+
   @Get('conferencias/:pessoaId')
   @Header('Cache-Control', 'private, no-store')
   async listarConferencias(@Request() req, @Param('pessoaId', ParseUUIDPipe) pessoaId: string) {
@@ -348,6 +377,11 @@ export class OficiaisController {
   @Post()
   cadastrar(@Request() req, @Body() dados: Parameters<OficiaisService['cadastrar']>[2]) {
     return this.comando(() => this.oficiais.cadastrar(req.user.igreja_id, req.user.sub, dados));
+  }
+
+  @Patch(':id/situacao')
+  alterarSituacao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OficiaisService['alterarSituacao']>[3]) {
+    return this.comando(() => this.oficiais.alterarSituacao(req.user.igreja_id, req.user.sub, id, dados));
   }
 
   @Post('politicas')

@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { logs_atividades_acao, oficial_evento_tipo, oficio_tipo, Prisma, usuarios_perfil } from '@prisma/client';
 import { z } from 'zod';
 import { exigirAcessoSensivel } from './acesso-sensivel.service';
@@ -6,7 +6,8 @@ import { PrismaService } from '../prisma/prisma.service';
 
 const dia = z.iso.date().refine(s => { const d = new Date(`${s}T00:00:00.000Z`); return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === s; });
 const texto = z.string().trim().min(1).max(1000);
-const registroSchema = z.object({ pessoa_id: z.string().uuid(), tipo: z.nativeEnum(oficio_tipo) }).strict();
+const registroSchema = z.object({ pessoa_id: z.string().uuid(), tipo: z.nativeEnum(oficio_tipo), ativo: z.boolean().default(true) }).strict();
+const situacaoSchema = z.object({ ativo: z.boolean() }).strict();
 const eventoSchema = z.object({ tipo: z.nativeEnum(oficial_evento_tipo), data_efeito: dia, ordem: z.number().int().min(1).max(9999), autoridade: texto, evidencia: texto, observacoes: z.string().trim().max(1000).optional(), evento_restaurado_id: z.string().uuid().optional() }).strict().refine(v => (v.tipo === 'RESTAURACAO') === !!v.evento_restaurado_id);
 const encerramentoSchema = z.object({ motivo: texto, autoridade: texto, evidencia: texto }).strict();
 const vinculoSchema = z.object({ modalidade: texto, concilio: texto, ato: texto, data_inicio: dia, data_fim: dia.optional(), encerramento: encerramentoSchema.optional(), exercicio_institucional: z.boolean(), evidencia: texto }).strict().refine(v => (!v.data_fim && !v.encerramento) || (!!v.data_fim && !!v.encerramento && v.data_fim >= v.data_inicio));
@@ -22,7 +23,8 @@ export class OficiaisService {
     if (!usuario) throw new ForbiddenException('Operador não autorizado nesta igreja.');
   }
   private async oficialBloqueado(tx: Tx, igrejaId: string, oficialId: string) {
-    const registros = await tx.$queryRaw<Array<{ id: string; tipo: oficio_tipo }>>`SELECT id, tipo FROM oficial WHERE id = ${oficialId} AND igreja_id = ${igrejaId} FOR UPDATE`;
+    const registros = await tx.$queryRaw<Array<{ id: string; tipo: oficio_tipo; pessoa_id: string; ativo: boolean }>>`
+      SELECT id, tipo, pessoa_id, ativo FROM oficial WHERE id = ${oficialId} AND igreja_id = ${igrejaId} FOR UPDATE`;
     if (!registros.length) throw new NotFoundException('Oficial não encontrado nesta igreja.');
     return registros[0];
   }
@@ -30,16 +32,44 @@ export class OficiaisService {
     await tx.logs_atividades.create({ data: { igreja_id: igrejaId, usuario_id: usuarioId, acao: logs_atividades_acao.CRIACAO, tabela_afetada: tabela, registro_id: id, dados_novos: dados } });
   }
 
-  async cadastrar(igrejaId: string, usuarioId: string, dados: z.infer<typeof registroSchema>) {
+  private async conferirOficioAtivo(tx: Tx, igrejaId: string, pessoaId: string) {
+    const ativo = await tx.oficial.findFirst({
+      where: { igreja_id: igrejaId, pessoa_id: pessoaId, ativo: true },
+      select: { id: true },
+    });
+    if (ativo) throw new ConflictException('Esta pessoa já tem um ofício ativo na igreja.');
+  }
+
+  async cadastrar(igrejaId: string, usuarioId: string, dados: z.input<typeof registroSchema>) {
     const validado = registroSchema.safeParse(dados);
     if (!validado.success) throw new BadRequestException('Dados do oficial inválidos.');
     return this.prisma.$transaction(async tx => {
       await this.autorizar(tx, igrejaId, usuarioId);
       const pessoa = await tx.pessoas.findFirst({ where: { id: validado.data.pessoa_id, igreja_id: igrejaId }, select: { id: true } });
       if (!pessoa) throw new NotFoundException('Pessoa não encontrada nesta igreja.');
-      const oficial = await tx.oficial.create({ data: { igreja_id: igrejaId, pessoa_id: pessoa.id, tipo: validado.data.tipo } });
-      await this.auditar(tx, igrejaId, usuarioId, 'oficial', oficial.id, { pessoa_id: pessoa.id, tipo: oficial.tipo });
+      if (validado.data.ativo) await this.conferirOficioAtivo(tx, igrejaId, pessoa.id);
+      const oficial = await tx.oficial.create({ data: { igreja_id: igrejaId, ...validado.data } });
+      await this.auditar(tx, igrejaId, usuarioId, 'oficial', oficial.id, { pessoa_id: pessoa.id, tipo: oficial.tipo, ativo: oficial.ativo });
       return oficial;
+    });
+  }
+
+  async alterarSituacao(igrejaId: string, usuarioId: string, oficialId: string, dados: z.infer<typeof situacaoSchema>) {
+    const validado = situacaoSchema.safeParse(dados);
+    if (!validado.success) throw new BadRequestException('Situação do ofício inválida.');
+    const { ativo } = validado.data;
+    return this.prisma.$transaction(async tx => {
+      await this.autorizar(tx, igrejaId, usuarioId);
+      const atual = await this.oficialBloqueado(tx, igrejaId, oficialId);
+      if (atual.ativo === ativo) return { id: atual.id, ativo };
+      if (ativo) await this.conferirOficioAtivo(tx, igrejaId, atual.pessoa_id);
+      const atualizado = await tx.oficial.update({ where: { id: atual.id }, data: { ativo }, select: { id: true, ativo: true } });
+      await tx.logs_atividades.create({ data: {
+        igreja_id: igrejaId, usuario_id: usuarioId, acao: logs_atividades_acao.ATUALIZACAO,
+        tabela_afetada: 'oficial', registro_id: atual.id,
+        dados_antigos: { ativo: atual.ativo }, dados_novos: { ativo },
+      } });
+      return atualizado;
     });
   }
 

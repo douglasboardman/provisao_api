@@ -1,8 +1,10 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { randomUUID } from "node:crypto";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "src/prisma/prisma.service";
 import { Prisma } from "@prisma/client";
-import { CreateRegraRelacaoEnumDto } from "./dto/create-regra-relacao-enum.dto";
+import { CreateRegraRelacaoEnumDto, ReplaceValoresDto } from "./dto/create-regra-relacao-enum.dto";
 import { UpdateRegraRelacaoEnumDto } from "./dto/update-regra-relacao-enum.dto";
+import { consultarRegrasDaIgreja, regraComValoresLocais } from "./parametros-membresia";
 
 type RegraComValores = Prisma.regras_relacao_enumGetPayload<{
   include: { valores: true };
@@ -10,61 +12,10 @@ type RegraComValores = Prisma.regras_relacao_enumGetPayload<{
 
 @Injectable()
 export class RegrasRelacaoEnumService {
-  private cache = new Map<string, RegraComValores>();
-
   constructor(private readonly prisma: PrismaService) {}
 
-  private cacheKey(modulo: string, nome: string): string {
-    return `${modulo}:${nome}`;
-  }
-
-  private invalidateCache(): void {
-    this.cache.clear();
-  }
-
-  private async loadRegra(
-    modulo: string,
-    nome: string,
-  ): Promise<RegraComValores | null> {
-    const key = this.cacheKey(modulo, nome);
-    const cached = this.cache.get(key);
-    if (cached) return cached;
-
-    const regra = await this.prisma.regras_relacao_enum.findUnique({
-      where: { modulo_nome: { modulo, nome } },
-      include: { valores: true },
-    });
-
-    if (regra) this.cache.set(key, regra);
-    return regra;
-  }
-
-  async getValoresPermitidos(
-    modulo: string,
-    nomeRegra: string,
-    valorCassificador: string,
-  ): Promise<string[]> {
-    const regra = await this.loadRegra(modulo, nomeRegra);
-    if (!regra) return [];
-    return regra.valores
-      .filter((v) => v.valor_classificador === valorCassificador)
-      .map((v) => v.valor_classificado);
-  }
-
-  async getValorMapeado(
-    modulo: string,
-    nomeRegra: string,
-    valorClassificador: string,
-  ): Promise<string | null> {
-    const regra = await this.loadRegra(modulo, nomeRegra);
-    if (!regra) return null;
-    const entry = regra.valores.find(
-      (v) => v.valor_classificador === valorClassificador,
-    );
-    return entry?.valor_classificado ?? null;
-  }
-
-  async getRegrasPorModulo(modulo: string): Promise<RegraComValores[]> {
+  async getRegrasPorModulo(modulo: string, igreja: string): Promise<RegraComValores[]> {
+    if (modulo === "membresia") return consultarRegrasDaIgreja(this.prisma, igreja);
     return this.prisma.regras_relacao_enum.findMany({
       where: { modulo },
       include: { valores: true },
@@ -99,7 +50,6 @@ export class RegrasRelacaoEnumService {
   }
 
   async create(dto: CreateRegraRelacaoEnumDto): Promise<RegraComValores> {
-    this.invalidateCache();
     return this.prisma.regras_relacao_enum.create({
       data: dto,
       include: { valores: true },
@@ -111,7 +61,6 @@ export class RegrasRelacaoEnumService {
     dto: UpdateRegraRelacaoEnumDto,
   ): Promise<RegraComValores> {
     await this.findOne(id);
-    this.invalidateCache();
     return this.prisma.regras_relacao_enum.update({
       where: { id },
       data: dto,
@@ -121,16 +70,14 @@ export class RegrasRelacaoEnumService {
 
   async remove(id: string): Promise<void> {
     await this.findOne(id);
-    this.invalidateCache();
     await this.prisma.regras_relacao_enum.delete({ where: { id } });
   }
 
   async replaceValores(
     regraId: string,
-    valores: { valor_classificador: string; valor_classificado: string }[],
+    valores: ReplaceValoresDto["valores"],
   ): Promise<RegraComValores> {
     await this.findOne(regraId);
-    this.invalidateCache();
 
     return this.prisma.$transaction(async (tx) => {
       await tx.relacao_enum_valores.deleteMany({
@@ -151,6 +98,30 @@ export class RegrasRelacaoEnumService {
         where: { id: regraId },
         include: { valores: true },
       });
+    });
+  }
+
+  async replaceValoresDaIgreja(igreja: string, regraId: string, valores: ReplaceValoresDto["valores"]): Promise<RegraComValores> {
+    return this.prisma.$transaction(async tx => {
+      const bloqueadas = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM regras_relacao_enum WHERE id = ${regraId} AND modulo = 'membresia' FOR UPDATE
+      `;
+      if (!bloqueadas.length) throw new NotFoundException("Regra de membresia não encontrada.");
+      const regra = await tx.regras_relacao_enum.findUniqueOrThrow({ where: { id: regraId } });
+      const enums = this.getEnumsDisponiveis();
+      const classificadores = enums[regra.enum_classificador] ?? [];
+      const classificados = enums[regra.enum_classificado] ?? [];
+      const pares = new Set(valores.map(v => JSON.stringify([v.valor_classificador, v.valor_classificado])));
+      if (pares.size !== valores.length || valores.some(v => !classificadores.includes(v.valor_classificador) || !classificados.includes(v.valor_classificado))) {
+        throw new BadRequestException("A lista contém valores inválidos ou repetidos para esta regra.");
+      }
+      const linhas = valores.map(valor => ({ id: randomUUID(), ...valor }));
+      const local = await tx.parametro_membresia_igreja.upsert({
+        where: { igreja_id_regra_id: { igreja_id: igreja, regra_id: regraId } },
+        create: { igreja_id: igreja, regra_id: regraId, valores: linhas },
+        update: { valores: linhas },
+      });
+      return regraComValoresLocais(regra, local);
     });
   }
 }

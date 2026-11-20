@@ -22,6 +22,7 @@ import { LogsModule } from './logs/logs.module';
 import { IgrejaModule } from './igreja/igreja.module';
 import { EventosMembresiaModule } from './eventos-membresia/eventos-membresia.module';
 import { TratamentosModule } from './tratamentos/tratamentos.module';
+import { ProfissoesModule } from './profissoes/profissoes.module';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
 import { OficiaisModule } from './oficiais/oficiais.module';
@@ -58,6 +59,7 @@ import { RegrasRelacaoEnumModule } from './regras-relacao-enum/regras-relacao-en
     OrgaosModule,
     SecretariaModule,
     TratamentosModule,
+    ProfissoesModule,
     RegrasRelacaoEnumModule,
   ],
   controllers: [AppController],

@@ -246,7 +246,7 @@ integracao('E09 – referências documentais', () => {
     ).id;
     const of = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: pessoa, tipo: 'DIACONO' } });
     const pastor = await prisma.oficial.create({
-      data: { igreja_id: igreja, pessoa_id: pessoa, tipo: 'PRESBITERO_DOCENTE' },
+      data: { igreja_id: igreja, pessoa_id: pessoa, tipo: 'PRESBITERO_DOCENTE', ativo: false },
     });
     mandato = (
       await prisma.mandato_oficial.create({

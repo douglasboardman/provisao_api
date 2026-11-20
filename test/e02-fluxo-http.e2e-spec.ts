@@ -42,10 +42,16 @@ integration('E02: fluxo HTTP completo com dados sintéticos', () => {
     const o = await post('/oficiais', { pessoa_id: pessoaId, tipo: 'DIACONO' }).expect(201); oficialId = o.body.id;
     await post(`/oficiais/${oficialId}/eventos`, { tipo: 'SUSPENSAO', data_efeito: '2040-01-01', ordem: 1, autoridade: 'Conselho', evidencia: 'Ata sintética' }).expect(403);
     await post(`/oficiais/${oficialId}/eventos`, { tipo: 'ORDENACAO', data_efeito: '2040-01-01', ordem: 1, autoridade: 'Conselho', evidencia: 'Ata sintética' }).expect(201);
-    const c = await post('/oficiais/conferencias', { pessoa_id: pessoaId, politica_id: politicaId, data_eleicao: '2040-01-01', data_recepcao: '2039-01-01', evidencia_recepcao: 'Livro sintético', capacidade_confirmada: true, evidencia_capacidade: 'Declaração sintética' }).expect(201); conferenciaId = c.body.id;
+    const c = await post('/oficiais/conferencias', { pessoa_id: pessoaId, politica_id: politicaId, data_eleicao: '2040-01-01', candidatura_aprovada_conselho: true }).expect(201); conferenciaId = c.body.id;
+    expect(c.body.resultado).toMatchObject({ situacao: 'REQUISITOS_CONFERIDOS', evento_recepcao_id: membroId });
+    expect(c.body.data_recepcao).toBe('2039-01-01T00:00:00.000Z');
     const m = await post(`/oficiais/${oficialId}/mandatos`, { conferencia_id: conferenciaId, data_posse: '2040-02-01', autoridade: 'Assembleia', evidencia: 'Ata sintética', evidencia_capacidade_posse: 'Declaração sintética' }).expect(201); mandatoId = m.body.id;
     const periodos = await request(app.getHttpServer()).get(`/oficiais/${oficialId}/periodos`).set('Cookie', cookie).expect(200);
     expect(periodos.body.mandatos[0].id).toBe(mandatoId);
     await request(app.getHttpServer()).patch(`/oficiais/mandatos/${mandatoId}/encerrar`).set('Cookie', cookie).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ data_efeito: '2041-01-01', motivo: 'Pedido sintético', autoridade: 'Conselho', evidencia: 'Ata sintética' }).expect(200);
+    const inativado = await request(app.getHttpServer()).patch(`/oficiais/${oficialId}/situacao`).set('Cookie', cookie).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ ativo: false }).expect(200);
+    expect(inativado.body).toEqual({ id: oficialId, ativo: false });
+    const historico = await request(app.getHttpServer()).get(`/oficiais/${oficialId}/periodos`).set('Cookie', cookie).expect(200);
+    expect(historico.body.mandatos[0].id).toBe(mandatoId);
   });
 });

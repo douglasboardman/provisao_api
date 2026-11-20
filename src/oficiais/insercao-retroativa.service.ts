@@ -1,3 +1,4 @@
+import { bloquearRegrasMembresia, consultarRegrasDaIgreja } from '../regras-relacao-enum/parametros-membresia';
 import { revisarOrgaosNaAplicacao } from '../orgaos/revisao-aplicacao';
 import { transacaoSerializavel } from '../orgaos/idempotencia';
 import { consumirDecisaoEleitoral } from './consumir-decisao-eleitoral';
@@ -32,7 +33,7 @@ export class InsercaoRetroativaService {
   }
   private async calcular(tx: Tx, igreja: string, pessoa: string, proposta: Proposta, coletar?: (detalhes: DetalheVinculoOrgao[]) => void) {
     if (!await tx.pessoas.findFirst({ where: { id: pessoa, igreja_id: igreja }, select: { id: true } })) throw new NotFoundException('Pessoa não encontrada nesta igreja.');
-    const regras = await tx.regras_relacao_enum.findMany({ where: { modulo: 'membresia' }, include: { valores: true }, orderBy: { nome: 'asc' } });
+    const regras = await consultarRegrasDaIgreja(tx, igreja);
     const permite = (nome: string, origem: string, destino: string) => regras.some(r => r.nome === nome && r.valores.some(v => v.valor_classificador === origem && v.valor_classificado === destino));
     const rotulos = { ADMISSAO: 'Admissão', DEMISSAO: 'Demissão', MUDANCA_DE_ROL: 'Mudança de Rol' };
     if (!permite(`Motivações de ${rotulos[proposta.tipo_evento]}`, proposta.tipo_evento, proposta.motivacao_evento)) throw new BadRequestException('Motivação inválida para o tipo de evento.');
@@ -102,8 +103,7 @@ export class InsercaoRetroativaService {
       }
       await tx.$queryRaw`SELECT id FROM pessoas WHERE id = ${pessoa} AND igreja_id = ${igreja} FOR UPDATE`;
       // Bloqueia alterações das regras e seus valores enquanto valida e registra o ato.
-      await tx.$queryRaw`SELECT id FROM regras_relacao_enum WHERE modulo = 'membresia' ORDER BY id FOR UPDATE`;
-      await tx.$queryRaw`SELECT v.id FROM relacao_enum_valores v JOIN regras_relacao_enum r ON r.id = v.regra_id WHERE r.modulo = 'membresia' ORDER BY v.id FOR SHARE OF v`;
+      await bloquearRegrasMembresia(tx, igreja);
       let detalhesOrgao: DetalheVinculoOrgao[] = [];
       const coletarOrgao = (itens: DetalheVinculoOrgao[]) => { detalhesOrgao = itens; };
       const previa = await this.calcular(tx, igreja, pessoa, proposta, coletarOrgao);
