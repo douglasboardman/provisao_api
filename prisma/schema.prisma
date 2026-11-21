@@ -1706,7 +1706,8 @@ model documento_versao {
   @@unique([id, igreja_id, contexto_id])
   @@unique([documento_id, numero])
   @@index([igreja_id, contexto_id, data_documento])
-  @@unique([igreja_id, contexto_id, data_documento, numero_original], map: "ata_legada_numero_data_uq")
+  // A unicidade da identificação vigente usa um índice parcial na migração de revisão legada.
+  legada_superada Boolean @default(false)
   @@unique([id, igreja_id, documento_id])
 }
 model trabalho_renderizacao {

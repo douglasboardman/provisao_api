@@ -317,6 +317,13 @@ export class OficiaisController {
     return this.prisma.politica_eleicao_oficial.findMany({ where: { igreja_id: req.user.igreja_id }, select: { id: true, versao: true, fonte: true, vigente_desde: true, vigente_ate: true }, orderBy: [{ vigente_desde: 'desc' }, { id: 'asc' }] });
   }
 
+  @Get('indicacoes/selecao-atas')
+  @Header('Cache-Control', 'private, no-store')
+  selecionarAtas(@Request() req, @Query() consulta: Record<string, string>) {
+    const { tipo, ...filtros } = consulta;
+    return this.indicacoes.selecionarAtas(req.user, tipo, filtros);
+  }
+
   @Get('indicacoes/atas')
   @Header('Cache-Control', 'private, no-store')
   atasDeEleicao(@Request() req, @Query('tipo') tipo: string, @Query('busca') busca?: string) {

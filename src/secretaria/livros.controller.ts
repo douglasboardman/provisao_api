@@ -88,6 +88,12 @@ export class LivrosController {
     return this.livros.transicao(req.user, id, operacao, dados);
   }
 
+  @Get(':id/complementos/selecao')
+  @Header('Cache-Control', 'private, no-store')
+  selecao(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Query() filtros: Record<string, string>) {
+    return this.livros.candidatosComplemento(req.user, id, 0, filtros);
+  }
+
   @Get(':id/complementos/candidatos')
   @Header('Cache-Control', 'private, no-store')
   candidatos(

@@ -179,6 +179,8 @@ integracao('E09 – referências documentais', () => {
       ['gestor', 'GESTOR', igreja, gestor],
       ['concedente', 'ADMINISTRADOR', igreja, concedente],
       ['auditor', 'AUDITOR', igreja, randomUUID()],
+      ['secretario', 'SECRETARIO', igreja, randomUUID()],
+      ['secretarioOutra', 'SECRETARIO', outraIgreja, randomUUID()],
       ['tesoureiro', 'TESOUREIRO', igreja, randomUUID()],
       ['operador', 'OPERADOR', igreja, randomUUID()],
       ['outra', 'GESTOR', outraIgreja, randomUUID()],
@@ -779,6 +781,18 @@ integracao('E09 – referências documentais', () => {
       ],
     });
     const versao = detalhe.versoes[0].id;
+    const selecao = '/oficiais/indicacoes/selecao-atas';
+    const filtros = { tipo: 'CONSELHO', assunto: 'histórica', de: data, ate: data, contexto: conselho,
+      pauta: 'liberação', arrolado: 'de teste', pagina: '0' };
+    const opcoes = (await http('get', selecao).query(filtros).expect(200)).body;
+    expect(opcoes.itens).toEqual([expect.objectContaining({ versao_id: versao, numero_formatado: entrada.numero_original,
+      pauta: dadosReuniao.pauta, arrolados: ['Membro de teste'],
+      resolucoes: [{ assunto: 'Admissão', texto: 'Receber membro conforme o registro.', resultado: 'APROVADA' }] })]);
+    expect(opcoes.itens[0]).not.toHaveProperty('conteudo');
+    for (const filtro of [{ tipo: 'ASSEMBLEIA' }, { arrolado: 'ausente' }, { pauta: 'ausente' }, { de: '2025-01-01', ate: '2025-12-31' }]) {
+      expect((await http('get', selecao).query({ ...filtros, ...filtro }).expect(200)).body.itens).toEqual([]);
+    }
+    await http('get', selecao).query({ ...filtros, ate: '2020-01-01' }).expect(400);
     await expect(
       prisma.documento_versao.update({
         where: { id: versao },
@@ -847,5 +861,39 @@ integracao('E09 – referências documentais', () => {
     expect(referencia.itens[0]).toMatchObject({
       ata_documento_id: id, versao_id: versao, ata: { numero_formatado: '004 bis' },
     });
+
+    const edicao = { idempotencia: randomUUID(), revisao: (await http('get', documento)).body.revisao,
+      assunto: 'Ata revisada', numero_original: entrada.numero_original, data_documento: data,
+      reuniao_id: reuniao.body.id, reuniao: { ...entrada.reuniao, local: 'Salão', pauta: 'Pauta corrigida' },
+      teor: 'Transcrição corrigida.', arrolados: [...entrada.arrolados, { pessoa_id: membro, papeis: ['PRESENTE'] }],
+      resolucoes: [{ ...entrada.resolucoes[0], assunto: 'Admissão revisada', proponentes_pessoas_ids: [membro] }],
+    };
+    const editar = (ator: string, valores = {}) => http('patch', caminho + '/' + id, ator).send({ ...edicao, ...valores });
+    await editar('gestor').expect(403);
+    await editar('auditor').expect(403);
+    await editar('secretarioOutra').expect(404);
+    await http('patch', caminho + '/' + ataRestrita.documento, 'secretario').send(edicao).expect(404);
+    await http('patch', caminho + '/' + ataConselho.documento, 'secretario')
+      .send({ ...edicao, revisao: (await http('get', '/secretaria/documentos/' + ataConselho.documento, 'secretario')).body.revisao }).expect(400);
+    await editar('secretario', { pdf: entrada.pdf }).expect(400);
+    await editar('secretario', { resolucoes: [{ ...edicao.resolucoes[0], proponentes_pessoas_ids: [randomUUID()] }] }).expect(400);
+    const salva = (await editar('secretario').expect(200)).body;
+    expect((await editar('secretario').expect(200)).body).toEqual(salva);
+    await editar('secretario', { idempotencia: randomUUID() }).expect(409);
+    const corrigida = (await http('get', documento, 'secretario').expect(200)).body;
+    expect(corrigida.versao_atual).toBe(2);
+    expect(corrigida.versoes[0]).toMatchObject({ id: versao, conteudo: { teor: entrada.teor } });
+    expect(corrigida.versoes[1]).toMatchObject({
+      retifica_versao_id: versao, numero_original: entrada.numero_original, assunto: edicao.assunto,
+      conteudo: { teor: edicao.teor }, anexos: [{ arquivo_id }], livro_id: livro, folhas_legadas: '2–3',
+      fonte_congelada: { legado: { sha256: sha256(bytes), reuniao: { pauta: edicao.reuniao.pauta } } },
+      resolucoes: [{ assunto: 'Admissão revisada', proponentes: [{ arrolado: { pessoa_id: membro } }] }],
+    });
+    expect(corrigida.versoes[1].arrolados).toHaveLength(2);
+    expect((await http('get', '/secretaria/reunioes/' + reuniao.body.id, 'secretario').expect(200)).body.dados)
+      .toMatchObject({ local: 'Salão', pauta: 'Pauta corrigida' });
+    expect((await http('get', '/secretaria/livros/' + livro).expect(200)).body.atas_legadas).toHaveLength(1);
+    expect((await http('get', referenciaLegada).expect(200)).body.itens[0].versao_id).toBe(versao);
+    await editar('secretario', { revisao: salva.revisao, numero_original: '005', idempotencia: randomUUID() }).expect(200);
   });
 });

@@ -5,7 +5,7 @@ import { codigo, modalidadeReuniaoSchema } from './secretaria.dto';
 const texto = (max: number) => z.string().trim().min(1).max(max);
 const conferencia = { idempotencia: z.uuid(), autoridade: texto(255), evidencia: texto(1000) };
 
-export const ataLegadaSchema = z
+const cadastro = z
   .object({
     ...conferencia,
     contexto_id: z.uuid(),
@@ -45,8 +45,15 @@ export const ataLegadaSchema = z
     resolucoes: resolucoesSchema.default([]),
     conferida: z.literal(true),
   })
-  .strict()
-  .refine((v) => !v.reuniao.data || v.reuniao.data <= v.data_documento, 'A reunião deve ocorrer até a data da ata.');
+  .strict();
+const datasCoerentes = (v: { reuniao: { data: string | null }; data_documento: string }) =>
+  !v.reuniao.data || v.reuniao.data <= v.data_documento;
+const mensagemData = 'A reunião deve ocorrer até a data da ata.';
+export const ataLegadaSchema = cadastro.refine(datasCoerentes, mensagemData);
+export const editarAtaLegadaSchema = cadastro.omit({
+  contexto_id: true, restrito: true, pdf: true, autoridade: true, evidencia: true, conferida: true,
+}).extend({ revisao: z.number().int().positive(), reuniao_id: z.uuid().nullable(), resolucoes: resolucoesSchema }).refine(datasCoerentes, mensagemData);
+export type CamposAtaLegada = z.infer<typeof editarAtaLegadaSchema>;
 
 export const teorAtaLegadaSchema = z.object({ contexto_id: z.uuid(), arquivo_id: z.uuid() }).strict();
 

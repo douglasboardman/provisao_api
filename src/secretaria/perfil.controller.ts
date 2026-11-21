@@ -98,7 +98,7 @@ export class PerfilController {
                 where: {
                   igreja_id,
                   proponentes: { some: { arrolado: { pessoa_id, igreja_id } } },
-                  versao: { congelado_em: { not: null }, documento: visibilidade },
+                  versao: { congelado_em: { not: null }, legada_superada: false, documento: visibilidade },
                 },
                 select: {
                   id: true,

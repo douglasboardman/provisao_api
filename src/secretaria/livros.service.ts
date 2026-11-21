@@ -1,3 +1,4 @@
+import { selecionarDocumentos, tabelasDocumentais } from './selecao-documental';
 import { cancelarExpedicao } from './expedicao-estado';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { livro_atas, livro_estado, Prisma, registro_livro_natureza } from '@prisma/client';
@@ -332,7 +333,7 @@ export class LivrosService {
           }),
           tx.documento_versao.findMany({
             where: { livro_id: id, igreja_id: a.igreja_id, contexto_id: livro.contexto_id,
-              documento: { estado: 'LEGADA_CONFERIDA', restrito: livro.restrito } },
+              legada_superada: false, documento: { estado: 'LEGADA_CONFERIDA', restrito: livro.restrito } },
             select: { documento_id: true, numero_original: true, assunto: true, data_documento: true, folhas_legadas: true },
             orderBy: [{ data_documento: 'asc' }, { numero_original: 'asc' }, { id: 'asc' }],
           }),
@@ -565,7 +566,7 @@ export class LivrosService {
     });
   }
 
-  candidatosComplemento(a: AtorSecretaria, id: string, pagina: number) {
+  candidatosComplemento(a: AtorSecretaria, id: string, pagina: number, filtros?: Record<string, string>) {
     exigirLivros();
     return this.base.prisma.$transaction(
       async (tx) => {
@@ -574,15 +575,17 @@ export class LivrosService {
         await this.base.competente(tx, a, livro.contexto_id, 'pode_aprovar');
         if (livro.estado !== 'ENCERRADO')
           throw new BadRequestException('Atos complementares são vinculados ao acervo encerrado.');
-        const candidatos = await tx.$queryRaw<{ id: string; assunto: string; numero: number }[]>`
-        SELECT v.id, v.assunto, v.numero
-        FROM documento_versao v JOIN documento d ON d.id = v.documento_id
+        const escopo = Prisma.sql`${tabelasDocumentais}
           JOIN modelo_documento_versao m ON m.id = v.modelo_versao_id
         WHERE v.igreja_id = ${livro.igreja_id} AND v.contexto_id = ${livro.contexto_id} AND d.restrito = ${livro.restrito}
           AND d.estado IN ('APROVADO','EXPEDIDO') AND v.numero = d.versao_atual AND v.congelado_em IS NOT NULL AND v.livro_id IS NULL
           AND ((v.retifica_versao_id IS NULL AND m.finalidade IN ('TERMO_EXAME','RETIFICACAO')) OR EXISTS (
             SELECT 1 FROM registro_livro r WHERE r.livro_id = ${id} AND r.versao_id = v.retifica_versao_id AND r.estado = 'EFETIVADO'))
           AND NOT EXISTS (SELECT 1 FROM complemento_livro c WHERE c.livro_id = ${id} AND c.versao_id = v.id)
+        `;
+        if (filtros) return selecionarDocumentos(tx, escopo, filtros);
+        const candidatos = await tx.$queryRaw<{ id: string; assunto: string; numero: number }[]>`
+        SELECT v.id, v.assunto, v.numero ${escopo}
         ORDER BY d.criado_em DESC, v.id ASC
         LIMIT 30 OFFSET ${pagina * 30}`;
         return candidatos;

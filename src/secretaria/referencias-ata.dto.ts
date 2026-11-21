@@ -46,8 +46,13 @@ export const buscaAta = z
     contexto: uuid.optional(),
     numero: texto(100).optional(),
     data: z.iso.date().optional(),
+    de: z.iso.date().optional(),
+    ate: z.iso.date().optional(),
+    assunto: texto(255).optional(),
+    arrolado: texto(255).optional(),
+    pauta: texto(255).optional(),
   })
-  .strict();
+  .strict().refine(f => !f.de || !f.ate || f.de <= f.ate, 'O início deve anteceder o fim do intervalo.');
 
 export const tiposFinanceiros = [
   'ORCAMENTO',

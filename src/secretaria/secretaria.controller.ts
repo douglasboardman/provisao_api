@@ -33,6 +33,10 @@ export class SecretariaController {
   extrairAtaLegada(@Request() req: RequestSecretaria, @Body() dados: unknown) {
     return this.atasLegadas.extrairTeor(req.user, dados);
   }
+  @Patch('atas-legadas/:id')
+  editarAtaLegada(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() dados: unknown) {
+    return this.atasLegadas.editar(req.user, id, dados);
+  }
   @Post('atas-legadas/:id/livro')
   vincularLivroLegado(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() dados: unknown) {
     return this.atasLegadas.vincularLivro(req.user, id, dados);
@@ -79,6 +83,11 @@ export class SecretariaController {
   @Post('reunioes') criarReuniao(@Request() req: RequestSecretaria, @Body() b: unknown) { return this.cadastros.criarReuniao(req.user, b); }
   @Patch('reunioes/:id') editarReuniao(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() b: unknown) { return this.cadastros.editarReuniao(req.user, id, b); }
   @Header('Cache-Control', 'private, no-store')
+  @Get('motivadores')
+  @Header('Cache-Control', 'private, no-store')
+  motivadores(@Request() req: RequestSecretaria, @Query() filtros: Record<string, string>) {
+    return this.documentos.motivadores(req.user, filtros);
+  }
   @Get('documentos') listar(@Request() req: RequestSecretaria, @Query('contexto', ParseUUIDPipe) c: string, @Query('pagina', new DefaultValuePipe(0), ParseIntPipe) p: number) { this.pagina(p); return this.documentos.listar(req.user, c, p); }
   @Post('documentos') criar(@Request() req: RequestSecretaria, @Body() b: unknown) { return this.documentos.criar(req.user, b); }
   @Header('Cache-Control', 'private, no-store')

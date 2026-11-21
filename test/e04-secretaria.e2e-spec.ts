@@ -88,6 +88,41 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     await get(`modelos?contexto=${contexto}`, 'outra').expect(404);
   });
 
+  it('ordena o contexto pela data da versão atual antes de paginar e desempata por id', async () => {
+    const escopo = { igreja_id: outra, contexto_id: contextoOutra };
+    const modelo = await post('modelos', 'outra').send({ contexto_id: contextoOutra, nome: 'Atas para consulta',
+      tipo: 'ATA', finalidade: 'ATA_AGO', configuracao: config, idempotencia: randomUUID() }).expect(201);
+    const documentos = Array.from({ length: 31 }, (_, i) => ({
+      ...escopo, id: randomUUID(), perfil: 'ATA_PADRAO', tipo: 'ATA' as const,
+      criado_em: new Date(Date.UTC(2025, 0, 31 - i)), versao_atual: i === 0 ? 2 : 1,
+    }));
+    const atuais = documentos.map((d, i) => ({
+      ...escopo, documento_id: d.id, modelo_versao_id: modelo.body.versao_id, numero: d.versao_atual,
+      assunto: 'Ata para consulta', conteudo: {}, data_documento: new Date(Date.UTC(2020, 0, Math.max(1, i))),
+    }));
+    await p.$transaction([
+      p.documento.createMany({ data: documentos }),
+      p.documento_versao.createMany({ data: [...atuais, { ...atuais[0], numero: 1, data_documento: new Date('2030-01-01') }] }),
+    ]);
+
+    const caminho = `documentos?contexto=${contextoOutra}&pagina=`;
+    const primeira = (await get(caminho + '0', 'outra').expect(200)).body;
+    const segunda = (await get(caminho + '1', 'outra').expect(200)).body;
+    expect(primeira).toHaveLength(30);
+    expect(segunda).toHaveLength(1);
+    const esperadas = atuais.sort((a, b) => b.data_documento.getTime() - a.data_documento.getTime()
+      || a.documento_id.localeCompare(b.documento_id));
+    expect([...primeira, ...segunda].map(d => [d.id, d.versoes[0].data_documento]))
+      .toEqual(esperadas.map(v => [v.documento_id, v.data_documento.toISOString()]));
+    const listarMotivadores = (pagina: number, ator = 'outra') => get('motivadores', ator)
+      .query({ contexto: contextoOutra, assunto: 'para consulta', pagina }).expect(200);
+    const a = (await listarMotivadores(0)).body, b = (await listarMotivadores(1)).body;
+    expect(a.tem_proxima).toBe(true);
+    expect(b.tem_proxima).toBe(false);
+    expect([...a.itens, ...b.itens].map(item => item.documento_id)).toEqual(esperadas.map(v => v.documento_id));
+    expect((await listarMotivadores(0, 'gestor')).body.itens).toEqual([]);
+  });
+
   it('registra reunião e mesa sem duplicar pessoa; detecta conflito e rejeita presença cruzada', async () => {
     const entrada = { contexto_id: contexto, dados: reuniaoDados(), idempotencia: randomUUID() };
     await post('reunioes').send({ ...entrada, dados: { ...entrada.dados, participantes: [...entrada.dados.participantes, entrada.dados.participantes[0]] } }).expect(400);

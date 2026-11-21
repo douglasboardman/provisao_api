@@ -427,6 +427,11 @@ integration('E06: livros e paginação no PostgreSQL', () => {
     const versao = (await detalheDoc(complemento.id)).versoes[0].id;
     const candidatos = (await get(`livros/${livro}/complementos/candidatos`, 'gestor').expect(200)).body;
     expect(candidatos.map((v) => v.id)).toEqual([versao]);
+    const selecao = `livros/${livro}/complementos/selecao`;
+    const pagina = (await get(selecao, 'gestor').expect(200)).body;
+    expect(pagina.itens.map(v => v.versao_id)).toEqual([versao]);
+    expect(pagina.tem_proxima).toBe(false);
+    await get(selecao, 'outra').expect(404);
     await post(`livros/${livro}/complementos`, 'gestor')
       .send({ ...cmd(fechado.revisao), versao_id: versao, motivo: 'Exame posterior' })
       .expect(201);

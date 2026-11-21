@@ -1,3 +1,4 @@
+import { selecionarDocumentos, tabelasDocumentais } from '../secretaria/selecao-documental';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
@@ -49,21 +50,24 @@ export class IndicacoesEleicaoService {
     return { hoje, restritos: concessoes.filter(c => c.pode_consultar_restritos).map(c => c.contexto_id) };
   }
 
-  private async atas(tx: Tx, igreja: string, restritos: string[], tipo: TipoAta, hoje: Date, filtros: { versao?: string; query?: string }) {
+  private escopoAtas(igreja: string, restritos: string[], tipo: TipoAta, hoje: Date) {
     const contexto = tipo === 'CONSELHO' ? Prisma.sql`o.tipo = 'CONSELHO'` : Prisma.sql`c.tipo = 'ASSEMBLEIA_GERAL'`;
+    return Prisma.sql`
+      ${tabelasDocumentais}
+      LEFT JOIN orgao_interno o ON o.id = c.orgao_id AND o.igreja_id = c.igreja_id
+      WHERE d.igreja_id = ${igreja} AND d.tipo = 'ATA' AND v.numero = d.versao_atual
+        AND d.estado IN ('APROVADO', 'EXPEDIDO', 'LEGADA_CONFERIDA')
+        AND v.data_documento <= ${hoje}::date AND ${contexto}
+        AND (NOT d.restrito ${restritos.length ? Prisma.sql`OR d.contexto_id IN (${Prisma.join(restritos)})` : Prisma.empty})`;
+  }
+
+  private async atas(tx: Tx, igreja: string, restritos: string[], tipo: TipoAta, hoje: Date, filtros: { versao?: string; query?: string }) {
     const busca = filtros.query?.replace(/[\\%_]/g, '\\$&');
     const numero = busca && /^\d+$/.test(busca) ? busca.replace(/^0+/, '') : '';
     return tx.$queryRaw<Ata[]>`
       SELECT v.id AS versao_id, d.id AS documento_id, v.data_documento AS data, v.assunto,
         COALESCE(v.numero_original, v.fonte_congelada->>'numero', d.numero::text) AS numero
-      FROM documento_versao v
-      JOIN documento d ON d.id = v.documento_id AND d.igreja_id = v.igreja_id
-      JOIN contexto_secretaria c ON c.id = d.contexto_id AND c.igreja_id = d.igreja_id
-      LEFT JOIN orgao_interno o ON o.id = c.orgao_id AND o.igreja_id = c.igreja_id
-      WHERE d.igreja_id = ${igreja} AND d.tipo = 'ATA' AND v.numero = d.versao_atual
-        AND d.estado IN ('APROVADO', 'EXPEDIDO', 'LEGADA_CONFERIDA')
-        AND v.data_documento <= ${hoje}::date AND ${contexto}
-        AND (NOT d.restrito ${restritos.length ? Prisma.sql`OR d.contexto_id IN (${Prisma.join(restritos)})` : Prisma.empty})
+      ${this.escopoAtas(igreja, restritos, tipo, hoje)}
         ${filtros.versao ? Prisma.sql`AND v.id = ${filtros.versao}` : Prisma.empty}
         ${busca ? Prisma.sql`AND (
           v.assunto ILIKE ${'%' + busca + '%'} OR COALESCE(v.numero_original, d.numero::text) ILIKE ${busca + '%'}
@@ -78,6 +82,14 @@ export class IndicacoesEleicaoService {
     const [documento] = await this.atas(tx, ator.igreja_id, acesso.restritos, tipo, acesso.hoje, { versao });
     if (!documento) throw new NotFoundException('Ata indisponível ou incompatível com o ato.');
     return documento;
+  }
+
+  selecionarAtas(ator: AtorSecretaria, tipo: string, filtros: unknown) {
+    const contexto = validar(tipoAta, tipo);
+    return this.prisma.$transaction(async tx => {
+      const acesso = await this.acesso(tx, ator);
+      return selecionarDocumentos(tx, this.escopoAtas(ator.igreja_id, acesso.restritos, contexto, acesso.hoje), filtros);
+    }, { isolationLevel: 'RepeatableRead' });
   }
 
   listarAtas(ator: AtorSecretaria, tipo: string, busca?: string) {

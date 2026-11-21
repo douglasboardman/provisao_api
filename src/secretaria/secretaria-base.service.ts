@@ -43,7 +43,8 @@ export class SecretariaBaseService {
           const documentoId = ['CRIAR_DOCUMENTO', 'CRIAR_DOCUMENTO_LEGADO'].includes(operacao) ? resultado.id : alvo;
           if (typeof documentoId !== 'string') throw new ConflictException('Resultado anterior indisponível.');
           const documento = await this.documento(tx, ator, documentoId);
-          if (['CRIAR_DOCUMENTO', 'EDITAR_DOCUMENTO', 'ENCAMINHAR'].includes(operacao)) await this.preparar(tx, ator, documento.contexto_id);
+          if (operacao === 'EDITAR_DOCUMENTO_LEGADO') this.exigirSecretario(operador);
+          else if (['CRIAR_DOCUMENTO', 'EDITAR_DOCUMENTO', 'ENCAMINHAR'].includes(operacao)) await this.preparar(tx, ator, documento.contexto_id);
           else await this.competente(tx, ator, documento.contexto_id, operacao === 'DELIBERAR_ATA' ? 'pode_deliberar' : 'pode_aprovar');
         }
         if (['CRIAR_CONTEXTO', 'CONCEDER_COMPETENCIA', 'ENCERRAR_COMPETENCIA'].includes(operacao) && operador.perfil !== 'ADMINISTRADOR') throw new ForbiddenException('Configuração técnica reservada ao administrador.');
@@ -71,6 +72,10 @@ export class SecretariaBaseService {
     if (!usuario?.pessoa_id) return [];
     const hoje = dataCivil(await hojeDaIgreja(tx, ator.igreja_id));
     return tx.competencia_secretaria.findMany({ where: { igreja_id: ator.igreja_id, usuario_id: ator.sub, pessoa_id: usuario.pessoa_id, ...(contexto ? { contexto_id: contexto } : {}), inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] } });
+  }
+
+  exigirSecretario(operador: { perfil: usuarios_perfil }) {
+    if (operador.perfil !== 'SECRETARIO') throw new ForbiddenException('Edição de ata legada reservada ao secretário.');
   }
 
   async preparar(tx: Tx, ator: AtorSecretaria, contexto: string) {

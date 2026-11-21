@@ -1,3 +1,4 @@
+import { selecionarDocumentos } from './selecao-documental';
 import {
   BadRequestException,
   ConflictException,
@@ -13,7 +14,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SecretariaBaseService, dataCivil, type AtorSecretaria, type Tx } from './secretaria-base.service';
 import {
   autorizacaoFinanceira,
-  buscaAta,
   referenciaAta,
   type ChaveAlvoAta,
   type EntradaReferenciaAta,
@@ -150,37 +150,11 @@ export class ReferenciasAtaService {
   }
 
   async buscar(ator: AtorSecretaria, chave: ChaveAlvoAta, filtros: unknown) {
-    const f = validar(buscaAta, filtros);
     return this.prisma.$transaction(
       async (tx) => {
         const acesso = await this.acesso(tx, ator);
         const alvo = await this.alvo(tx, acesso, chave);
-        const [, numero, ano, sigla] = f.numero?.match(/^(\d{1,10})(?:\/(\d{4})(?:\/([^/]{1,40}))?)?$/) ?? [];
-        const numeroPadrao = numero ? Prisma.sql`
-          OR (d.numero = ${Number(numero)}::bigint
-            ${ano ? Prisma.sql`AND d.ano = ${Number(ano)}` : Prisma.empty}
-            ${sigla ? Prisma.sql`AND lower(d.sigla) = lower(${sigla})` : Prisma.empty})
-        ` : Prisma.empty;
-        const numeroLegado = f.numero && /^\d{1,10}$/.test(f.numero) ? Prisma.sql`
-          OR (v.numero_original ~ '^[0-9]{1,10}$' AND ltrim(v.numero_original, '0') = ${f.numero.replace(/^0+/, '')})
-        ` : Prisma.empty;
-        const itens = (await tx.$queryRaw`
-        SELECT d.id AS documento_id, v.id AS versao_id, v.numero AS versao, v.assunto,
-          d.numero, d.ano, d.sigla, d.estado, v.data_documento AS data, c.nome AS contexto, c.id AS contexto_id,
-          coalesce(v.numero_original, v.fonte_congelada->>'numero') AS numero_formatado
-        ${this.atasCompativeis(acesso, alvo)}
-        ${f.contexto ? Prisma.sql`AND c.id = ${f.contexto}` : Prisma.empty}
-        ${f.data ? Prisma.sql`AND v.data_documento = ${dataCivil(f.data)}::date` : Prisma.empty}
-        ${f.numero ? Prisma.sql`AND (lower(v.numero_original) = lower(${f.numero}) ${numeroPadrao} ${numeroLegado})` : Prisma.empty}
-        ORDER BY v.data_documento DESC, d.id, v.numero DESC OFFSET ${f.pagina * tamanho} LIMIT ${tamanho + 1}
-      `) as unknown[];
-        const contextos = await tx.$queryRaw`
-        SELECT c.id, c.nome, c.sigla FROM contexto_secretaria c
-        LEFT JOIN orgao_interno o ON o.id = c.orgao_id AND o.igreja_id = c.igreja_id
-        WHERE c.igreja_id = ${acesso.igreja} AND ${this.contextoCompativel(alvo)}
-        ORDER BY c.nome, c.id
-      `;
-        return { ...this.pagina(itens), contextos };
+        return selecionarDocumentos(tx, this.atasCompativeis(acesso, alvo), filtros);
       },
       { isolationLevel: 'RepeatableRead' },
     );

@@ -1,6 +1,8 @@
+import { z } from 'zod';
+import { selecionarDocumentos, tabelasDocumentais } from './selecao-documental';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
-import { Prisma } from '@prisma/client';
+import { Prisma, type documento, type documento_versao } from '@prisma/client';
 import { SecretariaBaseService, AtorSecretaria, Tx, dataCivil, json } from './secretaria-base.service';
 import { SecretariaCadastrosService } from './secretaria-cadastros.service';
 import { transacaoComRetentativa } from '../orgaos/idempotencia';
@@ -19,6 +21,13 @@ import { resolucoesSchema } from './resolucoes.dto';
 function numeroDocumento(d: { numero: number | null; ano: number | null; sigla: string | null }) {
   return `${String(d.numero).padStart(3, '0')}/${d.ano}/${d.sigla}`;
 }
+
+type LinhaDocumento = Pick<documento,
+  'id' | 'estado' | 'revisao' | 'versao_atual' | 'tipo' | 'numero' | 'ano' | 'sigla' | 'restrito' | 'encaminhado_em'
+> & (
+  | ({ versao_id: string } & Pick<documento_versao, 'numero_original' | 'assunto' | 'data_documento'>)
+  | { versao_id: null; numero_original: null; assunto: null; data_documento: null }
+);
 
 @Injectable()
 export class DocumentosService {
@@ -359,12 +368,39 @@ export class DocumentosService {
     });
   }
 
+  motivadores(a: AtorSecretaria, consulta: Record<string, string>) {
+    const { excluir, restrito, ...filtros } = dto.validar(z.object({
+      excluir: z.uuid().optional(), restrito: z.enum(['true', 'false']).optional(),
+    }).catchall(z.string()), consulta);
+    return this.base.prisma.$transaction(async tx => {
+      await this.base.operador(tx, a);
+      const autorizados = restrito === 'true' ? (await this.base.concessoes(tx, a)).filter(c => c.pode_consultar_restritos).map(c => c.contexto_id) : [];
+      return selecionarDocumentos(tx, Prisma.sql`${tabelasDocumentais}
+        WHERE d.igreja_id = ${a.igreja_id} AND v.numero = d.versao_atual
+        AND (NOT d.restrito ${autorizados.length ? Prisma.sql`OR c.id IN (${Prisma.join(autorizados)})` : Prisma.empty})
+        ${excluir ? Prisma.sql`AND d.id <> ${excluir}` : Prisma.empty}`, filtros);
+    }, { isolationLevel: 'RepeatableRead' });
+  }
+
   async listar(a: AtorSecretaria, contexto: string, pagina: number) {
     return this.base.prisma.$transaction(async tx => {
       await this.base.operador(tx, a); await this.base.contexto(tx, a, contexto);
       const restritos = (await this.base.concessoes(tx, a, contexto)).some(g => g.pode_consultar_restritos);
-      const rows = await tx.documento.findMany({ where: { igreja_id: a.igreja_id, contexto_id: contexto, ...(!restritos ? { restrito: false } : {}) }, select: { id: true, estado: true, revisao: true, versao_atual: true, tipo: true, numero: true, ano: true, sigla: true, restrito: true, encaminhado_em: true, versoes: { select: { id: true, numero: true, numero_original: true, assunto: true, data_documento: true } } }, orderBy: [{ criado_em: 'desc' }, { id: 'asc' }], skip: pagina * 30, take: 30 });
-      return rows.map(r => ({ ...r, versoes: r.versoes.filter(v => v.numero === r.versao_atual) }));
+      const linhas = await tx.$queryRaw<LinhaDocumento[]>`
+        SELECT d.id, d.estado, d.revisao, d.versao_atual, d.tipo, d.numero, d.ano, d.sigla,
+               d.restrito, d.encaminhado_em, v.id AS versao_id, v.numero_original, v.assunto, v.data_documento
+        FROM documento d
+        LEFT JOIN documento_versao v ON v.documento_id = d.id AND v.numero = d.versao_atual
+          AND v.igreja_id = d.igreja_id AND v.contexto_id = d.contexto_id
+        WHERE d.igreja_id = ${a.igreja_id} AND d.contexto_id = ${contexto}
+          ${restritos ? Prisma.empty : Prisma.sql`AND NOT d.restrito`}
+        ORDER BY v.data_documento DESC NULLS LAST, d.id ASC
+        LIMIT 30 OFFSET ${pagina * 30}
+      `;
+      return linhas.map(({ versao_id, numero_original, assunto, data_documento, ...doc }) => ({
+        ...doc,
+        versoes: versao_id === null ? [] : [{ id: versao_id, numero: doc.versao_atual, numero_original, assunto, data_documento }],
+      }));
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 
