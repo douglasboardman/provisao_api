@@ -243,7 +243,9 @@ export class ContasAutorizacaoService {
     return transacaoSerializavel(this.db, async tx => {
       const operador = await this.administrador(tx, a);
       const alvo = await this.destinatario(tx, operador.igreja_id, id);
-      this.independente(operador, alvo);
+      const conversaoHomologacao = operador.id !== alvo.id && !!alvo.pessoa_id && operador.pessoa_id === alvo.pessoa_id &&
+        process.env.PROVISAO_HOMOLOGACAO_CONVERSAO_CONTA === `${operador.igreja_id}:${operador.id}:${alvo.id}`;
+      if (!conversaoHomologacao) this.independente(operador, alvo);
       if (gravar) await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${id} AND igreja_id = ${operador.igreja_id} FOR UPDATE`;
       const agora = new Date();
       const proposta = await this.propostaConversao(tx, alvo, acoes, competencias, agora);
@@ -267,6 +269,7 @@ export class ContasAutorizacaoService {
       }
       await this.evento(tx, operador, 'CONVERTER_CONTA', id, confirmacao.fundamento, pessoa_id, id, {
         perfil_anterior: alvo.perfil, acoes, competencias, conta_atuacao: alvo.conta_atuacao, rotas: proposta.rotas, rotas_legadas: proposta.rotas_legadas,
+        ...(conversaoHomologacao && { conversao_homologacao: true }),
       });
       return { id, perfil: nova.perfil };
     }).catch(conflitoConcorrente);

@@ -102,6 +102,36 @@ integration('Transição de perfis', () => {
     await http(secretaria, 'get', '/lancamentos/balanco').expect(403);
   });
 
+  it('permite a conversão em homologação somente para o par indicado', async () => {
+    const chave = 'PROVISAO_HOMOLOGACAO_CONVERSAO_CONTA';
+    const configuracaoAnterior = process.env[chave];
+    const titular = await db.usuarios.findUniqueOrThrow({ where: { id: admin } });
+    const trabalho = await conta('SECRETARIO');
+    await db.usuarios.update({ where: { id: trabalho }, data: { pessoa_id: titular.pessoa_id } });
+    const prefixo = `/autorizacao/contas/${trabalho}/conversao`;
+    const entrada = { acoes: ['PESSOAS_CONSULTAR'] };
+    try {
+      delete process.env[chave];
+      await http(admin, 'post', `${prefixo}/previa`).send(entrada).expect(403);
+      process.env[chave] = `${igreja}:${admin}:${randomUUID()}`;
+      await http(admin, 'post', `${prefixo}/previa`).send(entrada).expect(403);
+      process.env[chave] = `${igreja}:${admin}:${trabalho}`;
+      await dar(trabalho, 'PESSOAS_CONSULTAR').expect(403);
+      const { previa } = (await http(admin, 'post', `${prefixo}/previa`).send(entrada).expect(201)).body;
+      delete process.env[chave];
+      await http(admin, 'post', prefixo).send({ ...entrada, previa, fundamento }).expect(403);
+      process.env[chave] = `${igreja}:${admin}:${trabalho}`;
+      await http(admin, 'post', prefixo).send({ ...entrada, previa, fundamento }).expect(201);
+      expect(await db.usuarios.findUnique({ where: { id: trabalho } })).toMatchObject({ perfil: 'COMUM' });
+      expect(await db.usuarios.findUnique({ where: { id: admin } })).toMatchObject({ perfil: 'ADMINISTRADOR' });
+      expect(await db.evento_autorizacao.findFirstOrThrow({ where: { igreja_id: igreja, acao: 'CONVERTER_CONTA', recurso_id: trabalho } }))
+        .toMatchObject({ operador_id: admin, dados: { conversao_homologacao: true } });
+    } finally {
+      if (configuracaoAnterior === undefined) delete process.env[chave];
+      else process.env[chave] = configuracaoAnterior;
+    }
+  });
+
   it('consulta e aprova pedidos por serviços separados, criando conta comum', async () => {
     const pedido = await db.solicitacao_acesso.create({ data: { igreja_id: igreja, nome_usuario: 'Nova conta',
       email_login: randomUUID() + '@example.invalid', estado: 'EM_ANALISE' } });
