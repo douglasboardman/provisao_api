@@ -15,7 +15,10 @@ export class ComposicaoService {
     return this.prisma.$transaction(tx => this.consultarNaTransacao(tx, igrejaId, tipo, dia), { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 
-  async consultarNaTransacao(tx: Prisma.TransactionClient, igrejaId: string, tipo: 'CONSELHO' | 'JUNTA', dia: string, pessoasIds?: string[], orgaoId?: string) {
+  consultarNaTransacao = composicaoNaTransacao;
+}
+
+export async function composicaoNaTransacao(tx: Prisma.TransactionClient, igrejaId: string, tipo: 'CONSELHO' | 'JUNTA', dia: string, pessoasIds?: string[], orgaoId?: string) {
     const data = new Date(`${dia}T00:00:00.000Z`);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dia) || !Number.isFinite(data.getTime()) || data.toISOString().slice(0, 10) !== dia) throw new BadRequestException('Data inválida.');
     const oficiais = await tx.oficial.findMany({
@@ -52,5 +55,4 @@ export class ComposicaoService {
       return { pessoa_id: o.pessoa_id, sexo: o.pessoa.sexo, tipo: o.tipo, situacao: emExercicio ? 'EM_EXERCICIO' : 'FORA_DE_EXERCICIO', revisao_pendente };
     });
     return { data_referencia: dia, ...comporOrgao(tipo, apurados) };
-  }
 }

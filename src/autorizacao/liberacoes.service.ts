@@ -7,6 +7,7 @@ import { rotulosServico, servicosDeConsulta, servicosDeHistorico } from './catal
 import { servicosLiberaveis, type ServicoLiberavel } from './liberacao-servico';
 import { camposConta, contaDaSessao, decisaoAtribuicoes, fundamento, type Ator, type Tx } from './politica';
 import { RotasServicosService } from './rotas-servicos.service';
+import { filtrarAtribuicoesDeModelos } from './validade-modelo';
 
 const acaoSchema = z.enum(servicosLiberaveis);
 const confirmacao = z.strictObject({
@@ -60,8 +61,8 @@ export class LiberacoesService {
     const agora = new Date();
     const rotas = this.rotas.listar().filter(r => r.acao === acao);
     const retiradas = this.rotas.retiradas(acao);
-    const diferencas = contas.flatMap(conta => {
-      const concessoes = atribuidas.filter(r => r.usuario_id === conta.id);
+    const diferencas = (await Promise.all(contas.map(async conta => {
+      const concessoes = await filtrarAtribuicoesDeModelos(tx, conta, atribuidas.filter(r => r.usuario_id === conta.id), agora);
       const decisao = decisaoAtribuicoes(conta, acao, concessoes, agora);
       const podePorAtribuicao = decisao.permite && (acao !== 'MANDATOS_REGISTRAR' || !!conta.pessoa_id);
       const legitimado = !acesso || conta.perfil === 'ADMINISTRADOR' ||
@@ -86,7 +87,7 @@ export class LiberacoesService {
         ...retiradas.map(r => ({ rota: r.rota, antes: antesPorRota(r.perfis, true), depois: false, escopo: 'Entrada duplicada retirada' })),
       ].filter(r => r.antes !== r.depois).map(r => ({ ...r, usuario_id: conta.id, nome: conta.nome_usuario, perfil: conta.perfil,
         motivo: decisao.motivo }));
-    });
+    }))).flat();
     const revisao = registro?.revisao ?? 0;
     const previa = hashAto({ igreja_id, acao, revisao, diferencas, contas: contas.map(c => ({
       id: c.id, pessoa: c.pessoa_id, perfil: c.perfil, geracao: c.geracao_vinculo, versao: c.auth_version,

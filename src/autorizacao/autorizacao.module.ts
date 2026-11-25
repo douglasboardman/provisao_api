@@ -5,6 +5,7 @@ import { Module } from '@nestjs/common';
 import { SecretariaModule } from '../secretaria/secretaria.module';
 import { AutorizacaoController } from './autorizacao.controller';
 import { ContasAutorizacaoService } from './contas.service';
+import { ModelosAtuacaoService } from './modelos-atuacao.service';
 
-@Module({ imports: [SecretariaModule, DiscoveryModule], controllers: [AutorizacaoController], providers: [ContasAutorizacaoService, RotasServicosService, LiberacoesService] })
+@Module({ imports: [SecretariaModule, DiscoveryModule], controllers: [AutorizacaoController], providers: [ContasAutorizacaoService, ModelosAtuacaoService, RotasServicosService, LiberacoesService] })
 export class AutorizacaoModule {}

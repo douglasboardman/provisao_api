@@ -13,6 +13,7 @@ import { hashAto, transacaoSerializavel } from '../orgaos/idempotencia';
 import { hojeDaIgreja } from '../orgaos/relogio-igreja';
 import { ComposicaoService } from '../orgaos/composicao.service';
 import { Ator, contaDaSessao, camposConta, compativel, Conta, comparar, decisaoAtribuicoes, decidirAcaoModelo, decidirServico, fundamento, papeisDaConta, servicos, Tx } from './politica';
+import { filtrarAtribuicoesDeModelos } from './validade-modelo';
 
 const escolha = z.strictObject({ pessoa_id: z.uuid(), conta_id: z.uuid().nullable(), anterior_id: z.uuid().nullable(), fundamento });
 const concessao = z.strictObject({ acao: servicos, inicio: z.iso.datetime({ offset: true }),
@@ -112,6 +113,7 @@ export class ContasAutorizacaoService {
       const u = await this.administrador(tx, a);
       const r = await tx.atribuicao_servico.findFirst({ where: { id, igreja_id: u.igreja_id } });
       if (!r) throw new NotFoundException('Atribuição não encontrada.');
+      if (r.concessao_modelo_id) throw new BadRequestException('Revogue a concessão na tela de perfis de acesso.');
       if (!r.revogado_em) {
         await tx.atribuicao_servico.update({ where: { id }, data: { revogado_em: new Date() } });
         await this.evento(tx, u, 'REVOGAR_SERVICO', id, v.fundamento, r.pessoa_id, r.usuario_id, { acao: r.acao });
@@ -128,8 +130,9 @@ export class ContasAutorizacaoService {
       const historicas = await tx.atribuicao_servico.findMany({ where: { usuario_id: u.id, igreja_id: u.igreja_id }, orderBy: { inicio: 'desc' } });
       const atribuicoes = historicas.filter(r => r.geracao_vinculo === u.geracao_vinculo && !r.revogado_em);
       const agora = new Date();
+      const consideradas = await filtrarAtribuicoesDeModelos(tx, u, historicas, agora);
       const servicosPropostos = servicos.options.map(acao => ({
-        acao, rotulo: rotulosServico[acao], ...decisaoAtribuicoes(u, acao, historicas.filter(r => r.acao === acao), agora),
+        acao, rotulo: rotulosServico[acao], ...decisaoAtribuicoes(u, acao, consideradas.filter(r => r.acao === acao), agora),
       }));
       const cargos: { contexto_id: string; contexto: string; cargo: string; origem_id: string }[] = [];
       if (u.ativo && u.conta_atuacao && u.pessoa_id) {
@@ -156,6 +159,7 @@ export class ContasAutorizacaoService {
       return { cargos_propostos: cargos, usuario_id: u.id, pessoa_id: u.pessoa_id, conta_atuacao: u.conta_atuacao,
         ...(id && {
           selecionada_id: selecionada?.id ?? null, competencias, pode_converter: !!u.pessoa_id && u.ativo && perfisLegados.has(u.perfil),
+          pode_salvar_modelo_atuacao: !!operador.pessoa_id && !!u.pessoa_id && u.ativo,
           catalogo: codigosServico.filter(acao => compativel(u.perfil, acao) || perfisLegados.has(u.perfil) && compativel('COMUM', acao))
             .map(acao => ({ acao, rotulo: rotulosServico[acao] })),
         }), atribuicoes, servicos_propostos: servicosPropostos };
@@ -170,8 +174,9 @@ export class ContasAutorizacaoService {
       const modos = new Map(configuracoes.map(c => [c.acao, c.estado]));
       const registros = comum || configuracoes.length ? await tx.atribuicao_servico.findMany({ where: { igreja_id: u.igreja_id, usuario_id: u.id,
         geracao_vinculo: u.geracao_vinculo, revogado_em: null } }) : [];
-      const ativos = new Set(registros.filter(r => r.inicio <= agora && (!r.fim || r.fim > agora) &&
-        servicos.safeParse(r.acao).success && compativel(u.perfil, r.acao as Servico)).map(r => r.acao as Servico));
+      const vigentes = registros.filter(r => r.inicio <= agora && (!r.fim || r.fim > agora) &&
+        servicos.safeParse(r.acao).success && compativel(u.perfil, r.acao as Servico));
+      const ativos = new Set((await filtrarAtribuicoesDeModelos(tx, u, vigentes, agora)).map(r => r.acao as Servico));
       const rotas = comum ? [] : this.rotas.listar().filter(r => r.perfis.includes(u.perfil));
       const permissoes: Record<string, string[]> = {};
       for (const [modulo, acoes] of Object.entries(gruposServico)) {
@@ -180,9 +185,11 @@ export class ContasAutorizacaoService {
           .map(([operacao]) => operacao);
       }
       const dia = await hojeDaIgreja(tx, u.igreja_id);
+      const presidente = await presidenciaSociedades(tx, u, dia);
+      permissoes['perfis-atuacao'] = u.pessoa_id && (u.perfil === 'ADMINISTRADOR' || presidente) ? ['view'] : [];
       if (recursoDaIgreja('orgaos', u.igreja_id) && recursoDaIgreja('governanca', u.igreja_id)) {
         const temOrgao = comum ? ativos.has('ORGAOS_CONSULTAR') || ativos.has('CARGOS_REGISTRAR') || ativos.has('MANDATOS_REGISTRAR') ||
-          !!await presidenciaSociedades(tx, u, dia) || (await orgaosOficiaisDaConta(tx, u, dia, this.atuacao)).length > 0 || (await orgaosDeAtuacao(tx, u, dia)).length > 0
+          !!presidente || (await orgaosOficiaisDaConta(tx, u, dia, this.atuacao)).length > 0 || (await orgaosDeAtuacao(tx, u, dia)).length > 0
           : ['ADMINISTRADOR','GESTOR','SECRETARIO','AUDITOR'].includes(u.perfil);
         permissoes.orgaos = temOrgao ? ['view'] : [];
       } else { permissoes.orgaos = []; }
@@ -217,7 +224,7 @@ export class ContasAutorizacaoService {
       throw new BadRequestException('A conversão exige conta ativa com perfil legado e pessoa vinculada.');
     if (acoes.some(acao => !compativel('COMUM', acao))) throw new BadRequestException('Confira os serviços compatíveis com uma conta comum.');
     const existentes = await tx.atribuicao_servico.findMany({ where: { usuario_id: alvo.id, igreja_id: alvo.igreja_id,
-      pessoa_id: alvo.pessoa_id, geracao_vinculo: alvo.geracao_vinculo, revogado_em: null,
+      pessoa_id: alvo.pessoa_id, geracao_vinculo: alvo.geracao_vinculo, revogado_em: null, concessao_modelo_id: null,
       OR: [{ fim: null }, { fim: { gt: agora } }] }, orderBy: [{ acao: 'asc' }, { inicio: 'asc' }] });
     const dia = new Date(await hojeDaIgreja(tx, alvo.igreja_id));
     const contextuais = competencias.length ? await tx.competencia_secretaria.findMany({ where: {

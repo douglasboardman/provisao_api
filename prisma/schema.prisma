@@ -35,6 +35,7 @@ model campo_secretaria {
 
 model igreja {
   liberacoes_servico liberacao_servico[]
+  modelos_atribuicoes modelo_atribuicoes[]
   locais_reuniao local_reuniao[]
   campos_secretaria campo_secretaria[]
   contextos_secretaria contexto_secretaria[]
@@ -346,6 +347,7 @@ model usuarios {
   conta_atuacao Boolean @default(false)
   geracao_vinculo Int @default(0)
   atribuicoes_servico atribuicao_servico[]
+  concessoes_modelo_atuacao concessao_modelo_atuacao[]
   concessoes_assembleia acesso_assembleia[]
   folhas_extraidas folha_presenca_assembleia[]
   mesas_registradas mesa_assembleia[]
@@ -695,6 +697,8 @@ model cargo_orgao {
   ativo Boolean @default(true)
   orgao orgao_interno @relation(fields: [orgao_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   ocupacoes ocupacao_cargo[]
+  modelos_atribuicoes modelo_atribuicoes[]
+  @@unique([id, igreja_id])
   @@unique([id, igreja_id, orgao_id])
   @@unique([orgao_id, codigo])
 }
@@ -2488,8 +2492,11 @@ model atribuicao_servico {
   inicio DateTime @db.Timestamptz(3)
   fim DateTime? @db.Timestamptz(3)
   revogado_em DateTime? @db.Timestamptz(3)
+  concessao_modelo_id String?
+  concessao_modelo concessao_modelo_atuacao? @relation(fields: [concessao_modelo_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   usuario usuarios @relation(fields: [usuario_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   @@index([igreja_id, usuario_id])
+  @@index([concessao_modelo_id])
 }
 
 model evento_autorizacao {
@@ -2505,4 +2512,39 @@ model evento_autorizacao {
   dados Json
   instante DateTime @default(now()) @db.Timestamptz(3)
   @@index([igreja_id, instante])
+}
+
+model modelo_atribuicoes {
+  id                String   @id @default(uuid())
+  igreja_id         String
+  nome              String
+  nome_normalizado  String
+  acoes             String[]
+  cargo_id          String?
+  oficio            oficio_tipo?
+  igreja            igreja   @relation(fields: [igreja_id], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  cargo             cargo_orgao? @relation(fields: [cargo_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  concessoes        concessao_modelo_atuacao[]
+
+  @@unique([id, igreja_id])
+  @@unique([igreja_id, nome_normalizado])
+}
+
+model concessao_modelo_atuacao {
+  id               String @id @default(uuid())
+  igreja_id        String
+  modelo_id        String
+  usuario_id       String
+  pessoa_id        String
+  geracao_vinculo  Int
+  qualificacao_id  String
+  inicio           DateTime @db.Timestamptz(3)
+  fim              DateTime? @db.Timestamptz(3)
+  revogado_em      DateTime? @db.Timestamptz(3)
+  modelo           modelo_atribuicoes @relation(fields: [modelo_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  usuario          usuarios @relation(fields: [usuario_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  atribuicoes      atribuicao_servico[]
+
+  @@unique([id, igreja_id])
+  @@index([igreja_id, modelo_id, usuario_id])
 }

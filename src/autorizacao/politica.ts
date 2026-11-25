@@ -3,6 +3,7 @@ import { Prisma, usuarios_perfil } from '@prisma/client';
 import { z } from 'zod';
 
 import { codigosServico, servicosDeConsulta, servicosDeHistorico, type Servico } from './catalogo-servicos';
+import { filtrarAtribuicoesDeModelos } from './validade-modelo';
 
 export type { Servico } from './catalogo-servicos';
 export const servicos = z.enum(codigosServico);
@@ -44,8 +45,8 @@ export function compativel(perfil: usuarios_perfil, acao: Servico) {
 export async function decidirServico(tx: Tx, conta: Conta, acao: Servico, agora = new Date()) {
   if (!conta.ativo || !compativel(conta.perfil, acao)) return { permite: false, motivo: 'CONTA_INCOMPATIVEL' };
   const registros = await tx.atribuicao_servico.findMany({ where: { igreja_id: conta.igreja_id, usuario_id: conta.id, acao },
-    select: { id: true, geracao_vinculo: true, inicio: true, fim: true, revogado_em: true }, orderBy: { inicio: 'desc' } });
-  return decisaoAtribuicoes(conta, acao, registros, agora);
+    select: { id: true, geracao_vinculo: true, inicio: true, fim: true, revogado_em: true, concessao_modelo_id: true }, orderBy: { inicio: 'desc' } });
+  return decisaoAtribuicoes(conta, acao, await filtrarAtribuicoesDeModelos(tx, conta, registros, agora), agora);
 }
 
 export function decisaoAtribuicoes(conta: Conta, acao: Servico, registros: {

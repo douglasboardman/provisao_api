@@ -134,4 +134,103 @@ integration('Base de autorização por conta e por igreja', () => {
     const e = await db.evento_autorizacao.findFirstOrThrow({ where: { igreja_id: igreja, acao: 'CONCEDER_SERVICO' } });
     await expect(db.evento_autorizacao.update({ where: { id: e.id }, data: { fundamento: 'Outro' } })).rejects.toThrow(/imutável/);
   });
+
+  it('permite conceder e revogar um perfil elegível sem conceder poderes de administração à presidência', async () => {
+    const ano = new Date().getUTCFullYear();
+    const inicio = new Date(`${ano - 1}-01-01`);
+    const hoje = new Date();
+    hoje.setUTCHours(0, 0, 0, 0);
+    const termino = new Date(`${ano + 1}-12-31`);
+    const cargo = await db.cargo_orgao.findFirstOrThrow({
+      where: { igreja_id: igreja, codigo: { in: ['PRIMEIRO_SECRETARIO', 'SECRETARIO'] }, orgao: { tipo: 'CONSELHO' } },
+    });
+    const titular = await criarPessoa();
+    const conta = await criarConta('COMUM', igreja, titular);
+    const segundaConta = await criarConta('COMUM', igreja, titular);
+    const semCargo = await criarConta('COMUM');
+    await db.usuarios.updateMany({ where: { id: { in: [conta, semCargo] } }, data: { conta_atuacao: true } });
+    const oficial = await db.oficial.create({ data: { igreja_id: igreja, pessoa_id: titular, tipo: 'PRESBITERO_REGENTE' } });
+    await db.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: titular, data_evento: inicio,
+      tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE' } });
+    await db.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: oficial.id, tipo: 'ORDENACAO', data_efeito: inicio,
+      ordem: 1, autoridade: 'Conselho', evidencia: fundamento } });
+    const mandato = await db.mandato_oficial.create({ data: { igreja_id: igreja, oficial_id: oficial.id, data_eleicao: inicio,
+      data_posse: inicio, termino_previsto: termino, autoridade: 'Assembleia', evidencia: fundamento, avaliacao_eleicao: {} } });
+    const ocupacao = await db.ocupacao_cargo.create({ data: { igreja_id: igreja, pessoa_id: titular, cargo_id: cargo.id, orgao_id: cargo.orgao_id,
+      inicio, termino_previsto: termino } });
+
+    const pessoaPastor = await criarPessoa();
+    const presidente = await criarConta('COMUM', igreja, pessoaPastor);
+    await db.usuarios.update({ where: { id: presidente }, data: { conta_atuacao: true } });
+    const pastor = await db.oficial.create({ data: { igreja_id: igreja, pessoa_id: pessoaPastor, tipo: 'PRESBITERO_DOCENTE' } });
+    await db.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: pastor.id, tipo: 'ORDENACAO', data_efeito: inicio,
+      ordem: 1, autoridade: 'Concílio', evidencia: fundamento } });
+    await db.vinculo_pastoral.create({ data: { igreja_id: igreja, oficial_id: pastor.id, modalidade: 'Pastor', concilio: 'Concílio',
+      ato: 'Posse', evidencia: fundamento, data_inicio: inicio, exercicio_institucional: true } });
+    const presidenteRegistro = await db.presidencia_conselho.create({ data: { igreja_id: igreja, oficial_id: pastor.id,
+      inicio: hoje, registrado_por: admin, evidencia: fundamento } });
+
+    const modelos = '/autorizacao/modelos-atuacao';
+    const entrada = { nome: ' Perfil   Secretário ', requisito: { tipo: 'cargo', id: cargo.id },
+      acoes: ['AUDITORIA_CONSULTAR', 'PESSOAS_CONSULTAR'], fundamento };
+    await http(presidente, 'get', modelos).expect(403);
+    await db.evento_autorizacao.create({ data: { igreja_id: igreja, operador_id: revisor, pessoa_id: pessoaPastor,
+      acao: 'PRESIDENCIA_CONFERIDA', recurso_id: presidenteRegistro.id, fundamento, dados: {} } });
+    await http(presidente, 'post', modelos).send(entrada).expect(403);
+    await http(admin, 'post', modelos).send({ ...entrada, acoes: ['PRESIDENCIA_CONFERIR'] }).expect(400);
+    const { body: modeloCriado } = await http(admin, 'post', modelos).send(entrada).expect(201);
+    expect(modeloCriado.nome).toBe('Perfil Secretário');
+    await http(admin, 'post', modelos).send({ ...entrada, nome: 'perfil secretário' }).expect(409);
+    expect((await http(presidente, 'get', modelos).expect(200)).body).toMatchObject({ pode_criar: false, modelos: [expect.objectContaining({ id: modeloCriado.id })] });
+    expect((await http(outroAdmin, 'get', modelos).expect(200)).body.modelos).toEqual([]);
+
+    const rota = modelos + '/' + modeloCriado.id + '/concessoes';
+    const previa = (operador: string, usuario_id: string) => http(operador, 'post', rota + '/previa').send({ usuario_id });
+    await http(outroAdmin, 'get', rota).expect(404);
+    await previa(presidente, presidente).expect(403);
+    await previa(presidente, segundaConta).expect(400);
+    await previa(presidente, semCargo).expect(400);
+    expect((await http(presidente, 'get', rota).expect(200)).body.contas.map(c => c.id)).toEqual([conta]);
+    await http(conta, 'get', '/pessoas').expect(403);
+    await conceder(conta, 'AUDITORIA_CONSULTAR').expect(201);
+    const { body: proposta } = await previa(presidente, conta).expect(201);
+    expect(proposta.itens).toEqual([
+      expect.objectContaining({ acao: 'AUDITORIA_CONSULTAR', sobreposta: true }),
+      expect.objectContaining({ acao: 'PESSOAS_CONSULTAR', sobreposta: false }),
+    ]);
+    const aplicar = (operador: string, previa: string) => http(operador, 'post', rota).send({ usuario_id: conta, previa, fundamento });
+    const { body: { id: concessao } } = await aplicar(presidente, proposta.previa).expect(201);
+    await aplicar(admin, proposta.previa).expect(409);
+    await http(conta, 'get', '/pessoas').expect(200);
+    const ato = await db.evento_autorizacao.findFirstOrThrow({ where: { recurso_id: concessao, acao: 'ATRIBUIR_MODELO_ATUACAO' } });
+    expect(ato.operador_id).toBe(presidente);
+    expect(ato.dados).toMatchObject({ qualificacao_id: ocupacao.id, acoes: ['PESSOAS_CONSULTAR'] });
+
+    const { body: atribuicoes } = await http(admin, 'get', '/autorizacao/contas/' + conta).expect(200);
+    const vinculada = atribuicoes.atribuicoes.find(a => a.concessao_modelo_id === concessao);
+    await http(admin, 'post', '/autorizacao/atribuicoes/' + vinculada.id + '/revogar').send({ fundamento }).expect(400);
+    const revogar = '/autorizacao/concessoes-modelo/' + concessao + '/revogar';
+    await http(presidente, 'post', revogar).send({ fundamento }).expect(201);
+    await http(conta, 'get', '/pessoas').expect(403);
+    expect((await me(conta)).servicos_propostos).toContainEqual(expect.objectContaining({ acao: 'AUDITORIA_CONSULTAR', permite: true }));
+
+    const { body: nova } = await previa(admin, conta).expect(201);
+    const respostas = await Promise.all([aplicar(admin, nova.previa), aplicar(revisor, nova.previa)]);
+    expect(respostas.map(r => r.status).sort()).toEqual([201, 409]);
+    await db.ocupacao_cargo.update({ where: { id: ocupacao.id }, data: { fim: hoje, fim_ordem: 1 } });
+    await http(conta, 'get', '/pessoas').expect(403);
+    const { body: navegacao } = await http(conta, 'get', '/autorizacao/navegacao').expect(200);
+    expect(navegacao.permissoes.pessoas).not.toContain('view');
+    await previa(admin, conta).expect(400);
+
+    const { body: perfilRegente } = await http(admin, 'post', modelos).send({ ...entrada, nome: 'Perfil Regente',
+      requisito: { tipo: 'oficio', oficio: 'PRESBITERO_REGENTE' }, acoes: ['FAMILIAS_CONSULTAR'] }).expect(201);
+    const rotaRegente = modelos + '/' + perfilRegente.id + '/concessoes';
+    const { body: regente } = await http(admin, 'post', rotaRegente + '/previa').send({ usuario_id: conta }).expect(201);
+    await http(admin, 'post', rotaRegente).send({ usuario_id: conta, previa: regente.previa, fundamento }).expect(201);
+    expect((await me(conta)).servicos_propostos).toContainEqual(expect.objectContaining({ acao: 'FAMILIAS_CONSULTAR', permite: true }));
+    await db.mandato_oficial.update({ where: { id: mandato.id }, data: { termino_efetivo: new Date(hoje.getTime() - 86_400_000),
+      motivo_encerramento: 'Término registrado em ata de ensaio' } });
+    expect((await me(conta)).servicos_propostos).toContainEqual(expect.objectContaining({ acao: 'FAMILIAS_CONSULTAR', permite: false }));
+  });
 });
