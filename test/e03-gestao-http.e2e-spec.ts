@@ -49,6 +49,8 @@ integration('E03: gestão HTTP protegida', () => {
     await p.membro_orgao.deleteMany({ where: { orgao_id: orgaoId } });
     await p.ocupacao_cargo.deleteMany({ where: { orgao_id: orgaoId } });
     await p.cargo_orgao.deleteMany({ where: { orgao_id: orgaoId } });
+    await p.contexto_secretaria.deleteMany({ where: { orgao_id: orgaoId } });
+    await p.versao_orgao.deleteMany({ where: { orgao_id: orgaoId } });
     await p.orgao_interno.deleteMany({ where: { id: orgaoId } });
     await p.requisicao_institucional.deleteMany({ where: { igreja_id: igreja, idempotencia: { in: [chaveCompetencia, chaveFim, chavePresidencia, chaveFimPresidencia] } } });
     await p.competencia_unidades.deleteMany({ where: { id: competenciaId } });

@@ -1,3 +1,5 @@
+import { exigirServicoNaTransacao } from '../autorizacao/escrita-servico';
+import type { Ator, Tx } from '../autorizacao/politica';
 import { randomUUID } from "node:crypto";
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "src/prisma/prisma.service";
@@ -14,9 +16,9 @@ type RegraComValores = Prisma.regras_relacao_enumGetPayload<{
 export class RegrasRelacaoEnumService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getRegrasPorModulo(modulo: string, igreja: string): Promise<RegraComValores[]> {
+  async getRegrasPorModulo(modulo: string, igreja: string, tx: Tx = this.prisma): Promise<RegraComValores[]> {
     if (modulo === "membresia") return consultarRegrasDaIgreja(this.prisma, igreja);
-    return this.prisma.regras_relacao_enum.findMany({
+    return tx.regras_relacao_enum.findMany({
       where: { modulo },
       include: { valores: true },
       orderBy: { nome: "asc" },
@@ -101,8 +103,9 @@ export class RegrasRelacaoEnumService {
     });
   }
 
-  async replaceValoresDaIgreja(igreja: string, regraId: string, valores: ReplaceValoresDto["valores"]): Promise<RegraComValores> {
+  async replaceValoresDaIgreja(igreja: string, regraId: string, valores: ReplaceValoresDto["valores"], ator?: Ator): Promise<RegraComValores> {
     return this.prisma.$transaction(async tx => {
+      await exigirServicoNaTransacao(tx, ator, 'PARAMETROS_EDITAR');
       const bloqueadas = await tx.$queryRaw<{ id: string }[]>`
         SELECT id FROM regras_relacao_enum WHERE id = ${regraId} AND modulo = 'membresia' FOR UPDATE
       `;

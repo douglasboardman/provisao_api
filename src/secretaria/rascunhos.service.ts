@@ -1,3 +1,6 @@
+import { mesaVigente } from './mesa-assembleia';
+import { ForbiddenException } from '@nestjs/common';
+import { identificacaoDocumento } from './numeracao-ata-livro';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { livro_atas, Prisma, registro_livro, registro_livro_natureza, trabalho_renderizacao } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
@@ -5,17 +8,18 @@ import { PrivateStorageService } from '../private-storage/private-storage.servic
 import { hashAto, transacaoComRetentativa } from '../orgaos/idempotencia';
 import { AtorSecretaria, SecretariaBaseService, Tx, json } from './secretaria-base.service';
 import { validar, conteudoSchema, configuracaoSchema, imagensDaEstrutura, politicaLivro } from './secretaria.dto';
-import { FonteRenderizacao, gerarPdf, htmlDocumento, medirPaginasLivro } from './renderizador';
+import { FonteRenderizacao, gerarPdf, htmlDocumento, margensConcilio, medirPaginasLivro } from './renderizador';
 import { decodificarImagemDocumental, limitePixelsDocumento, logoDocumental } from './imagens-documentais';
 
 import { assinaturasDisponiveis } from './expedicao-estado';
 import { livrosDisponiveis } from './livros.service';
+import { ocorrencias } from './composicao-pagina';
 import { resolucoesParaMatriz } from './resolucoes';
 
 type Documento = Awaited<ReturnType<SecretariaBaseService['documento']>>;
 type Versao = Documento['versoes'][number];
 type ArquivoFonte = { id: string; igreja_id: string; tamanho: number; sha256: string };
-type FonteTrabalho = { fonte: FonteRenderizacao; arquivos: ArquivoFonte[] };
+type FonteTrabalho = { paginacao?: 'composicao-v2'; fonte: FonteRenderizacao; arquivos: ArquivoFonte[] };
 export type SignatarioRenderizacao = Pick<Versao['arrolados'][number], 'assina' | 'pessoa_id'> & { retrato: unknown };
 type VersaoFonte = Pick<Versao, 'modelo' | 'anexos' | 'assunto' | 'data_documento' | 'resolucoes'> & { conteudo: unknown };
 type Vinculo = { livro: livro_atas; natureza: registro_livro_natureza };
@@ -36,7 +40,8 @@ export class RascunhosService {
     const modelo = await tx.modelo_documento.findUniqueOrThrow({ where: { id: versao.modelo.modelo_id }, select: { nome: true } });
     const config = validar(configuracaoSchema, versao.modelo.configuracao);
     const conteudo = validar(conteudoSchema, versao.conteudo);
-    const blocos = imagensDaEstrutura(conteudo.estrutura);
+    const decisoesNoTexto = ocorrencias(conteudo.composicao).some(c => config.definicoes?.[c.campo_id]?.origem === 'deliberacoes_reuniao');
+    const blocos = imagensDaEstrutura(conteudo.estrutura, conteudo.composicao);
     const imagens = new Set(blocos.map(b => b.arquivo_id));
     const arquivos = versao.anexos.filter(x => imagens.has(x.arquivo_id))
       .map(x => ({ id: x.arquivo_id, igreja_id: documento.igreja_id, ...x.arquivo })).sort((a, b) => a.id.localeCompare(b.id));
@@ -52,6 +57,7 @@ export class RascunhosService {
     const { url_logo, ...dadosIgreja } = igreja;
     return {
       arquivos,
+      ...(conteudo.composicao?.versao_formato === 2 && { paginacao: 'composicao-v2' as const }),
       fonte: {
         tipo: documento.tipo, titulo: modelo.nome, numero, contexto, finalidade, perfil: config.perfil,
         assunto: versao.assunto,
@@ -59,7 +65,7 @@ export class RascunhosService {
         ...(vinculo ? { livro: { numero: vinculo.livro.numero, serie: vinculo.livro.serie, perfil: vinculo.livro.perfil, natureza: vinculo.natureza } } : {}), tiposCampos: config.tipos_campos,
         data: versao.data_documento.toISOString().slice(0, 10), igreja: dadosIgreja,
         logo: await logoDocumental(url_logo), conteudo, signatarios, imagens: {},
-        ...(versao.resolucoes.length ? { resolucoes: resolucoesParaMatriz(versao.resolucoes, arrolados) } : {}),
+        ...(!decisoesNoTexto && versao.resolucoes.length ? { resolucoes: resolucoesParaMatriz(versao.resolucoes, arrolados) } : {}),
       },
     };
   }
@@ -122,12 +128,21 @@ export class RascunhosService {
       this.base.conferirRevisao(d.revisao, revisao);
       if (d.estado !== 'EM_EDICAO') throw new BadRequestException('Rascunho exige documento em edição.');
       const v = d.versoes.find(x => x.numero === d.versao_atual)!;
+      if (a.perfil === 'COMUM') {
+        if (v.reuniao_id && d.tipo === 'ATA' && await mesaVigente(tx, { id: v.reuniao_id, igreja_id: a.igreja_id, contexto_id: d.contexto_id }))
+          throw new ForbiddenException('A redação desta sessão está sob a mesa.');
+        if (!v.modelo) throw new ForbiddenException('O documento exige um modelo com atuação definida.');
+        await this.base.autorizarModelo(tx, a, d.contexto_id, v.modelo.configuracao, 'editar', true);
+      }
       const trabalho = await tx.trabalho_renderizacao.findUnique({ where: { versao_id_revisao_documento: { versao_id: v.id, revisao_documento: revisao } } });
       if (trabalho) return this.repetirFalha(tx, trabalho);
       const igreja = await tx.igreja.findUniqueOrThrow({ where: { id: a.igreja_id }, select: igrejaSelect });
       const contexto = await this.base.contexto(tx, a, d.contexto_id);
-      const numero = d.numero ? `${String(d.numero).padStart(3, '0')}/${d.ano}/${d.sigla}` : 'SEM NÚMERO RESERVADO';
+      const numero = d.numero ? identificacaoDocumento(d) : 'SEM NÚMERO RESERVADO';
       const fonte = await this.fonte(tx, d, v, igreja, v.arrolados, numero, contexto.orgao?.nome ?? contexto.nome, 'RASCUNHO');
+      if (v.livro?.perfil === 'CONCILIO_IPB_2025' && fonte.fonte.conteudo.composicao) {
+        fonte.fonte.conteudo.composicao.pagina.margens_cm = margensConcilio;
+      }
       return this.enfileirar(tx, a, v, revisao, 'RASCUNHO', fonte);
     }, Prisma.TransactionIsolationLevel.Serializable, conflitoDeFila);
   }
@@ -262,7 +277,7 @@ export class RascunhosService {
         return true;
       }
       const { fonte, arquivos } = job.fonte as unknown as FonteTrabalho;
-      const blocos = imagensDaEstrutura(fonte.conteudo.estrutura);
+      const blocos = imagensDaEstrutura(fonte.conteudo.estrutura, fonte.conteudo.composicao);
       let totalPixels = 0;
       for (const arquivo of arquivos) {
         const imagem = decodificarImagemDocumental(await this.storage.readVerified(arquivo));

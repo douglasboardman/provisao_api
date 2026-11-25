@@ -1,3 +1,4 @@
+import { ServicoDaRota } from '../autorizacao/politica';
 import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Request } from '@nestjs/common';
 import { ContasService } from './contas.service';
 import { CreateContaDto } from './dto/create-conta.dto';
@@ -22,16 +23,18 @@ export class ContasController {
    * Restrito a ADMIN e GESTOR.
    * Rota: POST /contas
    */
+  @ServicoDaRota('CONTAS_CADASTRAR')
   @Post()
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO)
   create(@Request() req, @Body() createContaDto: CreateContaDto) {
-    return this.contasService.create(req.user.igreja_id, createContaDto);
+    return this.contasService.create(req.user.igreja_id, createContaDto, req.user);
   }
 
   /**
    * Lista todas as contas da mesma igreja do solicitante.
    * Rota: GET /contas
    */
+  @ServicoDaRota('CONTAS_CONSULTAR')
   @Get()
   findAll(@Request() req) {
     return this.contasService.findAll(req.user.igreja_id);
@@ -41,6 +44,7 @@ export class ContasController {
    * Retorna uma conta pelo ID, dentro da mesma igreja.
    * Rota: GET /contas/:id
    */
+  @ServicoDaRota('CONTAS_CONSULTAR')
   @Get(':id')
   findOne(@Request() req, @Param('id') id: string) {
     return this.contasService.findOne(id, req.user.igreja_id);
@@ -51,19 +55,21 @@ export class ContasController {
    * Restrito a ADMIN e GESTOR.
    * Rota: PATCH /contas/:id
    */
+  @ServicoDaRota('CONTAS_EDITAR')
   @Patch(':id')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO)
   update(@Request() req, @Param('id') id: string, @Body() updateContaDto: UpdateContaDto) {
-    return this.contasService.update(id, req.user.igreja_id, updateContaDto);
+    return this.contasService.update(id, req.user.igreja_id, updateContaDto, req.user);
   }
 
   /**
    * Remove uma conta da mesma igreja. Restrito ao ADMIN.
    * Rota: DELETE /contas/:id
    */
+  @ServicoDaRota('CONTAS_EXCLUIR')
   @Delete(':id')
   @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO)
   remove(@Request() req, @Param('id') id: string) {
-    return this.contasService.remove(id, req.user.igreja_id);
+    return this.contasService.remove(id, req.user.igreja_id, req.user);
   }
 }

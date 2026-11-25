@@ -11,7 +11,7 @@ async function bootstrap() {
     origin: process.env.FRONTEND_URL ?? 'http://localhost:3001',
     credentials: true,
   });
-  app.use('/secretaria/atas-legadas', json({ limit: '2mb' }));
+  app.use(['/minha-assembleia/salvar', '/secretaria/atas-legadas', '/secretaria/modelos', '/secretaria/documentos'], json({ limit: '2mb' }));
   app.use(json());
   app.use(urlencoded({ extended: true }));
   // Aplica o ZodValidationPipe globalmente na aplicação

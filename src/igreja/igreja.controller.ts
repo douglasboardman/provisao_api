@@ -1,3 +1,4 @@
+import { ServicoDaRota } from '../autorizacao/politica';
 import {
   Body,
   Controller,
@@ -37,6 +38,7 @@ export class IgrejaController {
     return this.igrejaService.create(dto);
   }
 
+  @ServicoDaRota('IGREJA_CONSULTAR')
   @Get('me')
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(...ALL_ROLES)
@@ -44,21 +46,24 @@ export class IgrejaController {
     return this.igrejaService.findMe(req.user.igreja_id);
   }
 
+  @ServicoDaRota('IGREJA_EDITAR')
   @Patch('me')
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
   updateMe(@Request() req, @Body() dto: UpdateIgrejaDto) {
-    return this.igrejaService.updateMe(req.user.igreja_id, dto);
+    return this.igrejaService.updateMe(req.user.igreja_id, dto, req.user);
   }
 
+  @ServicoDaRota('IGREJA_EDITAR')
   @Patch('me/logo')
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
   @UseInterceptors(FileInterceptor('file'))
   updateLogo(@Request() req, @UploadedFile() file: Express.Multer.File) {
-    return this.igrejaService.updateLogo(req.user.igreja_id, file);
+    return this.igrejaService.updateLogo(req.user.igreja_id, file, req.user);
   }
 
+  @ServicoDaRota('IGREJA_CONSULTAR')
   @Get('me/congregacoes')
   @UseGuards(AuthGuard, RolesGuard)
   @Roles(...ALL_ROLES)

@@ -1,29 +1,49 @@
+import type { Conta } from '../autorizacao/politica';
+import { orgaosDeAtuacao, presidenciaSociedades } from '../orgaos/acesso-sociedades';
+import { sociedadeJuvenil } from '../orgaos/sociedades-regras';
+import { mesaVigente } from './mesa-assembleia';
+import { contaDaSessao, papeisDaConta, type Ator } from '../autorizacao/politica';
+import { AtuacaoModeloService, type AcaoModelo } from './atuacao-modelo.service';
+import { configuracaoSchema } from './secretaria.dto';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma, usuarios_perfil } from '@prisma/client';
+import { Prisma, usuarios_perfil, type competencia_secretaria } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { conflitoDeTransacao, hashAto, transacaoSerializavel } from '../orgaos/idempotencia';
+import { conflitoDeTransacao, hashAto, transacaoComRetentativa } from '../orgaos/idempotencia';
 import { hojeDaIgreja } from '../orgaos/relogio-igreja';
 import { incluirResolucoes } from './resolucoes';
 
-export interface AtorSecretaria { sub: string; igreja_id: string; perfil: usuarios_perfil }
+export interface AtorSecretaria extends Partial<Ator> { sub: string; igreja_id: string; perfil: usuarios_perfil }
 export type Tx = Prisma.TransactionClient;
 export const json = (v: unknown): Prisma.InputJsonValue => JSON.parse(JSON.stringify(v)) as Prisma.InputJsonValue;
 export const dataCivil = (v: string) => new Date(`${v}T00:00:00.000Z`);
 
 @Injectable()
 export class SecretariaBaseService {
-  constructor(readonly prisma: PrismaService) {}
+  constructor(readonly prisma: PrismaService, readonly atuacao: AtuacaoModeloService) {}
 
   async operador(tx: Tx, ator: AtorSecretaria) {
+    if (ator.perfil === 'COMUM') {
+      if (!ator.sessao_id || ator.auth_version === undefined) throw new ForbiddenException('Sessão institucional indisponível.');
+      const conta = await contaDaSessao(tx, { ...ator, sessao_id: ator.sessao_id, auth_version: ator.auth_version });
+      if (conta.perfil !== 'COMUM') throw new ForbiddenException('Perfil da conta alterado.');
+    }
     const u = await tx.usuarios.findFirst({ where: { id: ator.sub, igreja_id: ator.igreja_id, ativo: true } });
-    if (!u || !['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', 'AUDITOR'].includes(u.perfil)) throw new ForbiddenException('Operador não autorizado.');
+    if (!u || !['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', 'AUDITOR', 'COMUM'].includes(u.perfil)) throw new ForbiddenException('Operador não autorizado.');
     return u;
   }
 
-  async comando(ator: AtorSecretaria, operacao: string, alvo: string | null, dados: { idempotencia: string }, executar: (tx: Tx) => Promise<unknown>) {
-    return transacaoSerializavel(this.prisma, async tx => {
+  async comando(ator: AtorSecretaria, operacao: string, alvo: string | null, dados: { idempotencia: string }, executar: (tx: Tx) => Promise<unknown>, autorizar?: (tx: Tx) => Promise<void>) {
+    const disputaDeChave = (erro: unknown) => {
+      if (!(erro instanceof Prisma.PrismaClientKnownRequestError) || erro.code !== 'P2002') return false;
+      const colunas = erro.meta?.target;
+      return Array.isArray(colunas) && ((colunas.includes('igreja_id') && colunas.includes('chave')) ||
+        (operacao === 'ASSEMBLEIA_FOLHA' && colunas.includes('reuniao_id') && colunas.includes('versao')));
+    };
+    return transacaoComRetentativa(this.prisma, async tx => {
       const operador = await this.operador(tx, ator);
       if (operador.perfil === 'AUDITOR') throw new ForbiddenException('Perfil de consulta não pode executar comandos.');
+      if (operacao.startsWith('CAMPO_') && !['SECRETARIO', 'ADMINISTRADOR'].includes(operador.perfil)) throw new ForbiddenException('Cadastro de campos reservado à Secretaria.');
+      await autorizar?.(tx);
       const chave = dados.idempotencia.toLowerCase(), hash = hashAto({ operacao, alvo, dados });
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${ator.igreja_id + ':secretaria:' + chave}, 0))`;
       const anterior = await tx.comando_secretaria.findUnique({ where: { igreja_id_chave: { igreja_id: ator.igreja_id, chave } } });
@@ -44,7 +64,17 @@ export class SecretariaBaseService {
           if (typeof documentoId !== 'string') throw new ConflictException('Resultado anterior indisponível.');
           const documento = await this.documento(tx, ator, documentoId);
           if (operacao === 'EDITAR_DOCUMENTO_LEGADO') this.exigirSecretario(operador);
-          else if (['CRIAR_DOCUMENTO', 'EDITAR_DOCUMENTO', 'ENCAMINHAR'].includes(operacao)) await this.preparar(tx, ator, documento.contexto_id);
+          else if (['CRIAR_DOCUMENTO', 'EDITAR_DOCUMENTO', 'ENCAMINHAR'].includes(operacao)) {
+            const modelo = documento.versoes.find(v => v.numero === documento.versao_atual)?.modelo;
+            if (!modelo) throw new ConflictException('Modelo anterior indisponível.');
+            const acao = operacao === 'EDITAR_DOCUMENTO' || (operacao === 'ENCAMINHAR' && operador.perfil === 'COMUM') ? 'editar' : operacao === 'CRIAR_DOCUMENTO' && 'acao' in dados && dados.acao === 'preparar' ? 'preparar' : 'criar';
+            if (operador.perfil === 'COMUM') {
+              const versao = documento.versoes.find(v => v.numero === documento.versao_atual);
+              if (versao?.reuniao_id && documento.tipo === 'ATA' && await mesaVigente(tx, { id: versao.reuniao_id, igreja_id: ator.igreja_id, contexto_id: documento.contexto_id }))
+                throw new ForbiddenException('A redação desta sessão está sob a mesa.');
+            }
+            await this.autorizarModelo(tx, ator, documento.contexto_id, modelo.configuracao, acao, operacao !== 'CRIAR_DOCUMENTO');
+          }
           else await this.competente(tx, ator, documento.contexto_id, operacao === 'DELIBERAR_ATA' ? 'pode_deliberar' : 'pode_aprovar');
         }
         if (['CRIAR_CONTEXTO', 'CONCEDER_COMPETENCIA', 'ENCERRAR_COMPETENCIA'].includes(operacao) && operador.perfil !== 'ADMINISTRADOR') throw new ForbiddenException('Configuração técnica reservada ao administrador.');
@@ -55,8 +85,8 @@ export class SecretariaBaseService {
       const comando = await tx.comando_secretaria.create({ data: { igreja_id: ator.igreja_id, usuario_id: ator.sub, chave, operacao, alvo_id: alvo, hash, dados: json(dados), resultado: r } });
       await tx.logs_atividades.create({ data: { igreja_id: ator.igreja_id, usuario_id: ator.sub, acao: 'ATUALIZACAO', tabela_afetada: 'comando_secretaria', registro_id: comando.id, dados_novos: { operacao, alvo_id: alvo } } });
       return r;
-    }, 7).catch((erro: unknown) => {
-      if (conflitoDeTransacao(erro)) throw new ConflictException('A Secretaria está processando operações concorrentes. Tente novamente.');
+    }, Prisma.TransactionIsolationLevel.Serializable, disputaDeChave, 7).catch((erro: unknown) => {
+      if (conflitoDeTransacao(erro) || disputaDeChave(erro)) throw new ConflictException('A Secretaria está processando operações concorrentes. Tente novamente.');
       throw erro;
     });
   }
@@ -64,44 +94,113 @@ export class SecretariaBaseService {
   async contexto(tx: Tx, ator: AtorSecretaria, id: string) {
     const c = await tx.contexto_secretaria.findFirst({ where: { id, igreja_id: ator.igreja_id }, include: { orgao: true } });
     if (!c) throw new NotFoundException('Contexto não encontrado nesta igreja.');
-    return c;
+    if ((ator.perfil === 'COMUM' || sociedadeJuvenil(c.orgao.tipo_padrao)) && !await this.contextoVisivel(tx, c, await this.operador(tx, ator)))
+      throw new NotFoundException('Contexto indisponível para esta conta de atuação.');
+    return { ...c, nome: c.orgao.nome, sigla: c.orgao.sigla ?? c.sigla };
   }
 
-  async concessoes(tx: Tx, ator: AtorSecretaria, contexto?: string) {
-    const usuario = await tx.usuarios.findFirst({ where: { id: ator.sub, igreja_id: ator.igreja_id, ativo: true }, select: { pessoa_id: true } });
-    if (!usuario?.pessoa_id) return [];
-    const hoje = dataCivil(await hojeDaIgreja(tx, ator.igreja_id));
-    return tx.competencia_secretaria.findMany({ where: { igreja_id: ator.igreja_id, usuario_id: ator.sub, pessoa_id: usuario.pessoa_id, ...(contexto ? { contexto_id: contexto } : {}), inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] } });
+  async contextoVisivel(tx: Tx, contexto: Parameters<AtuacaoModeloService['papeis']>[1] & {
+    orgao: { tipo: string; ativo: boolean; tipo_padrao: string | null; gestao_presidencial: boolean };
+  }, conta: Conta) {
+    const juvenil = sociedadeJuvenil(contexto.orgao.tipo_padrao);
+    if (conta.perfil !== 'COMUM' && !juvenil) return true;
+    const dia = await hojeDaIgreja(tx, contexto.igreja_id);
+    if (!juvenil && (await this.competenciasDaConta(tx, conta, dia, contexto.id)).length) return true;
+    if (contexto.orgao.tipo === 'SOCIEDADE_INTERNA' || contexto.orgao.gestao_presidencial) {
+      if (await presidenciaSociedades(tx, conta, dia)) return true;
+      return (await orgaosDeAtuacao(tx, conta, dia)).includes(contexto.orgao_id!);
+    }
+    return (await this.papeisContextuais(tx, contexto, conta)).size > 0;
+  }
+
+  async papeisContextuais(tx: Tx, contexto: Parameters<AtuacaoModeloService['papeis']>[1],
+    conta: Conta, dia?: string) {
+    if (!(['CONSELHO', 'JUNTA', 'ASSEMBLEIA_GERAL', 'SOCIEDADE_INTERNA'].includes(contexto.orgao?.tipo ?? '') || contexto.orgao?.gestao_presidencial) || !conta.conta_atuacao || !conta.pessoa_id)
+      return new Set<string>();
+    const referencia = dia ?? await hojeDaIgreja(tx, contexto.igreja_id);
+    const cargos = await this.atuacao.papeis(tx, contexto, conta.pessoa_id, referencia);
+    const papeis = (await papeisDaConta(tx, conta, cargos, referencia)).papeis;
+    if (contexto.orgao?.tipo !== 'ASSEMBLEIA_GERAL' || !papeis.size) return papeis;
+    const secretaria = await tx.cargo_orgao.findMany({ where: { id: { in: [...papeis] }, igreja_id: contexto.igreja_id,
+      orgao: { tipo: 'CONSELHO', ativo: true }, OR: [{ funcao: 'SECRETARIO' }, { codigo: { in: ['SECRETARIO','PRIMEIRO_SECRETARIO','SEGUNDO_SECRETARIO'] } }] },
+      select: { id: true } });
+    return new Set(secretaria.map(cargo => cargo.id));
+  }
+
+  private async competenciasDaConta(tx: Tx, conta: Conta, dia: string, contexto?: string): Promise<competencia_secretaria[]> {
+    if (!conta.pessoa_id) return [];
+    const hoje = dataCivil(dia);
+    return tx.competencia_secretaria.findMany({ where: { igreja_id: conta.igreja_id, usuario_id: conta.id, pessoa_id: conta.pessoa_id,
+      ...(contexto && { contexto_id: contexto }), ...(conta.perfil === 'COMUM' && { geracao_vinculo: conta.geracao_vinculo }),
+      inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }],
+    } });
+  }
+
+  async concessoes(tx: Tx, ator: AtorSecretaria, contexto?: string): Promise<competencia_secretaria[]> {
+    const conta = await tx.usuarios.findFirst({ where: { id: ator.sub, igreja_id: ator.igreja_id, ativo: true } });
+    return conta ? this.competenciasDaConta(tx, conta, await hojeDaIgreja(tx, ator.igreja_id), contexto) : [];
   }
 
   exigirSecretario(operador: { perfil: usuarios_perfil }) {
     if (operador.perfil !== 'SECRETARIO') throw new ForbiddenException('Edição de ata legada reservada ao secretário.');
   }
 
+  async podePreparar(tx: Tx, ator: AtorSecretaria, contexto: string, u: { perfil: usuarios_perfil }) {
+    if (u.perfil === 'COMUM') { await this.contexto(tx, ator, contexto); return true; }
+    return u.perfil === 'SECRETARIO' || u.perfil === 'GESTOR' ||
+      (u.perfil !== 'AUDITOR' && (await this.concessoes(tx, ator, contexto)).some(c => c.pode_aprovar || c.pode_deliberar));
+  }
+
+  async contextoAtivo(tx: Tx, ator: AtorSecretaria, contexto: string) {
+    const c = await this.contexto(tx, ator, contexto);
+    if (!c.orgao.ativo) throw new ForbiddenException('O órgão está inativo para novos atos.');
+    return c;
+  }
+
   async preparar(tx: Tx, ator: AtorSecretaria, contexto: string) {
     const u = await this.operador(tx, ator);
-    await this.contexto(tx, ator, contexto);
-    if (u.perfil === 'SECRETARIO' || u.perfil === 'GESTOR') return;
-    if (u.perfil !== 'AUDITOR' && (await this.concessoes(tx, ator, contexto)).some(c => c.pode_aprovar || c.pode_deliberar)) return;
+    await this.contextoAtivo(tx, ator, contexto);
+    if (await this.podePreparar(tx, ator, contexto, u)) return u;
     throw new ForbiddenException('Preparação reservada à secretaria ou gestor habilitado.');
   }
 
-  async competente(tx: Tx, ator: AtorSecretaria, contexto: string, acao: 'pode_aprovar' | 'pode_deliberar' | 'pode_consultar_restritos') {
+  async autorizarModelo(tx: Tx, ator: AtorSecretaria, contexto: string, configuracao: Prisma.JsonValue, acao: AcaoModelo, existente = false) {
+    const u = await this.preparar(tx, ator, contexto);
+    const c = await this.contexto(tx, ator, contexto);
+    const regra = configuracaoSchema.parse(configuracao).atuacao;
+    if (!regra) {
+      if (existente && u.perfil !== 'COMUM') return;
+      throw new ConflictException('Defina os cargos autorizados e publique uma nova versão deste modelo.');
+    }
+    if (u.perfil === 'COMUM') {
+      const papeis = await this.papeisContextuais(tx, c, u);
+      const pode = c.orgao.tipo === 'ASSEMBLEIA_GERAL' ? acao !== 'criar' && regra.preparar.some(id => papeis.has(id))
+        : (acao === 'editar' ? [...regra.criar, ...regra.preparar] : regra[acao]).some(id => papeis.has(id));
+      if (!pode)
+        throw new ForbiddenException('Seu cargo vigente precisa estar habilitado nesta ação do modelo.');
+      return;
+    }
+    await this.atuacao.exigir(tx, c, u.pessoa_id, regra, acao);
+  }
+
+  async competente(tx: Tx, ator: AtorSecretaria, contexto: string, acao: 'pode_aprovar' | 'pode_deliberar' | 'pode_consultar_restritos' | 'pode_instalar_mesa') {
     const u = await this.operador(tx, ator);
-    await this.contexto(tx, ator, contexto);
+    if (acao === 'pode_consultar_restritos') await this.contexto(tx, ator, contexto);
+    else await this.contextoAtivo(tx, ator, contexto);
     if ((acao !== 'pode_consultar_restritos' && (u.perfil === 'AUDITOR' || !u.pessoa_id)) || !(await this.concessoes(tx, ator, contexto)).some(c => c[acao])) throw new ForbiddenException('Competência institucional explícita necessária neste contexto.');
     return u;
   }
 
   async documento(tx: Tx, ator: AtorSecretaria, id: string) {
-    const d = await tx.documento.findFirst({ where: { id, igreja_id: ator.igreja_id }, include: { versoes: { orderBy: { numero: 'asc' }, include: { modelo: true, arrolados: true, resolucoes: incluirResolucoes, anexos: { include: { arquivo: { select: { sha256: true, tamanho: true } } } }, deliberacoes: { orderBy: { criado_em: 'asc' } } } } } });
+    const d = await tx.documento.findFirst({ where: { id, igreja_id: ator.igreja_id }, include: { versoes: { orderBy: { numero: 'asc' }, include: { livro: { select: { perfil: true } }, modelo: true, arrolados: true, resolucoes: incluirResolucoes, anexos: { include: { arquivo: { select: { sha256: true, tamanho: true } } } }, deliberacoes: { orderBy: { criado_em: 'asc' }, include: { mesa: { select: { ordem: true, presidente_nome: true, secretario_nome: true } } } } } } } });
     if (!d) throw new NotFoundException('Documento não encontrado nesta igreja.');
+    await this.contexto(tx, ator, d.contexto_id);
     if (d.restrito && !(await this.concessoes(tx, ator, d.contexto_id)).some(c => c.pode_consultar_restritos)) throw new NotFoundException('Documento não encontrado nesta igreja.');
     return d;
   }
 
   conferirRevisao(atual: number, esperada: number) {
-    if (atual !== esperada) throw new ConflictException('Registro alterado por outra operação. Recarregue antes de continuar.');
+    if (atual !== esperada) throw new ConflictException(`Registro alterado por outra operação. A revisão atual é ${atual}. Recarregue antes de continuar.`);
   }
 
   async conferirMotivador(tx: Tx, ator: AtorSecretaria, versaoId: string | null, documentoId: string, atualId?: string) {

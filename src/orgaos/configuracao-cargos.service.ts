@@ -23,7 +23,7 @@ export class ConfiguracaoCargosService {
       const hoje = new Date(`${await hojeDaIgreja(tx, igrejaId)}T00:00:00Z`);
       await bloquearChave(tx, igrejaId, idempotencia);
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, ativo: true }, select: { tipo: true } });
+      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, gestao_presidencial: false, tipo: { in: ['CONSELHO', 'JUNTA', 'UNIDADE_MINISTERIAL'] }, ativo: true }, select: { tipo: true } });
       if (!orgao) throw new NotFoundException('Órgão não encontrado nesta igreja.');
       if (orgao.tipo === 'UNIDADE_MINISTERIAL') {
         if (operador.perfil !== 'GESTOR' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: operador.pessoa_id, inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] }, select: { id: true } })) throw new ForbiddenException('Competência institucional não comprovada.');
@@ -53,7 +53,7 @@ export class ConfiguracaoCargosService {
       const hoje = new Date(`${await hojeDaIgreja(tx, igrejaId)}T00:00:00Z`);
       await bloquearChave(tx, igrejaId, idempotencia);
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, ativo: true }, select: { tipo: true } });
+      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, gestao_presidencial: false, tipo: { in: ['CONSELHO', 'JUNTA', 'UNIDADE_MINISTERIAL'] }, ativo: true }, select: { tipo: true } });
       if (!orgao) throw new NotFoundException('Órgão não encontrado nesta igreja.');
       if (orgao.tipo === 'UNIDADE_MINISTERIAL') {
         if (operador.perfil !== 'GESTOR' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: operador.pessoa_id, inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] }, select: { id: true } })) throw new ForbiddenException('Competência institucional não comprovada.');

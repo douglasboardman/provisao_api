@@ -19,8 +19,9 @@ export async function exigirAcessoSensivel(tx: Tx, igrejaId: string, usuarioId: 
 export class AcessoSensivelService {
   constructor(private readonly prisma: PrismaService) {}
   private async administrador(tx: Tx, igrejaId: string, usuarioId: string) {
-    const user = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: usuarios_perfil.ADMINISTRADOR }, select: { id: true } });
+    const user = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: usuarios_perfil.ADMINISTRADOR }, select: { id: true, pessoa_id: true } });
     if (!user) throw new ForbiddenException('Operador não autorizado.');
+    return user;
   }
   async conceder(igrejaId: string, usuarioId: string, dados: z.infer<typeof concessaoSchema>) {
     const parsed = concessaoSchema.safeParse(dados);
@@ -28,9 +29,11 @@ export class AcessoSensivelService {
     const v = parsed.data;
     if (v.usuario_id === usuarioId) throw new ForbiddenException('Não é permitido conceder acesso a si próprio.');
     return this.prisma.$transaction(async tx => {
-      await this.administrador(tx, igrejaId, usuarioId);
-      const alvo = await tx.usuarios.findFirst({ where: { id: v.usuario_id, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO, usuarios_perfil.AUDITOR] } }, select: { id: true, perfil: true } });
+      await tx.$queryRaw`SELECT id FROM usuarios WHERE igreja_id = ${igrejaId} AND id IN (${usuarioId}, ${v.usuario_id}) ORDER BY id FOR SHARE`;
+      const admin = await this.administrador(tx, igrejaId, usuarioId);
+      const alvo = await tx.usuarios.findFirst({ where: { id: v.usuario_id, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO, usuarios_perfil.AUDITOR, usuarios_perfil.COMUM] } }, select: { id: true, perfil: true, pessoa_id: true } });
       if (!alvo) throw new NotFoundException('Usuário elegível não encontrado nesta igreja.');
+      if (admin.pessoa_id && admin.pessoa_id === alvo.pessoa_id) throw new ForbiddenException('Não é permitido conceder acesso a outra conta própria.');
       if (alvo.perfil === usuarios_perfil.AUDITOR && v.pode_registrar) throw new BadRequestException('Auditor pode receber somente acesso de consulta.');
       const concessao = await tx.acesso_eventos_sensiveis.create({ data: { igreja_id: igrejaId, usuario_id: alvo.id, concedido_por_id: usuarioId, pode_consultar: v.pode_consultar, pode_registrar: v.pode_registrar, fundamento: v.fundamento } });
       await tx.logs_atividades.create({ data: { igreja_id: igrejaId, usuario_id: usuarioId, acao: logs_atividades_acao.CRIACAO, tabela_afetada: 'acesso_eventos_sensiveis', registro_id: concessao.id, dados_novos: { usuario_id: alvo.id, pode_consultar: v.pode_consultar, pode_registrar: v.pode_registrar } } });

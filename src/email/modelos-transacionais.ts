@@ -8,6 +8,12 @@ const formatoDePrazo = new Intl.DateTimeFormat('pt-BR', {
 });
 
 const modelos = {
+  assembleia: {
+    assunto: 'Seu acesso à ata da assembleia', titulo: 'Minha assembleia',
+    previa: 'A presidência da sessão confirmou sua eleição como secretário.',
+    corpo: 'A presidência concedeu acesso temporário para registrar as presenças, redigir a ata e registrar a decisão da assembleia.',
+    acao: 'Abrir Minha assembleia', orientacao: 'Este convite é pessoal. Se já possui conta, entre com ela ao aceitar o convite.',
+  },
   confirmacao: {
     assunto: 'Confirme seu e-mail para solicitar acesso',
     titulo: 'Confirme seu e-mail',

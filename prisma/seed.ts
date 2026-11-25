@@ -12,23 +12,27 @@ async function main(prisma: PrismaClient) {
   // 1. Cria ou atualiza a Igreja Matriz
   // O CNPJ é passado apenas com números para respeitar o limite do VarChar(14)
   const cnpjIgreja = "08038534000119";
-  const igreja = await prisma.igreja.upsert({
-    where: { cnpj: cnpjIgreja },
-    update: {},
-    create: {
-      cnpj: cnpjIgreja,
-      nome: "Igreja Presbiteriana de Uruguaiana",
-      congregacao: false,
-      vinculada_a: null,
-      logradouro: "R. Gen. Câmara",
-      numero: "2786",
-      complemento: null,
-      bairro: "Centro",
-      cidade: "Uruguaiana",
-      estado: Estados.RS, // Utiliza o Enum de estados
-      cep: "97503293", // Apenas números para respeitar o VarChar(8)
-      ativa: true,
-    },
+  const igreja = await prisma.$transaction(async tx => {
+    const matriz = await tx.igreja.upsert({
+      where: { cnpj: cnpjIgreja },
+      update: {},
+      create: {
+        cnpj: cnpjIgreja,
+        nome: "Igreja Presbiteriana de Uruguaiana",
+        congregacao: false,
+        vinculada_a: null,
+        logradouro: "R. Gen. Câmara",
+        numero: "2786",
+        complemento: null,
+        bairro: "Centro",
+        cidade: "Uruguaiana",
+        estado: Estados.RS, // Utiliza o Enum de estados
+        cep: "97503293", // Apenas números para respeitar o VarChar(8)
+        ativa: true,
+      },
+    });
+    await tx.$executeRaw`SELECT instalar_estrutura_institucional(${matriz.id})`;
+    return matriz;
   });
 
   console.log(

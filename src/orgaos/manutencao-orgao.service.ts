@@ -23,7 +23,7 @@ export class ManutencaoOrgaoService {
       const operador = await tx.usuarios.findFirst({ where: { id: usuario, igreja_id: igreja, ativo: true, perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO'] } } });
       if (!operador) throw new ForbiddenException('Operador não autorizado.');
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgao} AND igreja_id = ${igreja} FOR UPDATE`;
-      const anterior = await tx.orgao_interno.findFirst({ where: { id: orgao, igreja_id: igreja } });
+      const anterior = await tx.orgao_interno.findFirst({ where: { id: orgao, igreja_id: igreja, gestao_presidencial: false, tipo: { in: ['CONSELHO', 'JUNTA', 'UNIDADE_MINISTERIAL'] } } });
       if (!anterior) throw new NotFoundException('Órgão não encontrado nesta igreja.');
       const hoje = new Date(`${await hojeDaIgreja(tx, igreja)}T00:00:00Z`);
       if (anterior.tipo === 'UNIDADE_MINISTERIAL' && (operador.perfil !== 'GESTOR' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igreja, usuario_id: usuario, pessoa_id: operador.pessoa_id, inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] } }))) throw new ForbiddenException('Competência institucional não comprovada.');

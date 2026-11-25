@@ -26,6 +26,8 @@ integration('E03: integridade de órgãos no banco descartável', () => {
       await prisma.logs_atividades.deleteMany({ where: { registro_id: id } });
       await prisma.ato_orgao.deleteMany({ where: { orgao_id: id } });
       await prisma.cargo_orgao.deleteMany({ where: { orgao_id: id } });
+      await prisma.contexto_secretaria.deleteMany({ where: { orgao_id: id } });
+      await prisma.versao_orgao.deleteMany({ where: { orgao_id: id } });
       await prisma.orgao_interno.deleteMany({ where: { id } });
     }
     await prisma.ocupacao_cargo.deleteMany({ where: { orgao_id: orgaoId } });

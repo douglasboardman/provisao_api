@@ -1,0 +1,91 @@
+{
+  "tipo": "OUTRO",
+  "titulo": "Registro",
+  "numero": "01/2026",
+  "data": "2026-01-01",
+  "igreja": {
+    "nome": "Secretaria"
+  },
+  "signatarios": [],
+  "imagens": {
+    "08ae581d-fb23-4c88-be59-deb54e4f746b": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAAAeCAIAAABc0ozeAAAAXElEQVR4nO3QQRHAIADAMEDLpKEF3VOw65M9EgW9zmefwbd1O+DvDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQcGgYFAwKBgUDAoGBYOCQeEF0dEBSrl4J48AAAAASUVORK5CYII="
+  },
+  "finalidade": "MATRIZ_APROVADA",
+  "conteudo": {
+    "teor": "",
+    "arrolados": [],
+    "anexos": [],
+    "campos": {},
+    "composicao": {
+      "versao_formato": 1,
+      "pagina": {
+        "papel": "A4",
+        "orientacao": "retrato",
+        "fonte": "Noto Serif",
+        "tamanho_pt": 12,
+        "margens_cm": {
+          "superior": 2,
+          "inferior": 2,
+          "esquerda": 2,
+          "direita": 2
+        },
+        "espacamento_cm": {
+          "cabecalho": {
+            "superior": 0,
+            "inferior": 0
+          },
+          "corpo": {
+            "superior": 0,
+            "inferior": 0
+          },
+          "rodape": {
+            "superior": 0,
+            "inferior": 0
+          }
+        }
+      },
+      "cabecalho": [
+        {
+          "tipo": "paragrafo",
+          "alinhamento": "esquerda",
+          "trechos": [
+            {
+              "tipo": "texto",
+              "texto": "Secretaria da igreja"
+            }
+          ]
+        }
+      ],
+      "corpo": [
+        {
+          "tipo": "paragrafo",
+          "alinhamento": "esquerda",
+          "trechos": [
+            {
+              "tipo": "texto",
+              "texto": "Registro de correspondência"
+            }
+          ]
+        },
+        {
+          "tipo": "imagem",
+          "arquivo_id": "08ae581d-fb23-4c88-be59-deb54e4f746b",
+          "descricao": "Imagem do acervo"
+        }
+      ],
+      "rodape": [
+        {
+          "tipo": "paragrafo",
+          "alinhamento": "esquerda",
+          "trechos": [
+            {
+              "tipo": "texto",
+              "texto": "Arquivo da Secretaria"
+            }
+          ]
+        }
+      ],
+      "notas": {}
+    }
+  }
+}

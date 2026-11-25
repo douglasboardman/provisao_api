@@ -1,3 +1,4 @@
+import { habilitarAutorDeTeste } from './fixtures/autor-modelo';
 import { createHash, randomUUID } from 'crypto';
 import { Test } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
@@ -7,6 +8,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 import { SessionService } from '../src/auth/session.service';
 import { ConfiguracaoModelo, VersaoInput } from '../src/secretaria/secretaria.dto';
 import { RascunhosService } from '../src/secretaria/rascunhos.service';
+import { unlink } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 
 const integration = process.env.E00_INTEGRATION === '1' ? describe : describe.skip;
@@ -75,23 +77,77 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     await post('competencias', 'admin').send(grant).expect(201);
     const lista = await get('contextos', 'admin').expect(200);
     expect(lista.headers['cache-control']).toBe('private, no-store');
-    expect(lista.body[0]).toMatchObject({ tipo: 'ASSEMBLEIA_GERAL', orgao_id: null, pode_aprovar: false });
-    expect(await p.orgao_interno.count({ where: { igreja_id: igreja } })).toBe(0);
+    const assembleia = lista.body.find(c => c.id === contexto);
+    expect(assembleia).toMatchObject({ tipo: 'ASSEMBLEIA_GERAL', pode_aprovar: false });
+    expect(await p.orgao_interno.findUniqueOrThrow({ where: { id: assembleia.orgao_id } })).toMatchObject({ igreja_id: igreja, tipo_padrao: 'ASSEMBLEIA_GERAL' });
   });
 
   it('valida cargos existentes no contexto; cria e versiona modelos imutáveis', async () => {
+    config.atuacao = { criar: [await habilitarAutorDeTeste(p, igreja, secretario), await habilitarAutorDeTeste(p, igreja, gestor)], preparar: [], assinar: [] };
     const entrada = { contexto_id: contexto, nome: 'Ata assembleia', tipo: 'ATA', finalidade: 'ATA_AGO', configuracao: config, idempotencia: randomUUID() };
-    await post('modelos').send({ ...entrada, configuracao: { ...config, cargos_obrigatorios: [randomUUID()] } }).expect(400);
-    await post('modelos', 'auditor').send(entrada).expect(403);
-    const m = await post('modelos').send(entrada).expect(201); modeloId = m.body.id; modeloVersao = m.body.versao_id;
+    await post('modelos').send({ publicar: true, ...entrada, configuracao: { ...config, cargos_obrigatorios: [randomUUID()] } }).expect(400);
+    await post('modelos', 'auditor').send({ ...entrada, publicar: true }).expect(403);
+    const m = await post('modelos').send({ ...entrada, publicar: true }).expect(201); modeloId = m.body.id; modeloVersao = m.body.versao_id;
     await expect(p.modelo_documento_versao.update({ where: { id: modeloVersao }, data: { finalidade: 'ADULTERADA' } })).rejects.toThrow();
     await get(`modelos?contexto=${contexto}`, 'outra').expect(404);
   });
 
+  it('isola a biblioteca, publica as definições e conserva o significado de cada versão', async () => {
+    const campo = { nome: 'Pauta do edital', tipo: 'texto', origem: 'manual', multiplo: true, idempotencia: randomUUID() };
+    await post('campos','gestor').send(campo).expect(403);
+    const { body: criado } = await post('campos').send(campo).expect(201);
+    expect((await post('campos').send(campo).expect(201)).body.id).toBe(criado.id);
+    const bibliotecaExterna = (await get('campos','outra').expect(200)).body;
+    expect(bibliotecaExterna.map(c => c.id)).not.toContain(criado.id);
+    const disponiveis = (await get('campos').expect(200)).body;
+    const assunto = disponiveis.find(c => c.codigo === 'ASSUNTO');
+    const dataDocumento = disponiveis.find(c => c.codigo === 'DATA_DOCUMENTO');
+    const edicao = { ...campo, nome: 'Assuntos convocados', ativo: true, revisao: 1, idempotencia: randomUUID() };
+    await patch('campos/'+criado.id,'outra').send(edicao).expect(404);
+    const espaco = { superior: 0, inferior: 0 };
+    const composicao = { versao_formato: 1, pagina: { papel: 'A4', orientacao: 'retrato', fonte: 'Noto Serif', tamanho_pt: 12,
+      margens_cm: { superior: 2, inferior: 2, direita: 2, esquerda: 2 }, espacamento_cm: { corpo: espaco, cabecalho: espaco, rodape: espaco } },
+      cabecalho: [{ tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [{ tipo: 'campo', campo_id: assunto.id, apresentacao: 'individual' }] }],
+      rodape: [], notas: {}, corpo: [{ tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [{ tipo: 'campo', campo_id: criado.id, apresentacao: 'lista_numerada' }] }] };
+    const modelo = { tipo: 'OUTRO', finalidade: 'EDITAL', configuracao: { ...config, composicao_padrao: composicao, obrigatorios_biblioteca: [criado.id, dataDocumento.id] } };
+    const criar = { ...modelo, contexto_id: contexto, nome: 'Edital com pauta', idempotencia: randomUUID() };
+    await post('modelos','outra').send({ publicar: true, ...criar, contexto_id: contextoOutra }).expect(400);
+    const { body: m } = await post('modelos').send({ ...criar, publicar: true }).expect(201);
+    await patch('campos/'+criado.id).send(edicao).expect(200);
+    await patch('campos/'+criado.id).send({ ...edicao, idempotencia: randomUUID() }).expect(409);
+    await post('modelos/'+m.id+'/versoes').send({ ...modelo, revisao: 1, idempotencia: randomUUID() }).expect(201);
+    const versoes = (await get('modelos?contexto='+contexto)).body.find(x => x.id === m.id).versoes;
+    expect(versoes.map(x => x.configuracao.definicoes[criado.id].nome)).toEqual([edicao.nome, campo.nome]);
+    await patch('campos/'+criado.id).send({ ...edicao, revisao: 2, ativo: false, idempotencia: randomUUID() }).expect(200);
+    await post('modelos/'+m.id+'/versoes').send({ ...modelo, revisao: 2, idempotencia: randomUUID() }).expect(400);
+    const v = versao(versoes[0].id,null);
+    v.conteudo.teor = '';
+    const id = await criarDoc(v);
+    await post('documentos/'+id+'/encaminhar').send(cmd(1)).expect(400);
+    v.conteudo.composicao = (await detalhe(id)).versoes[0].conteudo.composicao;
+    v.conteudo.valores = { [criado.id]: { tipo: 'texto', multiplo: true, origem: { tipo: 'manual' }, ajustado_manualmente: true, valor: ['A','B','C'] } };
+    const cruzada = structuredClone(v);
+    cruzada.conteudo.valores![bibliotecaExterna[0].id] = v.conteudo.valores[criado.id];
+    await patch('documentos/'+id).send({ versao: cruzada, revisao: 1, idempotencia: randomUUID() }).expect(400);
+    v.conteudo.valores[assunto.id] = { tipo: 'texto', multiplo: false, valor: 'Outro assunto', origem: { tipo: 'manual' }, ajustado_manualmente: true };
+    const editar = { versao: v, revisao: 1, idempotencia: randomUUID() };
+    const salvo = await patch('documentos/'+id).send(editar).expect(200);
+    expect((await patch('documentos/'+id).send(editar).expect(200)).body).toEqual(salvo.body);
+    const valores = (await detalhe(id)).versoes[0].conteudo.valores;
+    expect(valores[dataDocumento.id]).toMatchObject({ tipo: 'data', valor: dia });
+    expect(valores[criado.id]).toEqual(v.conteudo.valores[criado.id]);
+    expect(valores[assunto.id]).toMatchObject({ valor: v.assunto, origem: { tipo: 'sistema', chave: 'assunto' }, ajustado_manualmente: false });
+    const job = (await post('documentos/'+id+'/rascunhos').send({ revisao: 2 }).expect(201)).body;
+    expect(await processarAte(job.id)).toMatchObject({ estado: 'CONCLUIDO' });
+    const pdf = await get('documentos/'+id+'/rascunhos/'+job.id+'/arquivo').expect(200);
+    const texto = execFileSync('pdftotext', ['-layout','-','-'], { input: pdf.body, encoding: 'utf8' });
+    expect(texto).toMatch(/1\.\s+A[\s\S]*2\.\s+B[\s\S]*3\.\s+C/);
+  }, 60000);
+
   it('ordena o contexto pela data da versão atual antes de paginar e desempata por id', async () => {
     const escopo = { igreja_id: outra, contexto_id: contextoOutra };
-    const modelo = await post('modelos', 'outra').send({ contexto_id: contextoOutra, nome: 'Atas para consulta',
-      tipo: 'ATA', finalidade: 'ATA_AGO', configuracao: config, idempotencia: randomUUID() }).expect(201);
+    const modelo = await post('modelos', 'outra').send({ publicar: true, contexto_id: contextoOutra, nome: 'Atas para consulta',
+      tipo: 'ATA', finalidade: 'ATA_AGO', configuracao: { ...config, atuacao: { criar: ['PRESIDENCIA_CONSELHO'], preparar: [], assinar: [] } }, idempotencia: randomUUID() }).expect(201);
     const documentos = Array.from({ length: 31 }, (_, i) => ({
       ...escopo, id: randomUUID(), perfil: 'ATA_PADRAO', tipo: 'ATA' as const,
       criado_em: new Date(Date.UTC(2025, 0, 31 - i)), versao_atual: i === 0 ? 2 : 1,
@@ -114,6 +170,13 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
       || a.documento_id.localeCompare(b.documento_id));
     expect([...primeira, ...segunda].map(d => [d.id, d.versoes[0].data_documento]))
       .toEqual(esperadas.map(v => [v.documento_id, v.data_documento.toISOString()]));
+    const consultar = (pagina: number) => get('documentos/consulta','outra').query({
+      contexto: contextoOutra, visao: 'andamento', modelo: modelo.body.id, estado: 'EM_EDICAO', busca: 'PARA CONSULTA', de: '2020-01-01', ate: '2020-01-31', pagina,
+    }).expect(200);
+    const lote = (await consultar(0)).body, fim = (await consultar(1)).body;
+    expect(lote.tem_proxima).toBe(true);
+    expect(fim.tem_proxima).toBe(false);
+    expect([...lote.itens,...fim.itens].map(d => d.id)).toEqual(esperadas.map(v => v.documento_id));
     const listarMotivadores = (pagina: number, ator = 'outra') => get('motivadores', ator)
       .query({ contexto: contextoOutra, assunto: 'para consulta', pagina }).expect(200);
     const a = (await listarMotivadores(0)).body, b = (await listarMotivadores(1)).body;
@@ -132,6 +195,33 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     const r = await get(`reunioes?contexto=${contexto}`).expect(200);
     expect(r.body[0].participantes).toHaveLength(1);
     expect(r.body[0].participantes[0].papeis).toHaveLength(2);
+  });
+
+  it('agenda sem mesa e preserva os itens ao reordenar e registrar a abertura', async () => {
+    await post('modelos').send({ publicar: true, contexto_id: contexto, nome: 'Edital para agendamento', tipo: 'OUTRO', finalidade: 'CONVOCACAO', configuracao: config, idempotencia: randomUUID() }).expect(201);
+    const local = await p.local_reuniao.create({ data: { igreja_id: igreja, descritivo: 'Salão de reunião' } });
+    const itens = ['Contas', 'Projeto', 'Informes'].map((descricao, i) => ({ descricao, proponente_id: i === 1 ? pessoa : null }));
+    const dados = { restrito: false, situacao: 'AGENDADA', data: '2027-05-10', modalidade: 'AGO', horario_previsto: '19:00', itens_pauta: itens };
+    const payload = { contexto_id: contexto, local_id: local.id, dados, idempotencia: randomUUID() };
+    const criado = (await post('reunioes').send(payload).expect(201)).body;
+    expect((await post('reunioes').send(payload).expect(201)).body.id).toBe(criado.id);
+    const ficha = async () => (await get('reunioes/' + criado.id).expect(200)).body;
+    const agendada = await ficha();
+    expect(agendada.participantes).toHaveLength(0);
+    type Item = { id: string; descricao: string; proponente_id: string | null };
+    const ordem = [1, 2, 0].map(i => {
+      const { id, descricao, proponente_id } = agendada.itens_pauta[i] as Item;
+      return { id, descricao, proponente_id };
+    });
+    const edicao = { ...agendada.dados, itens_pauta: ordem, situacao: 'EM_ANDAMENTO', inicio: '2027-05-10T19:20:00-03:00' };
+    const alterar = (d: typeof edicao) => patch('reunioes/' + criado.id).send({ revisao: 1, local_id: local.id, local_efetivo_id: local.id, idempotencia: randomUUID(), dados: d });
+    await alterar({ ...edicao, itens_pauta: [ordem[0], ordem[0]] }).expect(400);
+    await alterar(edicao).expect(200);
+    const realizada = await ficha();
+    expect(realizada.dados).toMatchObject({ inicio: edicao.inicio, horario_previsto: '19:00' });
+    expect(realizada.local_efetivo_retrato.descritivo).toBe(local.descritivo);
+    expect(realizada.itens_pauta).toMatchObject(ordem.map((item, i) => ({ ...item, ordem: i + 1 })));
+    await alterar(edicao).expect(409);
   });
 
   it('gera rascunho privado idempotente, verifica hash e rejeita acesso de outra igreja', async () => {
@@ -176,6 +266,7 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     const upload = await request(app.getHttpServer()).post('/arquivos-privados').set('Cookie', cookies.gestor)
       .set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').attach('file', png, 'imagem.png').expect(201);
     const m = await post('modelos', 'gestor').send({
+      publicar: true,
       contexto_id: contexto, nome: 'Modelo com imagem', tipo: 'OUTRO', finalidade: 'RELATORIO', idempotencia: randomUUID(),
       configuracao: {
         ...config, tipos_campos: { LOCAL: 'DATA' },
@@ -193,8 +284,142 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     const inline = await get(imagem).expect(200).expect('Content-Type', /image\/png/);
     expect(inline.body).toEqual(png);
     await get(imagem, 'outra').expect(404);
+    await post('modelos/'+m.body.id+'/editar').send({ revisao: 1, idempotencia: randomUUID() }).expect(201);
+    const urlRascunho = 'modelos/'+m.body.id+'/rascunho';
+    const dadosModelo = { tipo: 'OUTRO', finalidade: 'RELATORIO', configuracao: {
+      ...config, estrutura_padrao: salvo.conteudo.estrutura,
+    } };
+    await get(urlRascunho+'/imagens/'+upload.body.id).expect(200);
+    await get(urlRascunho+'/imagens/'+upload.body.id, 'outra').expect(404);
+    await patch(urlRascunho).send({ ...dadosModelo, revisao: 2, idempotencia: randomUUID() }).expect(200);
+    const republicado = (await post('modelos/'+m.body.id+'/publicar').send({ ...dadosModelo, revisao: 3, idempotencia: randomUUID() }).expect(201)).body;
+    await get(urlRascunho+'/imagens/'+upload.body.id).expect(404);
+    for (const versao of [m.body.versao_id, republicado.versao_id]) await get('modelos/versoes/'+versao+'/imagens/'+upload.body.id).expect(200);
     const job = await post(`documentos/${id}/rascunhos`).send({ revisao: 1 }).expect(201);
     expect(await processarAte(job.body.id)).toMatchObject({ estado: 'CONCLUIDO' });
+  }, 60000);
+
+  it('congela o logo inserido no rascunho e conserva a ocorrência na versão, no documento e no PDF', async () => {
+    const original = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACgAAAAYCAIAAAAH5iiXAAAAKElEQVR4nO3NMREAAAgEIDX5RzeF5wIF6FTqw7ysYrFYLBaLxWLxiQVyTAEwT49s/QAAAABJRU5ErkJggg==', 'base64');
+    const novo = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACgAAAAYCAIAAAAH5iiXAAAAJ0lEQVR4nO3NMREAAAgEIDW50U3h/QIF6NqKmEwrFovFYrFYLBZ/OMbyALD+dpOIAAAAAElFTkSuQmCC', 'base64');
+    const temporarios: string[] = [];
+    async function atualizarLogo(bytes: Buffer) {
+      const r = await request(app.getHttpServer()).patch('/igrejas/me/logo').set('Cookie', cookies.gestor)
+        .set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').attach('file', bytes, 'logo.png').expect(200);
+      const url: string = r.body.url_logo;
+      expect(url).toMatch(/^\/uploads\/church-logos\/[a-f0-9-]+\.png$/);
+      temporarios.push('.' + url);
+      return (await get('logo-da-igreja').expect(200)).body;
+    }
+    try {
+      const bytes = await atualizarLogo(original);
+      const chave = randomUUID();
+      const uploadImagem = (data: Buffer) => request(app.getHttpServer()).post('/secretaria/imagens').set('Cookie', cookies.gestor)
+        .set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').field('idempotencia', chave).attach('file', data, 'logo.png');
+      await uploadImagem(Buffer.from('arquivo inválido')).expect(400);
+      const upload = await uploadImagem(bytes).expect(201);
+      expect((await uploadImagem(bytes).expect(201)).body.id).toBe(upload.body.id);
+      await uploadImagem(novo).expect(409);
+      const imagem = { tipo: 'imagem', arquivo_id: upload.body.id, ocorrencia_id: randomUUID(), descricao: 'Brasão', legenda: 'Secretaria local',
+        largura_cm: 3.7, altura_cm: 1.5, manter_proporcao: true, ajuste: 'ajustar', horizontal: 'esquerda', vertical: 'topo',
+        x_cm: 0, y_cm: 0, relacao: 'em_linha', opacidade: 1, distancia_texto_cm: 0 };
+      const espaco = { superior: 0, inferior: 0 };
+      const pagina = { versao_formato: 2, pagina: { papel: 'A4', orientacao: 'retrato', fonte: 'Noto Serif', tamanho_pt: 12,
+        margens_cm: { superior: 2, inferior: 2, direita: 2, esquerda: 2 }, espacamento_cm: { cabecalho: espaco, corpo: espaco, rodape: espaco },
+        altura_minima_cm: { cabecalho: 2.3, rodape: 0 } }, cabecalho: [{ tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [imagem] }],
+        corpo: [{ tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [{ tipo: 'texto', texto: 'Ofício de teste' }] }], rodape: [], notas: {} };
+      const dados = { nome: 'Ofício com brasão', tipo: 'OUTRO', finalidade: 'OFICIO', configuracao: { ...config, composicao_padrao: pagina } };
+      const modelo = (await post('modelos','gestor').send({ ...dados, contexto_id: contexto, idempotencia: randomUUID() }).expect(201)).body;
+      await get('modelos/'+modelo.id+'/rascunho/imagens/'+imagem.arquivo_id).expect(200);
+      const publicada = (await post('modelos/'+modelo.id+'/publicar').send({ ...dados, revisao: 1, idempotencia: randomUUID() }).expect(201)).body;
+      const entrada = versao(publicada.versao_id, null);
+      entrada.conteudo.teor = '';
+      const doc = await criarDoc(entrada);
+      expect(await atualizarLogo(novo)).toEqual(novo);
+      await get('logo-da-igreja','outra').expect(404);
+      const v = (await detalhe(doc)).versoes[0];
+      expect(v.conteudo.composicao.cabecalho[0].trechos).toEqual([imagem]);
+      const url = 'documentos/'+doc+'/versoes/'+v.id+'/anexos/'+imagem.arquivo_id+'?visualizacao=imagem';
+      expect((await get(url).expect(200)).body).toEqual(original);
+      expect((await get('modelos/versoes/'+publicada.versao_id+'/imagens/'+imagem.arquivo_id).expect(200)).body).toEqual(original);
+      await get(url, 'outra').expect(404);
+      const job = (await post('documentos/'+doc+'/rascunhos').send({ revisao: 1 }).expect(201)).body;
+      expect(await processarAte(job.id)).toMatchObject({ estado: 'CONCLUIDO' });
+      const pdf = (await get('documentos/'+doc+'/rascunhos/'+job.id+'/arquivo').expect(200)).body;
+      expect(execFileSync('pdftotext', ['-', '-'], { input: pdf }).toString()).toContain('Secretaria local');
+      expect(execFileSync('pdfimages', ['-list', '-'], { input: pdf }).toString()).toMatch(/image\s+40\s+24/);
+    } finally {
+      await p.igreja.update({ where: { id: igreja }, data: { url_logo: null } });
+      await Promise.all(temporarios.map(caminho => unlink(caminho)));
+    }
+  }, 60000);
+
+  it('converte em nova versão e mantém as duas minutas editáveis durante a pausa', async () => {
+    const imagem = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ZkAAAAASUVORK5CYII=', 'base64');
+    const arquivo = (await request(app.getHttpServer()).post('/arquivos-privados').set('Cookie', cookies.gestor)
+      .set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').attach('file', imagem, 'brasao.png').expect(201)).body.id;
+    const legado = { tipo: 'OUTRO', finalidade: 'OFICIO', configuracao: { ...config, estrutura_padrao: {
+      cabecalho: [{ tipo: 'IMAGEM', arquivo_id: arquivo, descricao: 'Brasão' }],
+      corpo: [{ tipo: 'LISTA', ordenada: true, itens: ['Local {{LOCAL}}'] }], rodape: [{ tipo: 'ASSINATURAS' }],
+    } } };
+    const modelo = (await post('modelos', 'gestor').send({ publicar: true, ...legado, nome: 'Modelo do acervo', contexto_id: contexto, idempotencia: randomUUID() }).expect(201)).body;
+    const criar = (modelo_versao_id: string) => {
+      const entrada = versao(modelo_versao_id, null);
+      entrada.conteudo.teor = '';
+      return { versao: entrada, contexto_id: contexto, restrito: false, idempotencia: randomUUID() };
+    };
+    const antiga = (await post('documentos').send(criar(modelo.versao_id)).expect(201)).body;
+    const espaco = { superior: 0, inferior: 0 };
+    const linha = { tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [{ tipo: 'texto', texto: 'Local {{LOCAL}}' }] };
+    const pagina = { versao_formato: 1, pagina: { papel: 'A4', orientacao: 'retrato', fonte: 'Noto Serif', tamanho_pt: 12,
+      margens_cm: { superior: 2, inferior: 2, direita: 2, esquerda: 2 }, espacamento_cm: { cabecalho: espaco, corpo: espaco, rodape: espaco } },
+      cabecalho: [{ tipo: 'imagem', arquivo_id: arquivo, descricao: 'Brasão' }],
+      corpo: [{ tipo: 'lista', ordenada: true, itens: [[linha]] }, { tipo: 'quebra' }, { tipo: 'tabela', linhas: [[[linha]]], primeira_linha_cabecalho: true }],
+      rodape: [{ tipo: 'assinaturas' }], notas: {} };
+    const inserir = () => post('modelos/'+modelo.id+'/versoes').send({ ...legado, configuracao: { ...config, composicao_padrao: pagina }, revisao: 1, idempotencia: randomUUID() });
+    const antes = process.env.SECRETARIA_EDITOR_PAGINA_CONTEXTOS;
+    try {
+      process.env.SECRETARIA_EDITOR_PAGINA_CONTEXTOS = contextoOutra;
+      await inserir().expect(409);
+      process.env.SECRETARIA_EDITOR_PAGINA_CONTEXTOS = contexto;
+      const nova = (await inserir().expect(201)).body;
+      const configuracaoPagina = { ...config, composicao_padrao: { ...pagina, versao_formato: 2,
+        pagina: { ...pagina.pagina, altura_minima_cm: { cabecalho: 1, rodape: 1 } } } };
+      const dadosModelo = { tipo: 'OUTRO', finalidade: 'OFICIO', configuracao: configuracaoPagina, nome: 'Rascunho da homologação' };
+      const rascunho = (await post('modelos', 'gestor').send({ ...dadosModelo, contexto_id: contexto, idempotencia: randomUUID() }).expect(201)).body;
+      const versoes = (await get('modelos?contexto='+contexto).expect(200)).body.find(m => m.id === modelo.id).versoes;
+      expect(versoes[1]).toMatchObject({ id: modelo.versao_id, configuracao: legado.configuracao });
+      const url = 'modelos/versoes/'+nova.versao_id+'/imagens/'+arquivo;
+      expect((await get(url).expect(200)).body).toEqual(imagem);
+      await get(url, 'outra').expect(404);
+      await get('modelos/versoes/'+randomUUID()+'/imagens/'+arquivo).expect(404);
+      const comando = criar(nova.versao_id);
+      const minuta = (await post('documentos').send(comando).expect(201)).body;
+      process.env.SECRETARIA_EDITOR_PAGINA_CONTEXTOS = '';
+      const v2 = (await post('modelos/'+rascunho.id+'/publicar','gestor').send({ ...dadosModelo, revisao: 1, idempotencia: randomUUID() }).expect(201)).body;
+      await post('documentos').send(criar(v2.versao_id)).expect(409);
+      const conversao = criar(modelo.versao_id).versao;
+      await patch('documentos/'+antiga.id).send({ versao: { ...conversao, conteudo: { ...conversao.conteudo, composicao: configuracaoPagina.composicao_padrao } },
+        revisao: 1, idempotencia: randomUUID() }).expect(409);
+      expect((await post('documentos').send(comando).expect(201)).body).toEqual(minuta);
+      await post('documentos').send(criar(nova.versao_id)).expect(409);
+      await post('documentos').send(criar(modelo.versao_id)).expect(409);
+      for (const id of [antiga.id, minuta.id]) {
+        const atual = (await detalhe(id)).versoes[0];
+        const entrada = criar(atual.modelo_versao_id).versao;
+        entrada.conteudo = atual.conteudo;
+        await patch('documentos/'+id).send({ versao: entrada, revisao: 1, idempotencia: randomUUID() }).expect(200);
+      }
+      const job = (await post('documentos/'+minuta.id+'/rascunhos').send({ revisao: 2 }).expect(201)).body;
+      expect(await processarAte(job.id)).toMatchObject({ estado: 'CONCLUIDO' });
+      const pdf = (await get('documentos/'+minuta.id+'/rascunhos/'+job.id+'/arquivo').expect(200)).body;
+      const texto = execFileSync('pdftotext', ['-layout', '-', '-'], { input: pdf, encoding: 'utf8' });
+      expect(texto.match(/Local Templo/g)).toHaveLength(2);
+      expect(texto.trim().split('\f')).toHaveLength(2);
+    } finally {
+      if (antes === undefined) delete process.env.SECRETARIA_EDITOR_PAGINA_CONTEXTOS;
+      else process.env.SECRETARIA_EDITOR_PAGINA_CONTEXTOS = antes;
+    }
   }, 60000);
 
   it('mantém as consultas HTTP durante a renderização e impede reserva simultânea', async () => {
@@ -219,11 +444,12 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
 
   it('preserva o modelo usado na minuta e rejeita referências de outra igreja ou PATCH de estado', async () => {
     const id = await criarDoc();
-    const segunda = await post(`modelos/${modeloId}/versoes`).send({ revisao: 1, tipo: 'ATA', finalidade: 'ATA_AGO', configuracao: { ...config, campos_obrigatorios: ['OUTRO_CAMPO'] }, idempotencia: randomUUID() }).expect(201);
+    const segunda = await post(`modelos/${modeloId}/versoes`).send({ revisao: 1, tipo: 'ATA', finalidade: 'ATA_AGO', configuracao: { ...config, tipos_campos: { OUTRO_CAMPO: 'DATA' } }, idempotencia: randomUUID() }).expect(201);
     const d = await detalhe(id); expect(d.versoes[0].modelo.id).toBe(modeloVersao); expect(d.versoes[0].modelo.id).not.toBe(segunda.body.versao_id);
     await post(`modelos/${modeloId}/versoes`).send({ revisao: 1, tipo: 'ATA', finalidade: 'ATA_AGO', configuracao: config, idempotencia: randomUUID() }).expect(409);
     await patch(`documentos/${id}`).send({ revisao: 1, estado: 'EXPEDIDO', versao: versao(), idempotencia: randomUUID() }).expect(400);
     await post('documentos').send({ contexto_id: contextoOutra, restrito: false, versao: versao(), idempotencia: randomUUID() }).expect(404);
+    modeloVersao = segunda.body.versao_id;
     const v = versao(); v.conteudo.arrolados[0].pessoa_id = pessoaOutra;
     await post('documentos').send({ contexto_id: contexto, restrito: false, versao: v, idempotencia: randomUUID() }).expect(400);
     await get(`documentos/${id}`, 'outra').expect(404);
@@ -245,6 +471,11 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
   it('aprovação técnica exige deliberação, responsável, assinatura e competência; congela a fonte', async () => {
     const sem = versao(); sem.conteudo.arrolados = [];
     const vazio = await criarDoc(sem);
+    const revisaoVazia = await detalhe(vazio);
+    expect(revisaoVazia.tramitacao.pendencias).toEqual(expect.arrayContaining([
+      { destino: 'arrolados', mensagem: 'Indique o responsável pelo documento.' },
+      { destino: 'arrolados', mensagem: 'Indique ao menos um signatário obrigatório.' },
+    ]));
     await post(`documentos/${vazio}/encaminhar`).send(cmd(1)).expect(400);
     aprovado = await criarDoc();
     await encaminhar(aprovado);
@@ -315,7 +546,7 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     await post(`documentos/${cancelado.id}/cancelar`, 'gestor').send(cmd(cancelado.revisao)).expect(201);
     const proximo = await criarDoc(); await encaminhar(proximo);
     expect((await detalhe(proximo)).numero).toBeGreaterThan(Math.max(...docs.map(d => d.numero)));
-    const outro = (await post('modelos').send({ contexto_id: contexto, nome: 'Carta', tipo: 'OUTRO', finalidade: 'CARTA', configuracao: { ...config, perfil: 'CARTA', registro_livro: false }, idempotencia: randomUUID() }).expect(201)).body.versao_id;
+    const outro = (await post('modelos').send({ publicar: true, contexto_id: contexto, nome: 'Carta', tipo: 'OUTRO', finalidade: 'CARTA', configuracao: { ...config, perfil: 'CARTA', registro_livro: false }, idempotencia: randomUUID() }).expect(201)).body.versao_id;
     const carta = await criarDoc(versao(outro, null)); await encaminhar(carta);
     expect((await detalhe(carta)).numero).toBe(1);
     await p.contador_documento.create({ data: { igreja_id: igreja, contexto_id: contexto, tipo: 'ATA', perfil: 'ATA_PADRAO', ano: 2025, ultimo: 999 } });
@@ -337,19 +568,18 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
   it('admite Conselho, Junta e unidades com aplicabilidade por constituição e cargos locais', async () => {
     const contextos: string[] = [], cargos: string[] = [];
     for (const tipo of ['CONSELHO', 'JUNTA', 'UNIDADE_MINISTERIAL'] as const) {
-      const orgao = await p.orgao_interno.create({ data: { igreja_id: igreja, tipo, constituicao: tipo === 'UNIDADE_MINISTERIAL' ? 'DESIGNACAO' : 'OFICIAL', nome: `Órgão ${tipo}`, sigla: tipo.slice(0, 3), finalidade: 'Reuniões sintéticas', data_criacao: new Date('2020-01-01'), criador_id: admin, instituidor_id: pessoa, evidencia_instituicao: 'Ato sintético' } });
+      const orgao = (tipo === 'CONSELHO' && await p.orgao_interno.findFirst({ where: { igreja_id: igreja, tipo } })) || await p.orgao_interno.create({ data: { igreja_id: igreja, tipo, constituicao: tipo === 'UNIDADE_MINISTERIAL' ? 'DESIGNACAO' : 'OFICIAL', nome: `Órgão ${tipo}`, sigla: tipo.slice(0, 3), finalidade: 'Reuniões sintéticas', data_criacao: new Date('2020-01-01'), criador_id: admin, instituidor_id: pessoa, evidencia_instituicao: 'Ato sintético' } });
       const cargo = await p.cargo_orgao.create({ data: { igreja_id: igreja, orgao_id: orgao.id, codigo: 'RELATOR', nome: 'Relator' } }); cargos.push(cargo.id);
       const c = (await post('contextos', 'admin').send({ tipo: 'ORGAO', orgao_id: orgao.id, nome: orgao.nome, sigla: orgao.sigla, idempotencia: randomUUID() }).expect(201)).body.id; contextos.push(c);
-      const conf = { ...config, contexto: 'ORGAO', tipos_orgao: [tipo], constituicoes: [orgao.constituicao], cargos_obrigatorios: [cargo.id] };
-      await post('modelos').send({ contexto_id: c, nome: 'Ata órgão', tipo: 'ATA', finalidade: 'ATA_REUNIAO', configuracao: conf, idempotencia: randomUUID() }).expect(201);
-      await post('modelos').send({ contexto_id: c, nome: 'Ata incompatível', tipo: 'ATA', finalidade: 'ATA_REUNIAO', configuracao: { ...conf, constituicoes: tipo === 'UNIDADE_MINISTERIAL' ? ['OFICIAL'] : ['DESIGNACAO'] }, idempotencia: randomUUID() }).expect(400);
+      const conf = { ...config, atuacao: { criar: [cargo.id], preparar: [], assinar: [] }, contexto: 'ORGAO', tipos_orgao: [tipo], constituicoes: [orgao.constituicao], cargos_obrigatorios: [cargo.id] };
+      await post('modelos').send({ publicar: true, contexto_id: c, nome: 'Ata órgão', tipo: 'ATA', finalidade: 'ATA_REUNIAO', configuracao: conf, idempotencia: randomUUID() }).expect(201);
+      await post('modelos').send({ publicar: true, contexto_id: c, nome: 'Ata incompatível', tipo: 'ATA', finalidade: 'ATA_REUNIAO', configuracao: { ...conf, constituicoes: tipo === 'UNIDADE_MINISTERIAL' ? ['OFICIAL'] : ['DESIGNACAO'] }, idempotencia: randomUUID() }).expect(400);
       await post('reunioes').send({ contexto_id: c, dados: { ...reuniaoDados(), modalidade: 'ORDINARIA' }, idempotencia: randomUUID() }).expect(201);
     }
-    await post('modelos').send({ contexto_id: contextos[0], nome: 'Cargo cruzado', tipo: 'ATA', finalidade: 'ATA_REUNIAO', configuracao: { ...config, contexto: 'ORGAO', tipos_orgao: ['CONSELHO'], constituicoes: ['OFICIAL'], cargos_obrigatorios: [cargos[1]] }, idempotencia: randomUUID() }).expect(400);
+    await post('modelos').send({ publicar: true, contexto_id: contextos[0], nome: 'Cargo cruzado', tipo: 'ATA', finalidade: 'ATA_REUNIAO', configuracao: { ...config, contexto: 'ORGAO', tipos_orgao: ['CONSELHO'], constituicoes: ['OFICIAL'], cargos_obrigatorios: [cargos[1]] }, idempotencia: randomUUID() }).expect(400);
   });
 
   it('resolve dois cargos acumulados com uma única pessoa e uma única assinatura obrigatória', async () => {
-    await p.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: pessoa, data_evento: new Date('2019-01-01'), tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE' } });
     const orgao = await p.orgao_interno.create({ data: { igreja_id: igreja, tipo: 'UNIDADE_MINISTERIAL', constituicao: 'DESIGNACAO', nome: 'Unidade acumulação', sigla: 'UA', finalidade: 'Ensaio', data_criacao: new Date('2020-01-01'), criador_id: admin, instituidor_id: pessoa, evidencia_instituicao: 'Ato sintético' } });
     const cargos: string[] = [];
     for (const codigo of ['RELATOR', 'SECRETARIO_ADJUNTO']) {
@@ -358,15 +588,139 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     }
     const c = (await post('contextos', 'admin').send({ tipo: 'ORGAO', orgao_id: orgao.id, nome: orgao.nome, sigla: 'UA', idempotencia: randomUUID() }).expect(201)).body.id;
     await post('competencias', 'admin').send({ contexto_id: c, usuario_id: gestor, inicio: '2020-01-01', pode_aprovar: true, pode_deliberar: false, pode_consultar_restritos: false, autoridade: 'Gestor', evidencia: 'Ato sintético', idempotencia: randomUUID() }).expect(201);
-    const m = (await post('modelos').send({ contexto_id: c, nome: 'Relatório', tipo: 'OUTRO', finalidade: 'RELATORIO', configuracao: { ...config, contexto: 'ORGAO', tipos_orgao: ['UNIDADE_MINISTERIAL'], constituicoes: ['DESIGNACAO'], cargos_obrigatorios: cargos }, idempotencia: randomUUID() }).expect(201)).body.versao_id;
+    const m = (await post('modelos').send({ publicar: true, contexto_id: c, nome: 'Relatório', tipo: 'OUTRO', finalidade: 'RELATORIO', configuracao: { ...config, contexto: 'ORGAO', tipos_orgao: ['UNIDADE_MINISTERIAL'], constituicoes: ['DESIGNACAO'], atuacao: { criar: cargos, preparar: [], assinar: [] }, cargos_obrigatorios: cargos }, idempotencia: randomUUID() }).expect(201)).body.versao_id;
     const v = versao(m, null); v.conteudo.arrolados[0].cargos_ids = cargos;
-    const id = (await post('documentos').send({ contexto_id: c, restrito: false, versao: v, idempotencia: randomUUID() }).expect(201)).body.id;
-    await encaminhar(id); await aprovar(id);
+    const id = (await post('documentos', 'gestor').send({ contexto_id: c, restrito: false, versao: v, idempotencia: randomUUID() }).expect(201)).body.id;
+    await post('documentos/'+id+'/encaminhar', 'gestor').send(cmd(1)).expect(201); await aprovar(id);
     const d = await detalhe(id);
     expect(d.versoes[0].arrolados).toHaveLength(1);
     expect(d.versoes[0].arrolados[0].retrato.cargos).toHaveLength(2);
     expect(await p.cargo_arrolado_documento.count({ where: { versao_id: d.versoes[0].id } })).toBe(2);
     await expect(p.cargo_arrolado_documento.deleteMany({ where: { versao_id: d.versoes[0].id } })).rejects.toThrow();
+  });
+
+  it('encadeia edital e ata, confirma a troca de valores ajustados e conserva a versão da origem', async () => {
+    const biblioteca = (await get('campos').expect(200)).body;
+    const data = biblioteca.find(c => c.codigo === 'DATA_REUNIAO').id as string;
+    const pauta = biblioteca.find(c => c.codigo === 'PAUTA').id as string;
+    const espaco = { superior: 0, inferior: 0 };
+    const configuracao: ConfiguracaoModelo = { ...config, registro_livro: false, composicao_padrao: {
+      versao_formato: 1, pagina: { papel: 'A4', orientacao: 'retrato', fonte: 'Noto Serif', tamanho_pt: 12,
+        margens_cm: { superior: 2, inferior: 2, direita: 2, esquerda: 2 }, espacamento_cm: { corpo: espaco, cabecalho: espaco, rodape: espaco } },
+      cabecalho: [], rodape: [], notas: {}, corpo: [{ tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [
+        { tipo: 'campo', campo_id: data, apresentacao: 'individual' }, { tipo: 'campo', campo_id: pauta, apresentacao: 'lista_numerada' },
+      ] }],
+    } };
+    const edital = { contexto_id: contexto, nome: 'Edital de convocação E4', tipo: 'OUTRO', finalidade: 'CONVOCACAO', configuracao };
+    const m = (await post('modelos').send({ publicar: true, ...edital, idempotencia: randomUUID() }).expect(201)).body;
+    const atividades = biblioteca.find(c => c.codigo === 'ATIVIDADES').id as string;
+    const configAlternativa = structuredClone(configuracao);
+    const corpo = configAlternativa.composicao_padrao!.corpo[0];
+    if (corpo.tipo === 'paragrafo' && corpo.trechos[1].tipo === 'campo') corpo.trechos[1].campo_id = atividades;
+    const alternativo = (await post('modelos').send({ publicar: true, ...edital, nome: 'Edital complementar E4', configuracao: configAlternativa, idempotencia: randomUUID() }).expect(201)).body;
+    const campos = { [pauta]: pauta, [data]: data };
+    const { body: campoLocal } = await post('campos').send({ nome: biblioteca.find(c => c.id === pauta).nome,
+      tipo: 'texto', origem: 'manual', multiplo: true, idempotencia: randomUUID() }).expect(201);
+    const composicaoAta = structuredClone(configuracao.composicao_padrao!);
+    composicaoAta.corpo.push({ tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [{ tipo: 'campo', campo_id: campoLocal.id, apresentacao: 'em_linha' }] });
+    const ata = { ...edital, nome: 'Ata encadeada E4', tipo: 'ATA', finalidade: 'ATA_AGO',
+      configuracao: { ...configuracao, composicao_padrao: composicaoAta, motivador: 'OBRIGATORIO', antecedentes: [{ modelo_id: m.id, campos }, { modelo_id: alternativo.id, campos: { [data]: data, [pauta]: atividades } }] } };
+    const destino = (await post('modelos').send({ publicar: true, ...ata, idempotencia: randomUUID() }).expect(201)).body;
+    const invalido = (modelo_id: string, mapa: Record<string,string>) => ({ configuracao: { ...configuracao, antecedentes: [{ modelo_id, campos: mapa }] }, finalidade: 'EDITAL', tipo: 'OUTRO', revisao: 1, idempotencia: randomUUID() });
+    await post('modelos/'+m.id+'/versoes').send(invalido(destino.id, campos)).expect(400);
+    await post('modelos/'+m.id+'/versoes').send(invalido(m.id, {})).expect(400);
+    await post('modelos/'+destino.id+'/versoes').send(invalido(m.id, { [pauta]: data })).expect(400);
+    await post('modelos','outra').send({ publicar: true, ...ata, contexto_id: contextoOutra, configuracao: { ...config, antecedentes: [{ modelo_id: m.id, campos: {} }] }, idempotencia: randomUUID() }).expect(400);
+
+    // Acervo de entrada já expedido. A tramitação de assinatura tem suíte própria.
+    async function exemplar(assunto: string, itens: string[], restrito = false, comData = true, modelo = m.versao_id, numero?: number) {
+      const v = versao(modelo,null);
+      v.conteudo.teor = '';
+      v.conteudo.composicao = (modelo === alternativo.versao_id ? configAlternativa : configuracao).composicao_padrao;
+      v.conteudo.valores = { [modelo === alternativo.versao_id ? atividades : pauta]: { tipo: 'texto', multiplo: true, valor: itens, origem: { tipo: 'manual' }, ajustado_manualmente: true } };
+      if (comData) v.conteudo.valores[data] = { tipo: 'data', multiplo: false, valor: '2026-01-09', origem: { tipo: 'manual' }, ajustado_manualmente: true };
+      const d = await p.documento.create({ data: { igreja_id: igreja, contexto_id: contexto, tipo: 'OUTRO', perfil: 'CORRESPONDENCIA', estado: 'EXPEDIDO', restrito, ...(numero && { numero, ano: 2026, sigla: 'AG' }),
+        versoes: { create: { modelo_versao_id: modelo, reuniao_id: reuniao, numero: 1, assunto, data_documento: new Date(dia), conteudo: JSON.parse(JSON.stringify(v.conteudo)), congelado_em: new Date() } } }, include: { versoes: true } });
+      return { documento: d.id, id: d.versoes[0].id };
+    }
+    const primeiro = await exemplar('Edital E4 ordinário', ['Abertura','Relatório','Eleição'], false, true, m.versao_id, 9876);
+    const consulta = { contexto, visao: 'expedidos', modelo: m.id, busca: '9876/2026/AG', de: dia, ate: dia, estado: 'EXPEDIDO' };
+    expect((await get('documentos/consulta').query(consulta).expect(200)).body.itens).toMatchObject([{ id: primeiro.documento, modelo_nome: edital.nome }]);
+    expect((await get('documentos/consulta').query({ ...consulta, visao: 'andamento' }).expect(200)).body.itens).toEqual([]);
+    const segundo = await exemplar('Edital E4 adicional', ['Exame'],false,false,alternativo.versao_id);
+    const sigiloso = await exemplar('Edital E4 reservado', ['Reservado'],true);
+    expect((await get('documentos/consulta').query({ ...consulta, busca: 'reservado' }).expect(200)).body.itens).toEqual([]);
+    const outroModelo = await exemplar('Fora da cadeia', [],false,false,modeloVersao);
+    const previa = (id: string, perfil = 'secretario', restrito = false) => post('antecedentes/previa',perfil)
+      .send({ modelo_versao_id: destino.versao_id, reuniao_id: reuniao, origem_id: id, restrito });
+    const lista = await get('motivadores').query({ modelo_destino: destino.versao_id, reuniao_id: reuniao, assunto: 'Edital E4' }).expect(200);
+    expect(lista.body.itens.map(x => x.versao_id).sort()).toEqual([primeiro.id,segundo.id].sort());
+    await previa(sigiloso.id).expect(404);
+    await previa(sigiloso.id,'gestor',false).expect(400);
+    await previa(sigiloso.id,'secretario',true).expect(403);
+    await previa(sigiloso.id,'gestor',true).expect(200);
+    await previa(primeiro.id,'outra').expect(400);
+    await previa(outroModelo.id).expect(400);
+    const externa = await p.documento_versao.findFirstOrThrow({ where: { igreja_id: outra } });
+    await previa(externa.id).expect(400);
+    await previa(primeiro.id,'auditor').expect(403);
+    const valores = (await previa(primeiro.id).expect(200)).body.valores;
+    expect(valores[pauta]).toMatchObject({ valor: ['Abertura','Relatório','Eleição'], origem: { tipo: 'documento_anterior', versao_id: primeiro.id, campo_id: pauta }, ajustado_manualmente: false });
+    const v = versao(destino.versao_id);
+    v.data_documento = '2026-01-11';
+    v.conteudo.teor = '';
+    const novo = () => post('documentos').send({ contexto_id: contexto, restrito: false, usar_modelo_vigente: true, versao: v, idempotencia: randomUUID() });
+    await novo().expect(400);
+    v.motivador_id = sigiloso.id;
+    await novo().expect(404);
+    v.motivador_id = outroModelo.id;
+    await novo().expect(400);
+    v.motivador_id = primeiro.id;
+    const pautaLocal = { ...valores[pauta], origem: { tipo: 'manual' }, ajustado_manualmente: true, valor: ['Assunto próprio da ata'] };
+    v.conteudo.valores = { [campoLocal.id]: pautaLocal, [data]: { ...valores[data], valor: '1999-12-31' } };
+    const id = (await novo().expect(201)).body.id;
+    v.conteudo = (await detalhe(id)).versoes[0].conteudo;
+    expect(v.conteudo.valores).toEqual({ ...valores, [campoLocal.id]: pautaLocal });
+    expect(v.conteudo.antecedente?.identificacao).toContain('Edital E4 ordinário');
+    const editar = (revisao: number) => patch('documentos/'+id).send({ revisao, versao: v, idempotencia: randomUUID() });
+    v.conteudo.valores![pauta] = { ...valores[pauta], valor: ['Pauta ajustada'], ajustado_manualmente: true };
+    await editar(1).expect(200);
+    const job = (await post('documentos/'+id+'/rascunhos').send({ revisao: 2 }).expect(201)).body;
+    expect(await processarAte(job.id)).toMatchObject({ estado: 'CONCLUIDO' });
+    const pdf = await get('documentos/'+id+'/rascunhos/'+job.id+'/arquivo').expect(200);
+    const texto = execFileSync('pdftotext', ['-layout','-','-'], { input: pdf.body, encoding: 'utf8' });
+    expect(texto).toContain('Pauta ajustada');
+    expect(texto).toContain('Assunto próprio da ata');
+    expect(texto).not.toMatch(/Recepcionado|Ajustado manualmente|Campo local do modelo/i);
+    const retificacao = versao(m.versao_id,reuniao);
+    retificacao.conteudo = { ...retificacao.conteudo, teor: '', composicao: configuracao.composicao_padrao,
+      valores: { [pauta]: { tipo: 'texto', multiplo: true, origem: { tipo: 'manual' }, ajustado_manualmente: true, valor: ['Pauta retificada'] } } };
+    const liberacao = process.env.SECRETARIA_EDITOR_PAGINA_CONTEXTOS;
+    try {
+      process.env.SECRETARIA_EDITOR_PAGINA_CONTEXTOS = '';
+      await post('documentos/'+primeiro.documento+'/retificar','gestor').send({ ...cmd(1), versao: retificacao }).expect(409);
+      expect((await detalhe(primeiro.documento)).estado).toBe('EXPEDIDO');
+    } finally {
+      if (liberacao === undefined) delete process.env.SECRETARIA_EDITOR_PAGINA_CONTEXTOS;
+      else process.env.SECRETARIA_EDITOR_PAGINA_CONTEXTOS = liberacao;
+    }
+    const retificada = await post('documentos/'+primeiro.documento+'/retificar','gestor').send({ ...cmd(1), versao: retificacao }).expect(201);
+    await previa((await detalhe(retificada.body.id)).versoes[0].id).expect(400);
+    const reaberta = (await detalhe(id)).versoes[0];
+    expect(reaberta.conteudo.valores[pauta]).toEqual(v.conteudo.valores![pauta]);
+    expect(reaberta.conteudo.valores[campoLocal.id]).toEqual(pautaLocal);
+    expect(reaberta.conteudo.antecedente).toMatchObject({ versao_id: primeiro.id, identificacao: expect.stringContaining('Edital E4 ordinário') });
+    v.motivador_id = segundo.id;
+    v.conteudo.valores = (await previa(segundo.id).expect(200)).body.valores;
+    expect(v.conteudo.valores![pauta].origem).toMatchObject({ campo_id: atividades, versao_id: segundo.id });
+    await editar(2).expect(409);
+    expect((await detalhe(id)).versoes[0].motivador_id).toBe(primeiro.id);
+    v.confirmar_troca_origem = true;
+    await editar(2).expect(200);
+    expect(v.conteudo.valores![data].valor).toBeNull();
+    v.conteudo.valores![data] = { tipo: 'data', multiplo: false, valor: dia, origem: { tipo: 'documento_anterior', versao_id: segundo.id, campo_id: data }, ajustado_manualmente: true };
+    await editar(3).expect(200);
+    expect((await detalhe(id)).versoes[0].conteudo.valores[data]).toEqual(v.conteudo.valores![data]);
   });
 
   it('isola anexos e acervo restrito também em listas, logs e downloads', async () => {
@@ -413,6 +767,58 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     expect((await perfil('outra').query({ pessoa_id: pessoa }).expect(200)).body.pessoa).toBeNull();
     await request(app.getHttpServer()).get('/perfil').expect(401);
   });
+
+  it('salva a página do modelo, herda a composição, reabre a edição e protege a revisão anterior', async () => {
+    const espaco = { superior: 0, inferior: 0 };
+    const nota = randomUUID();
+    const composicao = {
+      versao_formato: 1, pagina: {
+        papel: 'A4', orientacao: 'retrato', fonte: 'Noto Sans', tamanho_pt: 12,
+        margens_cm: { superior: 2, direita: 2, inferior: 2, esquerda: 2 },
+        espacamento_cm: { cabecalho: espaco, corpo: espaco, rodape: espaco },
+      }, cabecalho: [{ tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [{ tipo: 'texto', texto: 'Cabeçalho fixo' }] }],
+      rodape: [{ tipo: 'paragrafo', alinhamento: 'direita', trechos: [{ tipo: 'texto', texto: 'Rodapé fixo' }] }], notas: { [nota]: { texto: 'Referência do ofício.' } }, corpo: [
+        { tipo: 'paragrafo', alinhamento: 'direita', trechos: [{ tipo: 'texto', texto: 'Ofício circular', negrito: true }, { tipo: 'referencia_nota', nota_id: nota }] },
+      ],
+    };
+    const modelo = (await post('modelos').send({ publicar: true, contexto_id: contexto, nome: 'Ofício em página', tipo: 'OUTRO',
+      finalidade: 'OFICIO', configuracao: { ...config, registro_livro: false, composicao_padrao: composicao }, idempotencia: randomUUID() }).expect(201)).body;
+    const selecionado = (await get(`modelos?contexto=${contexto}`).expect(200)).body.find(m => m.id === modelo.id);
+    expect(selecionado.versoes[0].configuracao.composicao_padrao).toEqual(composicao);
+    const entrada = versao(modelo.versao_id, null);
+    entrada.conteudo.teor = '';
+    const comando = { contexto_id: contexto, restrito: false, usar_modelo_vigente: true, versao: entrada, idempotencia: randomUUID() };
+    const salvo = (await post('documentos').send(comando).expect(201)).body;
+    const id = salvo.id;
+    await post('modelos/'+modelo.id+'/versoes').send({ revisao: 1, tipo: 'OUTRO', finalidade: 'OFICIO', configuracao: selecionado.versoes[0].configuracao, idempotencia: randomUUID() }).expect(201);
+    expect((await post('documentos').send(comando).expect(201)).body).toEqual(salvo);
+    await post('documentos').send({ ...comando, idempotencia: randomUUID() }).expect(409);
+    expect(await detalhe(id)).toMatchObject({ estado: 'EM_EDICAO', numero: null, revisao: 1, versao_atual: 1 });
+    expect(await p.documento_versao.count({ where: { modelo_versao_id: modelo.versao_id } })).toBe(1);
+    expect((await detalhe(id)).versoes[0].conteudo.composicao).toEqual(composicao);
+    const revisada = structuredClone(composicao);
+    revisada.corpo[0].trechos[0].texto = 'Ofício revisado';
+    revisada.corpo.push(...Array.from({ length: 80 }, (_, i) => ({ tipo: 'paragrafo', alinhamento: 'esquerda',
+      trechos: [{ tipo: 'texto', texto: 'Parágrafo ' + (i + 1), negrito: false }],
+    })));
+    const dados = { revisao: 1, versao: { ...entrada, conteudo: { ...entrada.conteudo, composicao: revisada } } };
+    await patch(`documentos/${id}`).send({ ...dados, idempotencia: randomUUID() }).expect(200);
+    await patch(`documentos/${id}`).send({ ...dados, idempotencia: randomUUID() }).expect(409);
+    expect((await detalhe(id)).versoes[0].conteudo.composicao).toEqual(revisada);
+    await get(`documentos/${id}`, 'outra').expect(404);
+    const job = (await post(`documentos/${id}/rascunhos`).send({ revisao: 2 }).expect(201)).body;
+    expect(await processarAte(job.id)).toMatchObject({ estado: 'CONCLUIDO' });
+    const arquivo = await get(`documentos/${id}/rascunhos/${job.id}/arquivo`).expect(200);
+    const paginas = execFileSync('pdftotext', ['-layout', '-', '-'], { input: arquivo.body, encoding: 'utf8' }).trimEnd().split('\f');
+    expect(paginas[0]).toContain('Ofício revisado');
+    expect(paginas.length).toBeGreaterThan(1);
+    expect(paginas[0]).toContain('1. Referência do ofício.');
+    expect(paginas.slice(1).join('')).not.toContain('Referência do ofício.');
+    for (const texto of paginas) {
+      expect(texto).toContain('Cabeçalho fixo');
+      expect(texto).toContain('Rodapé fixo');
+    }
+  }, 60000);
 
   it('altera a senha pela própria sessão e exige novo login', async () => {
     const bcrypt = await import('bcrypt');

@@ -1,3 +1,5 @@
+import { gravarPorServico } from '../autorizacao/escrita-servico';
+import type { Ator, Tx } from '../autorizacao/politica';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { CreateCatDespesaDto } from './dto/create-cat-despesa.dto';
 import { UpdateCatDespesaDto } from './dto/update-cat-despesa.dto';
@@ -19,8 +21,10 @@ export class CatDespesaService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @param createCatDespesaDto Dados para criação.
    */
-  async create(igreja_id: string, createCatDespesaDto: CreateCatDespesaDto): Promise<cat_despesa> {
-    return this.prisma.cat_despesa.create({ data: { ...createCatDespesaDto, igreja_id } });
+  async create(igreja_id: string, createCatDespesaDto: CreateCatDespesaDto, ator?: Ator): Promise<cat_despesa> {
+    return gravarPorServico(this.prisma, ator, 'CATEGORIAS_DESPESA_CADASTRAR', async tx => {
+      return tx.cat_despesa.create({ data: { ...createCatDespesaDto, igreja_id } });
+    });
   }
 
   /**
@@ -40,8 +44,8 @@ export class CatDespesaService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @throws {NotFoundException} Se não encontrada nesta igreja.
    */
-  async findOne(id: number, igreja_id: string): Promise<cat_despesa> {
-    const catDespesa = await this.prisma.cat_despesa.findFirst({ where: { id, igreja_id } });
+  async findOne(id: number, igreja_id: string, tx: Tx = this.prisma): Promise<cat_despesa> {
+    const catDespesa = await tx.cat_despesa.findFirst({ where: { id, igreja_id } });
 
     if (!catDespesa) {
       throw new NotFoundException(`Categoria de despesa com ID ${id} não encontrada.`);
@@ -55,9 +59,11 @@ export class CatDespesaService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @param updateCatDespesaDto Dados para atualização.
    */
-  async update(id: number, igreja_id: string, updateCatDespesaDto: UpdateCatDespesaDto): Promise<cat_despesa> {
-    await this.findOne(id, igreja_id);
-    return this.prisma.cat_despesa.update({ where: { id }, data: updateCatDespesaDto });
+  async update(id: number, igreja_id: string, updateCatDespesaDto: UpdateCatDespesaDto, ator?: Ator): Promise<cat_despesa> {
+    return gravarPorServico(this.prisma, ator, 'CATEGORIAS_DESPESA_EDITAR', async tx => {
+      await this.findOne(id, igreja_id, tx);
+      return tx.cat_despesa.update({ where: { id }, data: updateCatDespesaDto });
+    });
   }
 
   /**
@@ -65,9 +71,11 @@ export class CatDespesaService {
    * @param id ID da categoria.
    * @param igreja_id ID da igreja extraído do token JWT.
    */
-  async remove(id: number, igreja_id: string): Promise<{ message: string }> {
-    await this.findOne(id, igreja_id);
-    await this.prisma.cat_despesa.delete({ where: { id } });
-    return { message: `Categoria de despesa com ID ${id} removida com sucesso.` };
+  async remove(id: number, igreja_id: string, ator?: Ator): Promise<{ message: string }> {
+    return gravarPorServico(this.prisma, ator, 'CATEGORIAS_DESPESA_EXCLUIR', async tx => {
+      await this.findOne(id, igreja_id, tx);
+      await tx.cat_despesa.delete({ where: { id } });
+      return { message: `Categoria de despesa com ID ${id} removida com sucesso.` };
+    });
   }
 }

@@ -41,6 +41,10 @@ export class OutboxService {
     await tx.outbox_email.create({ data: { confirmacao_id: confirmationId, payload: this.seal(token, confirmationId) } });
   }
 
+  async enqueueAssembly(tx: Prisma.TransactionClient, id: string, token: string) {
+    await tx.outbox_email.create({ data: { acesso_assembleia_id: id, payload: this.seal(token,id) } });
+  }
+
   async enqueueSignature(tx: Prisma.TransactionClient, conviteId: string, token: string): Promise<void> {
     await tx.outbox_email.create({ data: { convite_assinatura_id: conviteId, payload: this.seal(token, conviteId) } });
   }
@@ -83,7 +87,7 @@ export class OutboxService {
            OR (estado = 'PROCESSANDO' AND reserva_ate < NOW()))
         ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1`;
       if (!rows.length) return null;
-      return tx.outbox_email.update({ where: { id: rows[0].id }, data: { estado: 'PROCESSANDO', reserva_id: lease, reserva_ate: new Date(Date.now() + 120_000), tentativas: { increment: 1 } }, include: { token: { include: { usuario: true } }, confirmacao: { include: { solicitacao: true } }, convite_assinatura: { include: {
+      return tx.outbox_email.update({ where: { id: rows[0].id }, data: { estado: 'PROCESSANDO', reserva_id: lease, reserva_ate: new Date(Date.now() + 120_000), tentativas: { increment: 1 } }, include: { acesso_assembleia: { include: { mesa: { include: { secretario: { select: { email: true } } } } } }, token: { include: { usuario: true } }, confirmacao: { include: { solicitacao: true } }, convite_assinatura: { include: {
         usuario: { select: { ativo: true, auth_version: true, pessoa_id: true, email_login: true } },
         arrolado: { select: { pessoa_id: true, retrato: true, pessoa: { select: { email: true } } } },
         expedicao: { select: { estado: true, versao: { select: {
@@ -94,7 +98,8 @@ export class OutboxService {
     if (!job) return false;
     try {
       const signature = job.convite_assinatura;
-      const entry = job.token ?? job.confirmacao ?? signature;
+      const assembleia = job.acesso_assembleia;
+      const entry = job.token ?? job.confirmacao ?? signature ?? assembleia;
       const invalid = !entry || !job.payload || entry.revogado_em || entry.consumido_em || entry.expira_em <= new Date();
       const passwordInvalid = job.token && (!job.token.usuario.ativo || job.token.usuario.auth_version !== job.token.auth_version);
       const confirmationInvalid = job.confirmacao && job.confirmacao.solicitacao.estado !== 'AGUARDA_CONFIRMACAO';
@@ -104,7 +109,7 @@ export class OutboxService {
         signature.expedicao.versao.documento.versao_atual !== signature.expedicao.versao.numero ||
         (signature.usuario && (!signature.usuario.ativo || signature.usuario.auth_version !== signature.auth_version ||
           signature.usuario.pessoa_id !== signature.arrolado.pessoa_id || signature.usuario.email_login.trim().toLowerCase() !== signature.email)));
-      if (invalid || passwordInvalid || confirmationInvalid || signatureInvalid) {
+      if (invalid || (assembleia && assembleia.mesa.secretario.email?.trim().toLowerCase() !== assembleia.email) || passwordInvalid || confirmationInvalid || signatureInvalid) {
         await this.prisma.outbox_email.updateMany({ where: { id: job.id, reserva_id: lease, estado: 'PROCESSANDO' }, data: { estado: 'CANCELADO', payload: null, reserva_id: null, reserva_ate: null } });
         return true;
       }
@@ -112,7 +117,11 @@ export class OutboxService {
       if (!/^[a-f0-9]{64}$/.test(token) || createHash('sha256').update(token).digest('hex') !== entry!.hash) throw new Error('token inválido');
       const base = this.config.get<string>('FRONTEND_URL');
       if (!base) throw new Error('origem ausente');
-      if (signature) {
+      if (assembleia) {
+        const url = new URL('/minha-assembleia', base);
+        url.hash = token;
+        await this.email.sendAssemblyInvitation(assembleia.mesa.secretario_nome, assembleia.email, url.toString(), assembleia.id, assembleia.expira_em);
+      } else if (signature) {
         const { nome } = signature.arrolado.retrato as { nome: string };
         const url = new URL('/assinaturas/convite', base);
         url.hash = token;

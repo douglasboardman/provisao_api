@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { logs_atividades_acao } from '@prisma/client';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
@@ -30,9 +30,12 @@ export class OrgaosOficiaisService {
         return { id: repetido.ocupacao_id };
       }
       if (v.data_criacao > hoje) throw new BadRequestException('Data de criação inválida.');
+      await tx.$queryRaw`SELECT id FROM igreja WHERE id = ${igrejaId} FOR UPDATE`;
+      if (await tx.orgao_interno.findFirst({ where: { igreja_id: igrejaId, tipo: v.tipo }, select: { id: true } })) {
+        throw new ConflictException('Este órgão já possui cadastro nesta igreja.');
+      }
       const orgao = await tx.orgao_interno.create({ data: { igreja_id: igrejaId, tipo: v.tipo, constituicao: 'OFICIAL', nome: v.nome, sigla: v.sigla, finalidade: v.finalidade, data_criacao: data, criador_id: operador.id } });
-      const cargos = v.tipo === 'CONSELHO' ? [['VICE_PRESIDENTE', 'Vice-presidente'], ['SECRETARIO', 'Secretário'], ['TESOUREIRO', 'Tesoureiro']] : [['PRESIDENTE', 'Presidente'], ['VICE_PRESIDENTE', 'Vice-presidente'], ['SECRETARIO', 'Secretário'], ['TESOUREIRO', 'Tesoureiro']];
-      await tx.cargo_orgao.createMany({ data: cargos.map(([codigo, nome]) => ({ igreja_id: igrejaId, orgao_id: orgao.id, codigo, nome, funcao: codigo })) });
+      await tx.$executeRaw`SELECT instalar_estrutura_institucional(${igrejaId}, ${v.tipo})`;
       await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgao.id, operador_id: usuarioId, tipo: 'CADASTRO_OFICIAL', data_efeito: data, idempotencia, hash_requisicao: hash, detalhes: { orgao_id: orgao.id } } });
       await tx.logs_atividades.create({ data: { igreja_id: igrejaId, usuario_id: usuarioId, acao: logs_atividades_acao.CRIACAO, tabela_afetada: 'orgao_interno', registro_id: orgao.id, dados_novos: { tipo: orgao.tipo, data_criacao: v.data_criacao } } });
       return { id: orgao.id };

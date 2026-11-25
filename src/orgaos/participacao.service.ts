@@ -33,7 +33,7 @@ export class ParticipacaoService {
       }
       if (v.data_efeito !== hoje) throw new BadRequestException('Data diferente de hoje exige conferência de impacto.');
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, tipo: 'UNIDADE_MINISTERIAL', ativo: true }, select: { id: true } });
+      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, gestao_presidencial: false, tipo: 'UNIDADE_MINISTERIAL', ativo: true }, select: { id: true } });
       if (!orgao) throw new NotFoundException('Unidade não encontrada nesta igreja.');
       const ordem = await ordemDoAto(tx, igrejaId, orgaoId, data, v.ordem_efeito);
       await tx.$queryRaw`SELECT id FROM pessoas WHERE id = ${v.pessoa_id} AND igreja_id = ${igrejaId} FOR UPDATE`;

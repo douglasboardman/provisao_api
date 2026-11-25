@@ -1,3 +1,5 @@
+import { gravarPorServico } from '../autorizacao/escrita-servico';
+import type { Ator, Tx } from '../autorizacao/politica';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { CreateGruposFamiliareDto } from './dto/create-grupos-familiare.dto';
 import { UpdateGruposFamiliareDto } from './dto/update-grupos-familiare.dto';
@@ -19,9 +21,11 @@ export class GruposFamiliaresService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @param createGruposFamiliareDto Dados para criação.
    */
-  async create(igreja_id: string, createGruposFamiliareDto: CreateGruposFamiliareDto): Promise<grupos_familiares> {
-    return this.prisma.grupos_familiares.create({
-      data: { ...createGruposFamiliareDto, igreja_id },
+  async create(igreja_id: string, createGruposFamiliareDto: CreateGruposFamiliareDto, ator?: Ator): Promise<grupos_familiares> {
+    return gravarPorServico(this.prisma, ator, 'FAMILIAS_CADASTRAR', async tx => {
+      return tx.grupos_familiares.create({
+        data: { ...createGruposFamiliareDto, igreja_id },
+      });
     });
   }
 
@@ -42,8 +46,8 @@ export class GruposFamiliaresService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @throws {NotFoundException} Se não encontrado nesta igreja.
    */
-  async findOne(id: string, igreja_id: string): Promise<grupos_familiares> {
-    const grupoFamiliar = await this.prisma.grupos_familiares.findFirst({
+  async findOne(id: string, igreja_id: string, tx: Tx = this.prisma): Promise<grupos_familiares> {
+    const grupoFamiliar = await tx.grupos_familiares.findFirst({
       where: { id, igreja_id },
     });
 
@@ -59,9 +63,11 @@ export class GruposFamiliaresService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @param updateGruposFamiliareDto Dados para atualização.
    */
-  async update(id: string, igreja_id: string, updateGruposFamiliareDto: UpdateGruposFamiliareDto): Promise<grupos_familiares> {
-    await this.findOne(id, igreja_id);
-    return this.prisma.grupos_familiares.update({ where: { id }, data: updateGruposFamiliareDto });
+  async update(id: string, igreja_id: string, updateGruposFamiliareDto: UpdateGruposFamiliareDto, ator?: Ator): Promise<grupos_familiares> {
+    return gravarPorServico(this.prisma, ator, 'FAMILIAS_EDITAR', async tx => {
+      await this.findOne(id, igreja_id, tx);
+      return tx.grupos_familiares.update({ where: { id }, data: updateGruposFamiliareDto });
+    });
   }
 
   /**
@@ -69,9 +75,11 @@ export class GruposFamiliaresService {
    * @param id UUID do grupo familiar.
    * @param igreja_id ID da igreja extraído do token JWT.
    */
-  async remove(id: string, igreja_id: string): Promise<{ message: string }> {
-    await this.findOne(id, igreja_id);
-    await this.prisma.grupos_familiares.delete({ where: { id } });
-    return { message: `O grupo familiar registrado pelo ID ${id} foi removido com sucesso.` };
+  async remove(id: string, igreja_id: string, ator?: Ator): Promise<{ message: string }> {
+    return gravarPorServico(this.prisma, ator, 'FAMILIAS_EXCLUIR', async tx => {
+      await this.findOne(id, igreja_id, tx);
+      await tx.grupos_familiares.delete({ where: { id } });
+      return { message: `O grupo familiar registrado pelo ID ${id} foi removido com sucesso.` };
+    });
   }
 }

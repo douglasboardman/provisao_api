@@ -1,3 +1,5 @@
+import { gravarPorServico } from '../autorizacao/escrita-servico';
+import type { Ator, Tx } from '../autorizacao/politica';
 import { Prisma } from '@prisma/client';
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { CreateAcoeDto } from './dto/create-acoe.dto';
@@ -23,24 +25,26 @@ export class AcoesService {
    * @param createAcoeDto Dados para criação.
    * @throws {NotFoundException} Se responsável ou conta não pertencerem a esta igreja.
    */
-  async create(igreja_id: string, createAcoeDto: CreateAcoeDto): Promise<acoes> {
-    const [responsavel, conta] = await Promise.all([
-      this.prisma.pessoas.findFirst({
-        where: { id: createAcoeDto.responsavel_pessoa_id, igreja_id },
-      }),
-      this.prisma.contas.findFirst({
-        where: { id: createAcoeDto.conta_id, igreja_id },
-      }),
-    ]);
+  async create(igreja_id: string, createAcoeDto: CreateAcoeDto, ator?: Ator): Promise<acoes> {
+    return gravarPorServico(this.prisma, ator, 'ACOES_CADASTRAR', async tx => {
+      const [responsavel, conta] = await Promise.all([
+        tx.pessoas.findFirst({
+          where: { id: createAcoeDto.responsavel_pessoa_id, igreja_id },
+        }),
+        tx.contas.findFirst({
+          where: { id: createAcoeDto.conta_id, igreja_id },
+        }),
+      ]);
 
-    if (!responsavel) {
-      throw new NotFoundException('Responsável não encontrado nesta igreja.');
-    }
-    if (!conta) {
-      throw new NotFoundException('Conta não encontrada nesta igreja.');
-    }
+      if (!responsavel) {
+        throw new NotFoundException('Responsável não encontrado nesta igreja.');
+      }
+      if (!conta) {
+        throw new NotFoundException('Conta não encontrada nesta igreja.');
+      }
 
-    return this.prisma.acoes.create({ data: { ...createAcoeDto, igreja_id } });
+      return tx.acoes.create({ data: { ...createAcoeDto, igreja_id } });
+    });
   }
 
   /**
@@ -57,8 +61,8 @@ export class AcoesService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @throws {NotFoundException} Se não encontrada nesta igreja.
    */
-  async findOne(id: string, igreja_id: string): Promise<acoes> {
-    const acao = await this.prisma.acoes.findFirst({ where: { id, igreja_id } });
+  async findOne(id: string, igreja_id: string, tx: Tx = this.prisma): Promise<acoes> {
+    const acao = await tx.acoes.findFirst({ where: { id, igreja_id } });
 
     if (!acao) {
       throw new NotFoundException(`Ação com ID ${id} não encontrada.`);
@@ -72,9 +76,15 @@ export class AcoesService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @param updateAcoeDto Dados para atualização.
    */
-  async update(id: string, igreja_id: string, updateAcoeDto: UpdateAcoeDto): Promise<acoes> {
-    await this.findOne(id, igreja_id);
-    return this.prisma.acoes.update({ where: { id }, data: updateAcoeDto });
+  async update(id: string, igreja_id: string, updateAcoeDto: UpdateAcoeDto, ator?: Ator): Promise<acoes> {
+    return gravarPorServico(this.prisma, ator, 'ACOES_EDITAR', async tx => {
+      await this.findOne(id, igreja_id, tx);
+      if (updateAcoeDto.conta_id && !await tx.contas.findFirst({ where: { id: updateAcoeDto.conta_id, igreja_id }, select: { id: true } }))
+        throw new NotFoundException('Conta não encontrada nesta igreja.');
+      if (updateAcoeDto.responsavel_pessoa_id && !await tx.pessoas.findFirst({ where: { id: updateAcoeDto.responsavel_pessoa_id, igreja_id }, select: { id: true } }))
+        throw new NotFoundException('Responsável não encontrado nesta igreja.');
+      return tx.acoes.update({ where: { id }, data: updateAcoeDto });
+    });
   }
 
   /**
@@ -82,16 +92,18 @@ export class AcoesService {
    * @param id UUID da ação.
    * @param igreja_id ID da igreja extraído do token JWT.
    */
-  async remove(id: string, igreja_id: string): Promise<{ message: string }> {
-    await this.findOne(id, igreja_id);
-    try {
-      await this.prisma.acoes.delete({ where: { id } });
-    } catch (erro) {
-      if (erro instanceof Prisma.PrismaClientKnownRequestError && erro.code === 'P2003') {
-        throw new ConflictException('A ação possui registros associados que precisam ser preservados.');
+  async remove(id: string, igreja_id: string, ator?: Ator): Promise<{ message: string }> {
+    return gravarPorServico(this.prisma, ator, 'ACOES_EXCLUIR', async tx => {
+      await this.findOne(id, igreja_id, tx);
+      try {
+        await tx.acoes.delete({ where: { id } });
+      } catch (erro) {
+        if (erro instanceof Prisma.PrismaClientKnownRequestError && erro.code === 'P2003') {
+          throw new ConflictException('A ação possui registros associados que precisam ser preservados.');
+        }
+        throw erro;
       }
-      throw erro;
-    }
-    return { message: `Ação com ID ${id} removida com sucesso.` };
+      return { message: `Ação com ID ${id} removida com sucesso.` };
+    });
   }
 }

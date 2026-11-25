@@ -28,7 +28,7 @@ export class DesignacoesService {
       const hoje = await hojeDaIgreja(tx, igrejaId), data = new Date(`${hoje}T00:00:00.000Z`);
       await bloquearChave(tx, igrejaId, idempotencia);
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, ativo: true, tipo: 'UNIDADE_MINISTERIAL', constituicao: 'DESIGNACAO' } });
+      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, ativo: true, gestao_presidencial: false, tipo: 'UNIDADE_MINISTERIAL', constituicao: 'DESIGNACAO' } });
       if (!orgao) throw new NotFoundException('Unidade designada não encontrada nesta igreja.');
       const cargo = await tx.cargo_orgao.findFirst({ where: { id: cargoId, orgao_id: orgaoId, igreja_id: igrejaId, ativo: true } });
       if (!cargo) throw new NotFoundException('Cargo de designação não encontrado.');

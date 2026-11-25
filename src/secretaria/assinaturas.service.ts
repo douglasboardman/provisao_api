@@ -28,10 +28,10 @@ import {
 import { revogarConvites } from './expedicao-estado';
 import { validar } from './secretaria.dto';
 import * as dto from './assinaturas.dto';
+import { contaDoConvite, normalizarEmail } from './conta-do-convite';
 
 const pdfInvalido = 'Envie a digitalização como PDF válido, sem senha e com ao menos uma página.';
 const conviteInvalido = () => new NotFoundException('Convite indisponível.');
-const normalizarEmail = (email?: string | null) => email?.trim().toLowerCase() ?? '';
 const emailIndividual = z.email().max(255);
 
 @Injectable()
@@ -159,10 +159,14 @@ export class AssinaturasService {
           AND lower(btrim(email_login)) = ${email}
       ) AS encontrado`;
     if (compartilhado[0].encontrado) throw new ConflictException('O endereço está compartilhado nesta igreja.');
-    const conta = await tx.usuarios.findFirst({ where: { igreja_id: igrejaId, pessoa_id: pessoaId } });
-    if (conta && (!conta.ativo || normalizarEmail(conta.email_login) !== email)) {
-      throw new ConflictException('A conta vinculada deve estar ativa e usar o mesmo endereço individual.');
-    }
+    const contas = await tx.usuarios.findMany({
+      where: { igreja_id: igrejaId, pessoa_id: pessoaId },
+      select: { id: true, email_login: true, ativo: true, auth_version: true, perfil: true, conta_atuacao: true },
+    });
+    const conta = contaDoConvite(contas, email, () =>
+      new ConflictException('O endereço individual deve corresponder a uma conta vinculada ativa.'),
+    );
+    if (conta?.perfil === 'COMUM' && !conta.conta_atuacao) throw new ConflictException('Selecione a conta de atuação do signatário.');
     return conta;
   }
 

@@ -1,3 +1,4 @@
+import { AutorizacaoModule } from './autorizacao/autorizacao.module';
 import { SecretariaModule } from './secretaria/secretaria.module';
 import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
@@ -41,6 +42,7 @@ import { RegrasRelacaoEnumModule } from './regras-relacao-enum/regras-relacao-en
     PrismaModule,
     OutboxModule,
     AuthModule,
+    AutorizacaoModule,
     PrivateStorageModule,
     UsuariosModule,
     PessoasModule,

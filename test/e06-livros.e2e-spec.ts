@@ -1,3 +1,4 @@
+import { habilitarAutorDeTeste } from './fixtures/autor-modelo';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { INestApplication } from '@nestjs/common';
@@ -28,6 +29,7 @@ integration('E06: livros e paginação no PostgreSQL', () => {
     exame: string,
     reuniao: string;
   let livro: string;
+  let camposNumero: { id: string; origem: string }[];
   const post = (path: string, ator: keyof typeof atores = 'secretario') =>
     request(app.getHttpServer())
       .post('/secretaria/' + path)
@@ -69,6 +71,7 @@ integration('E06: livros e paginação no PostgreSQL', () => {
       data_documento: data,
       conteudo: {
         teor,
+        ...(modelo === ata && { redator_ata: { pessoa_id: pessoa } }),
         campos: { NUMERO_LIVRO: '999' },
         anexos: [],
         arrolados: [
@@ -168,22 +171,27 @@ integration('E06: livros e paginação no PostgreSQL', () => {
         idempotencia: randomUUID(),
       })
       .expect(201);
+    const criar = [await habilitarAutorDeTeste(prisma, igreja, atores.secretario), await habilitarAutorDeTeste(prisma, igreja, atores.gestor)];
+    camposNumero = await prisma.campo_secretaria.findMany({where:{igreja_id:igreja,origem:{in:['numero_documento','numero_documento_por_extenso']}},select:{id:true,origem:true}});
     const modelo = async (tipo: 'ATA' | 'OUTRO', finalidade: string, registro_em_livro: string) =>
       (
         await post('modelos')
           .send({
+            publicar: true,
             contexto_id: contexto,
             tipo,
             finalidade,
             nome: finalidade,
             idempotencia: randomUUID(),
             configuracao: {
+              atuacao: { criar, preparar: [], assinar: [] },
               contexto: 'ASSEMBLEIA_GERAL',
               perfil: tipo === 'ATA' ? 'ATA_PADRAO' : 'TERMO',
               motivador: 'NAO_PERMITE',
               resolucoes: 'NAO_PERMITE',
               registro_livro: false,
               registro_em_livro,
+              ...(tipo === 'ATA' && { obrigatorios_biblioteca: camposNumero.map(c => c.id) }),
               campos_obrigatorios: [],
               papeis_obrigatorios: ['PRESIDENTE'],
               cargos_obrigatorios: [],
@@ -205,6 +213,7 @@ integration('E06: livros e paginação no PostgreSQL', () => {
             modalidade: 'AGO',
             data,
             local: 'Templo',
+            inicio: data + 'T19:00:00Z', fim: data + 'T21:00:00Z',
             pauta: 'Pauta sintética',
             competencia: 'Assembleia',
             universo_informado: 1,
@@ -341,9 +350,46 @@ integration('E06: livros e paginação no PostgreSQL', () => {
       /^\s+1\s*$/m,
     );
     await expedirFisicamente(termo.id);
-    const a = await preparar(entradaDoc(ata, livro)),
+    const segundoLivro = (await post('livros').send(entradaLivro(2)).expect(201)).body.id;
+    const segundoTermo = await preparar(entradaDoc(abertura, segundoLivro));
+    await medir(segundoTermo);
+    await aprovar(segundoTermo).expect(201);
+    await matriz(segundoTermo.id);
+    await expedirFisicamente(segundoTermo.id);
+
+    const pedido = entradaDoc(ata, livro);
+    const seguinte = entradaDoc(ata, livro);
+    seguinte.versao.data_documento = '2027-01-01';
+    const [um, dois] = await Promise.all([post('documentos').send(pedido).expect(201),
+      post('documentos', 'gestor').send(seguinte).expect(201)]);
+    expect((await post('documentos').send(pedido).expect(201)).body).toEqual(um.body);
+    const primeira = await detalheDoc(um.body.id), segunda = await detalheDoc(dois.body.id);
+    expect([primeira.numero, segunda.numero].sort()).toEqual([1, 2]);
+    expect(camposNumero).toHaveLength(2);
+    for (const campo of camposNumero) expect(primeira.versoes[0].conteudo.valores[campo.id].valor)
+      .toBe(campo.origem === 'numero_documento' ? primeira.numero : primeira.numero === 1 ? 'um' : 'dois');
+    expect(primeira.identificacao_livro).toContain('Livro nº 1');
+    expect(await prisma.contador_ata_livro.findUnique({where:{livro_id:livro}})).toMatchObject({ultimo:2});
+    const mover = (confirmar: boolean) => request(app.getHttpServer()).patch('/secretaria/documentos/' + primeira.id)
+      .set('Cookie', cookies.secretario!).set('Origin', 'http://localhost:3001').set('X-Provisao-Request','1')
+      .send({ revisao:1, idempotencia:randomUUID(), versao:{...pedido.versao, livro_id:segundoLivro, confirmar_troca_livro:confirmar} });
+    await mover(false).expect(400);
+    await mover(true).expect(200);
+    expect(await detalheDoc(primeira.id)).toMatchObject({numero:1, ano:null, identificacao_livro:expect.stringContaining('Livro nº 2')});
+    expect(await prisma.reserva_ata_livro.findFirst({where:{documento_id:primeira.id,livro_id:livro}})).toMatchObject({motivo:'TRANSFERENCIA'});
+    await post('documentos/'+primeira.id+'/cancelar','gestor').send(cmd(2)).expect(201);
+    await post('documentos/'+segunda.id+'/cancelar','gestor').send(cmd(1)).expect(201);
+    const entrada = entradaDoc(ata, livro, '');
+    const nota = randomUUID(), espaco = { superior: 0, inferior: 0 };
+    const anotada = { ...entrada, versao: { ...entrada.versao, conteudo: { ...entrada.versao.conteudo, composicao: {
+      versao_formato: 1, notas_ativas: true, pagina: { papel: 'A4', orientacao: 'retrato', fonte: 'Noto Serif', tamanho_pt: 12,
+        margens_cm: { superior: 2, direita: 2, inferior: 2, esquerda: 2 }, espacamento_cm: { cabecalho: espaco, corpo: espaco, rodape: espaco } },
+      cabecalho: [], rodape: [], notas: { [nota]: { texto: 'Conforme edital da assembleia.' } },
+      corpo: [{ tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [{ tipo: 'texto', texto: 'Deliberação' }, { tipo: 'referencia_nota', nota_id: nota }] }],
+    } } } };
+    const a = await preparar(anotada),
       b = await preparar(entradaDoc(ata, livro));
-    await medir(a);
+    expect((await medir(a)).paginas_medidas).toBe(1);
     await medir(b);
     await Promise.all([aprovar(a).expect(201), aprovar(b).expect(201)]);
     const detalhe = await detalheLivro();
@@ -365,6 +411,7 @@ integration('E06: livros e paginação no PostgreSQL', () => {
     expect(execFileSync('pdftotext', ['-layout', '-', '-'], { input: bytes, encoding: 'utf8' })).toMatch(
       new RegExp(`^\\s+${registro.numero_visivel_inicio}\\s*$`, 'm'),
     );
+    expect(execFileSync('pdftotext', ['-layout', '-', '-'], { input: bytes, encoding: 'utf8' })).toContain('1. Conforme edital da assembleia.');
     await expect(
       prisma.registro_livro.update({ where: { id: registro.id }, data: { posicao_inicio: 4, posicao_fim: 4 } }),
     ).rejects.toThrow();
@@ -380,6 +427,9 @@ integration('E06: livros e paginação no PostgreSQL', () => {
     await aprovar(docExame).expect(201);
     await expedirFisicamente(docExame.id);
     expect((await detalheLivro()).registros.at(-1)).toMatchObject({ natureza: 'EXAME', posicao_inicio: 4 });
+    expect((await detalheLivro()).atas_pendentes).toContainEqual(expect.objectContaining({documento_id:longa.id}));
+    await acao('preparar-encerramento', (await detalheLivro()).revisao).expect(400);
+    await post('documentos/'+longa.id+'/cancelar','gestor').send(cmd(longa.revisao)).expect(201);
     await acao('preparar-encerramento', (await detalheLivro()).revisao).expect(201);
     const desistente = await preparar(entradaDoc(encerramento, livro));
     await acao('desistir-encerramento', (await detalheLivro()).revisao).expect(201);

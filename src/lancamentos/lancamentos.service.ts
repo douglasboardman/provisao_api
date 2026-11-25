@@ -1,18 +1,46 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { gravarPorServico } from '../autorizacao/escrita-servico';
+import type { Ator, Tx } from '../autorizacao/politica';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { CreateLancamentoDto } from './dto/create-lancamento.dto';
 import { UpdateLancamentoDto } from './dto/update-lancamento.dto';
 
 const INCLUDE_RELATIONS = { contas: true, receitas: true, despesas: true, pessoas: true, acoes: true } as const;
 
+type LancamentoDetalhado = Prisma.lancamentosGetPayload<{ include: typeof INCLUDE_RELATIONS }>;
+function isolarVinculos(l: LancamentoDetalhado) {
+  const daIgreja = <T extends { igreja_id: string }>(r: T | null) => r?.igreja_id === l.igreja_id ? r : null;
+  return { ...l, contas: daIgreja(l.contas), acoes: daIgreja(l.acoes), receitas: daIgreja(l.receitas),
+    despesas: daIgreja(l.despesas), pessoas: daIgreja(l.pessoas) };
+}
+
 @Injectable()
 export class LancamentosService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(igreja_id: string, usuario_id: string, dto: CreateLancamentoDto) {
-    return this.prisma.lancamentos.create({
-      data: { ...dto, igreja_id, usuario_id, data_transacao: new Date(dto.data_transacao) },
-      include: INCLUDE_RELATIONS,
+  private async conferirVinculos(tx: Tx, igreja_id: string, dto: UpdateLancamentoDto) {
+    const [conta, projeto, receita, despesa, pessoa] = await Promise.all([
+      dto.conta_id && tx.contas.findFirst({ where: { id: dto.conta_id, igreja_id }, select: { id: true } }),
+      dto.acao_id && tx.acoes.findFirst({ where: { id: dto.acao_id, igreja_id }, select: { id: true } }),
+      dto.receita_id && tx.receitas.findFirst({ where: { id: dto.receita_id, igreja_id }, select: { id: true } }),
+      dto.despesa_id && tx.despesas.findFirst({ where: { id: dto.despesa_id, igreja_id }, select: { id: true } }),
+      dto.pessoa_id && tx.pessoas.findFirst({ where: { id: dto.pessoa_id, igreja_id }, select: { id: true } }),
+    ]);
+    if ([conta, projeto, receita, despesa, pessoa].includes(null)) {
+      const verificados = [[dto.conta_id, conta], [dto.acao_id, projeto], [dto.receita_id, receita],
+        [dto.despesa_id, despesa], [dto.pessoa_id, pessoa]];
+      if (verificados.some(([id, cadastro]) => id && !cadastro)) throw new BadRequestException('Vínculo indisponível nesta igreja.');
+    }
+  }
+
+  async create(igreja_id: string, usuario_id: string, dto: CreateLancamentoDto, ator?: Ator) {
+    return gravarPorServico(this.prisma, ator, 'LANCAMENTOS_REGISTRAR', async tx => {
+      await this.conferirVinculos(tx, igreja_id, dto);
+      return tx.lancamentos.create({
+        data: { ...dto, igreja_id, usuario_id, data_transacao: new Date(dto.data_transacao) },
+        include: INCLUDE_RELATIONS,
+      });
     });
   }
 
@@ -42,7 +70,7 @@ export class LancamentosService {
       this.prisma.lancamentos.count({ where }),
     ]);
 
-    return { data, meta: { total, page, per_page, total_pages: Math.ceil(total / per_page) } };
+    return { data: data.map(isolarVinculos), meta: { total, page, per_page, total_pages: Math.ceil(total / per_page) } };
   }
 
   async balanco(igreja_id: string, mes: number, ano: number) {
@@ -70,34 +98,39 @@ export class LancamentosService {
       total_receitas: +total_receitas.toFixed(2),
       total_despesas: +total_despesas.toFixed(2),
       saldo: +(total_receitas - total_despesas).toFixed(2),
-      lancamentos,
+      lancamentos: lancamentos.map(isolarVinculos),
     };
   }
 
-  async findOne(id: string, igreja_id: string) {
-    const lancamento = await this.prisma.lancamentos.findFirst({
+  async findOne(id: string, igreja_id: string, tx: Tx = this.prisma) {
+    const lancamento = await tx.lancamentos.findFirst({
       where: { id, igreja_id },
       include: INCLUDE_RELATIONS,
     });
     if (!lancamento) throw new NotFoundException(`Lançamento ${id} não encontrado.`);
     if (lancamento.igreja_id !== igreja_id) throw new ForbiddenException('Acesso negado.');
-    return lancamento;
+    return isolarVinculos(lancamento);
   }
 
-  async update(id: string, igreja_id: string, dto: UpdateLancamentoDto) {
-    await this.findOne(id, igreja_id);
-    const data: any = { ...dto };
-    if (dto.data_transacao) data.data_transacao = new Date(dto.data_transacao);
-    return this.prisma.lancamentos.update({
-      where: { id },
-      data,
-      include: INCLUDE_RELATIONS,
+  async update(id: string, igreja_id: string, dto: UpdateLancamentoDto, ator?: Ator) {
+    return gravarPorServico(this.prisma, ator, 'LANCAMENTOS_EDITAR', async tx => {
+      await this.conferirVinculos(tx, igreja_id, dto);
+      await this.findOne(id, igreja_id, tx);
+      const data: any = { ...dto };
+      if (dto.data_transacao) data.data_transacao = new Date(dto.data_transacao);
+      return isolarVinculos(await tx.lancamentos.update({
+        where: { id },
+        data,
+        include: INCLUDE_RELATIONS,
+      }));
     });
   }
 
-  async remove(id: string, igreja_id: string) {
-    await this.findOne(id, igreja_id);
-    await this.prisma.lancamentos.delete({ where: { id } });
-    return { message: 'Lançamento removido com sucesso.' };
+  async remove(id: string, igreja_id: string, ator?: Ator) {
+    return gravarPorServico(this.prisma, ator, 'LANCAMENTOS_EXCLUIR', async tx => {
+      await this.findOne(id, igreja_id, tx);
+      await tx.lancamentos.delete({ where: { id } });
+      return { message: 'Lançamento removido com sucesso.' };
+    });
   }
 }

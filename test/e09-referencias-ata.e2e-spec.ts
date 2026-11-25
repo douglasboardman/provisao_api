@@ -1,3 +1,4 @@
+import { configuracaoSchema } from '../src/secretaria/secretaria.dto';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -7,6 +8,7 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { documento_tipo, orgao_tipo } from '@prisma/client';
 import { PDFDocument } from 'pdf-lib';
+import { seedSecretaria } from '../prisma/seed-secretaria';
 import * as request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { SessionService } from '../src/auth/session.service';
@@ -247,6 +249,14 @@ integracao('E09 – referências documentais', () => {
       })
     ).id;
     const of = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: pessoa, tipo: 'DIACONO' } });
+    const secretarioJunta = await prisma.pessoas.create({ data: { igreja_id: igreja, nome_completo: 'Secretário da Junta', sexo: 'MASCULINO', data_nascimento: new Date('1980-01-01') } });
+    await prisma.usuarios.updateMany({ where: { igreja_id: igreja, perfil: 'SECRETARIO' }, data: { pessoa_id: secretarioJunta.id } });
+    const diacono = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: secretarioJunta.id, tipo: 'DIACONO' } });
+    await prisma.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: secretarioJunta.id, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: dia } });
+    await prisma.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: diacono.id, tipo: 'ORDENACAO', data_efeito: dia, ordem: 1, autoridade: 'Conselho', evidencia: 'Ato conferido' } });
+    await prisma.mandato_oficial.create({ data: { igreja_id: igreja, oficial_id: diacono.id, data_eleicao: dia, data_posse: dia, termino_previsto: new Date('2031-01-09'), autoridade: 'Assembleia', evidencia: 'Ata', avaliacao_eleicao: {} } });
+    const cargoJunta = await prisma.cargo_orgao.create({ data: { igreja_id: igreja, orgao_id: ctxJunta.orgao, codigo: 'SECRETARIO', funcao: 'SECRETARIO', nome: 'Primeiro secretário' } });
+    await prisma.ocupacao_cargo.create({ data: { igreja_id: igreja, orgao_id: ctxJunta.orgao, pessoa_id: secretarioJunta.id, cargo_id: cargoJunta.id, inicio: dia, termino_previsto: new Date('2027-01-09') } });
     const pastor = await prisma.oficial.create({
       data: { igreja_id: igreja, pessoa_id: pessoa, tipo: 'PRESBITERO_DOCENTE', ativo: false },
     });
@@ -548,6 +558,7 @@ integracao('E09 – referências documentais', () => {
     });
     const modelo = await http('post', '/secretaria/modelos')
       .send({
+        publicar: true,
         tipo: 'ATA',
         finalidade: 'ATA_AGO',
         contexto_id: assembleia,
@@ -555,6 +566,7 @@ integracao('E09 – referências documentais', () => {
         idempotencia: randomUUID(),
         configuracao: {
           perfil: 'E09',
+          atuacao: { criar: ['PRESIDENCIA_CONSELHO'], preparar: [], assinar: [] },
           contexto: 'ASSEMBLEIA_GERAL',
           motivador: 'NAO_PERMITE',
           resolucoes: 'OPCIONAL',
@@ -672,6 +684,192 @@ integracao('E09 – referências documentais', () => {
     expect(pendencias.body.itens.some((a) => a.alvo_id === mandato && a.etapa === 'ELEICAO')).toBe(false);
   });
 
+  it('mantém um rascunho por modelo e bloqueia a criação durante toda a edição', async () => {
+    const base = { tipo: 'OUTRO', finalidade: 'CARTA', configuracao: {
+      perfil: 'CARTA', contexto: 'ASSEMBLEIA_GERAL', motivador: 'OPCIONAL', resolucoes: 'NAO_PERMITE',
+      atuacao: { criar: ['PRESIDENCIA_CONSELHO'], preparar: [], assinar: [] },
+      campos_obrigatorios: [], papeis_obrigatorios: [], cargos_obrigatorios: [],
+    } };
+    const modelo = (await http('post', '/secretaria/modelos').send({ ...base, nome: 'Carta de teste',
+      contexto_id: assembleia, idempotencia: randomUUID() }).expect(201)).body;
+    const url = '/secretaria/modelos/' + modelo.id;
+    const ler = async () => (await http('get', '/secretaria/modelos?contexto=' + assembleia).expect(200)).body.find(m => m.id === modelo.id);
+    const dados = (revisao: number) => ({ ...base, revisao, idempotencia: randomUUID() });
+    const versao = (modelo_versao_id: string) => ({ modelo_versao_id, assunto: 'Carta', data_documento: data,
+      conteudo: { campos: {}, teor: 'Texto original', anexos: [], arrolados: [] } });
+    const gerar = (id: string, vigente = true) => http('post', '/secretaria/documentos').send({
+      contexto_id: assembleia, restrito: false, ...(vigente && { usar_modelo_vigente: true }), idempotencia: randomUUID(), versao: versao(id),
+    });
+    expect(await ler()).toMatchObject({ estado: 'EM_EDICAO', versoes: [] });
+    await http('patch', url + '/rascunho').send(dados(1)).expect(200);
+    await http('patch', url + '/rascunho').send(dados(2)).expect(200);
+    expect((await ler()).versoes).toHaveLength(0);
+    const v1 = (await http('post', url + '/publicar').send(dados(3)).expect(201)).body.versao_id;
+    const doc = (await gerar(v1).expect(201)).body;
+    expect(await ler()).toMatchObject({ estado: 'PUBLICADO', rascunho: null, versoes: [{ numero: 1 }] });
+    await http('post', url + '/editar', 'auditor').send({ revisao: 4, idempotencia: randomUUID() }).expect(403);
+    await http('post', url + '/editar').send({ revisao: 4, idempotencia: randomUUID() }).expect(201);
+    await gerar(v1).expect(409);
+    await gerar(v1, false).expect(409);
+    await http('patch', '/secretaria/documentos/' + doc.id).send({ revisao: 1, idempotencia: randomUUID(), versao: versao(v1) }).expect(200);
+    await http('patch', url + '/rascunho').send({ ...dados(5), finalidade: 'OFICIO' }).expect(200);
+    expect(await ler()).toMatchObject({ estado: 'EM_EDICAO', rascunho: { finalidade: 'OFICIO' }, versoes: [{ id: v1, finalidade: 'CARTA' }] });
+    await http('post', url + '/publicar').send(dados(5)).expect(409);
+    const publicar = { ...dados(6), finalidade: 'OFICIO' };
+    const v2 = (await http('post', url + '/publicar').send(publicar).expect(201)).body.versao_id;
+    expect((await http('post', url + '/publicar').send(publicar).expect(201)).body.versao_id).toBe(v2);
+    expect((await ler()).versoes.map(v => v.numero)).toEqual([2, 1]);
+    await gerar(v2).expect(201);
+    expect((await http('get', '/secretaria/documentos/' + doc.id)).body.versoes[0].modelo_versao_id).toBe(v1);
+  });
+
+  it('preenche as duas formas do número no primeiro encaminhamento válido', async () => {
+    const campos = await prisma.campo_secretaria.findMany({ where: { igreja_id: igreja, origem: { in: ['numero_documento', 'numero_documento_por_extenso'] } } });
+    expect(campos).toHaveLength(2);
+    const modelos = await seedSecretaria(prisma, igreja, conselho, concedente);
+    const modeloBase = await prisma.modelo_documento_versao.findUniqueOrThrow({ where: { id: modelos.CORRESPONDENCIA } });
+    const config = configuracaoSchema.parse(modeloBase.configuracao);
+    const composicao = { ...config.composicao_padrao, corpo: [{ tipo: 'paragrafo', alinhamento: 'esquerda',
+      trechos: campos.map(c => ({ tipo: 'campo', campo_id: c.id, apresentacao: 'individual' })) }] };
+    const modelo = (await http('post', '/secretaria/modelos').send({ publicar: true, contexto_id: conselho, idempotencia: randomUUID(),
+      nome: 'Documento numerado', tipo: 'OUTRO', finalidade: 'CORRESPONDENCIA',
+      configuracao: { ...config, composicao_padrao: composicao, obrigatorios_biblioteca: campos.map(c => c.id), papeis_obrigatorios: [] },
+    }).expect(201)).body;
+    const versao = { modelo_versao_id: modelo.versao_id, data_documento: data, assunto: 'Correspondência de teste',
+      conteudo: { composicao, teor: '', campos: {}, anexos: [], arrolados: [] } };
+    const criado = (await http('post', '/secretaria/documentos').send({ contexto_id: conselho, restrito: false, idempotencia: randomUUID(), versao }).expect(201)).body;
+    const url = '/secretaria/documentos/' + criado.id;
+    const comando = (revisao: number) => ({ revisao, idempotencia: randomUUID(), autoridade: 'Conselho', evidencia: 'Conferência' });
+    await http('post', url + '/encaminhar').send(comando(1)).expect(400);
+    const minuta = (await http('get', url).expect(200)).body;
+    expect(minuta.numero).toBeNull();
+    expect(minuta.tramitacao.pendencias.map(p => p.destino)).not.toContain('teor');
+    for (const c of campos) {
+      expect(minuta.versoes[0].conteudo.valores[c.id].valor).toBeNull();
+      expect(minuta.tramitacao.pendencias.map(p => p.destino)).not.toContain('valor-' + c.id);
+    }
+    const arrolados = [{ pessoa_id: pessoa, papeis: ['SECRETARIO'], cargo_id: null, assina: true, obrigatorio: true, responsavel: true, fundamento: 'Secretário' }];
+    const editar = (revisao: number) => http('patch', url).send({ revisao, idempotencia: randomUUID(), versao: { ...versao, conteudo: { ...versao.conteudo, arrolados } } }).expect(200);
+    await editar(1);
+    await http('post', url + '/encaminhar').send(comando(2)).expect(201);
+    async function conferirNumero() {
+      const doc = (await http('get', url).expect(200)).body;
+      expect(doc.numero).toBe(1);
+      for (const c of campos) {
+        expect(doc.versoes[0].conteudo.valores[c.id]).toMatchObject({
+          valor: c.origem === 'numero_documento' ? 1 : 'um', origem: { tipo: 'sistema', chave: c.origem },
+        });
+      }
+    }
+    await conferirNumero();
+    await editar(3);
+    await http('post', url + '/encaminhar').send(comando(4)).expect(201);
+    await conferirNumero();
+  });
+
+  it.each(['Conselho', 'Junta Diaconal'])('leva os itens da reunião regular de %s à ata na ordem cadastrada', async nome => {
+    const contexto_id = nome === 'Conselho' ? conselho : junta;
+    const itens = [
+      { descricao: 'Leitura da correspondência', proponente_id: pessoa },
+      { descricao: 'Planejamento do encontro', proponente_id: null },
+    ];
+    const dados = {
+      restrito: false, modalidade: 'REGULAR', data, local: 'Templo', competencia: nome,
+      universo_informado: 0, quorum_minimo: 0, quorum_conferido: false, fundamento_quorum: 'Cadastro',
+      resultado: '', participantes: [], itens_pauta: itens,
+    };
+    const criar = (dadosReuniao: typeof dados) => http('post', '/secretaria/reunioes')
+      .send({ contexto_id, idempotencia: randomUUID(), dados: dadosReuniao });
+    await criar({ ...dados, itens_pauta: [{ ...itens[0], proponente_id: randomUUID() }] }).expect(400);
+    const { body: reuniao } = await criar(dados).expect(201);
+    const caminho = '/secretaria/reunioes/' + reuniao.id;
+    const inicial = (await http('get', caminho).expect(200)).body;
+    expect(inicial.itens_pauta).toMatchObject(itens.map((item, i) => ({ ...item, ordem: i + 1 })));
+    expect(inicial.itens_pauta[0].proponente.nome_completo).toBe('Membro de teste');
+    await http('patch', caminho).send({ revisao: 1, idempotencia: randomUUID(), dados: { ...inicial.dados, pauta: 'Mudança por editor antigo' } }).expect(409);
+    const invertidos = [itens[1], itens[0]];
+    await http('patch', caminho).send({ revisao: 1, idempotencia: randomUUID(), dados: { ...dados, itens_pauta: invertidos } }).expect(200);
+    expect((await http('get', caminho).expect(200)).body.itens_pauta).toMatchObject(invertidos.map((item, i) => ({ ...item, ordem: i + 1 })));
+    const modelos = await seedSecretaria(prisma, igreja, contexto_id, concedente);
+    const modelo = await prisma.modelo_documento_versao.findUniqueOrThrow({ where: { id: modelos.ATA_REUNIAO } });
+    const campo = await prisma.campo_secretaria.findFirstOrThrow({ where: { igreja_id: igreja, origem: 'pauta_reuniao' } });
+    const { composicao_padrao } = modelo.configuracao as { composicao_padrao: object };
+    const { body: ata } = await http('post', '/secretaria/documentos', nome === 'Conselho' ? 'gestor' : 'secretario').send({
+      contexto_id, restrito: false, idempotencia: randomUUID(), versao: {
+        modelo_versao_id: modelo.id, reuniao_id: reuniao.id, motivador_id: null,
+        assunto: 'Ata da reunião regular', data_documento: data,
+        conteudo: { teor: '', composicao: composicao_padrao, campos: {}, anexos: [], arrolados: [] },
+      },
+    }).expect(201);
+    const versao = (await http('get', '/secretaria/documentos/' + ata.id).expect(200)).body.versoes[0];
+    expect(versao.conteudo.valores[campo.id].valor).toEqual(invertidos.map(i => i.descricao));
+  });
+
+  it('seleciona um local da igreja e conserva o endereço e usa a data da reunião por extenso na ata', async () => {
+    await prisma.configuracao_fuso_igreja.upsert({ where: { igreja_id: igreja }, create: { igreja_id: igreja, fuso_iana: 'America/Sao_Paulo' }, update: { fuso_iana: 'America/Sao_Paulo' } });
+    const local = {
+      descritivo: 'Templo', endereco_logradouro: 'Rua General Câmara', endereco_numero: '2786',
+      endereco_bairro: 'Centro', endereco_cep: '97500283', endereco_cidade: 'Uruguaiana', endereco_uf: 'RS',
+    };
+    const pedido = { local, idempotencia: randomUUID() };
+    const cadastro = (await http('post', '/secretaria/locais').send(pedido).expect(201)).body;
+    expect((await http('post', '/secretaria/locais').send(pedido).expect(201)).body.id).toBe(cadastro.id);
+    const caminho = '/secretaria/locais/' + cadastro.id;
+    const localidades = (await http('get', '/secretaria/locais').expect(200)).body;
+    const encontrado = localidades.find(l => l.id === cadastro.id);
+    expect(encontrado.endereco_extenso).toBe('Rua General Câmara, 2786 - Bairro Centro, CEP 97500-283, Uruguaiana/RS');
+    expect(encontrado.endereco_declarativo).toBe('sito à Rua General Câmara, número 2786, Bairro Centro, CEP 97500-283, em Uruguaiana, Rio Grande do Sul');
+    expect((await http('get', '/secretaria/locais', 'outra').expect(200)).body).not.toContainEqual(expect.objectContaining({ id: cadastro.id }));
+    const localOutra = (await http('post', '/secretaria/locais', 'outra').send(pedido).expect(201)).body;
+    const dados = {
+      restrito: false, modalidade: 'REGULAR', data: '2025-12-01', inicio: '2025-12-01T22:30:00Z', fim: '2025-12-02T01:01:00Z', competencia: 'Conselho', pauta: 'Visitas',
+      universo_informado: 0, quorum_minimo: 0, quorum_conferido: false, fundamento_quorum: 'Cadastro',
+      resultado: '', participantes: [],
+    };
+    const criar = (local_id: string) => http('post', '/secretaria/reunioes').send({
+      contexto_id: conselho, dados, local_id, idempotencia: randomUUID(),
+    });
+    await criar(localOutra.id).expect(400);
+    const reuniao = (await criar(cadastro.id).expect(201)).body;
+    const editar = { revisao: 1, idempotencia: randomUUID(), local: { ...local, descritivo: 'Sede', declarativo_personalizado: 'nas dependências da sede' } };
+    await http('patch', caminho, 'auditor').send(editar).expect(403);
+    await http('patch', caminho).send(editar).expect(200);
+    await http('patch', caminho).send({ ...editar, idempotencia: randomUUID() }).expect(409);
+    const outraReuniao = (await criar(cadastro.id).expect(201)).body;
+    expect((await http('get', '/secretaria/reunioes/' + outraReuniao.id).expect(200)).body.local_retrato.endereco_declarativo).toBe('nas dependências da sede');
+    await http('patch', '/secretaria/reunioes/' + reuniao.id).send({ dados, local_id: cadastro.id, revisao: 1, idempotencia: randomUUID() }).expect(200);
+    const modelos = await seedSecretaria(prisma, igreja, conselho, concedente);
+    const base = await prisma.modelo_documento_versao.findUniqueOrThrow({ where: { id: modelos.ATA_REUNIAO } });
+    const config = configuracaoSchema.parse(base.configuracao);
+    const campos = await prisma.campo_secretaria.findMany({ where: { igreja_id: igreja, origem: { in: ['local_reuniao', 'endereco_declarativo', 'endereco_extenso', 'endereco_uf', 'dia_reuniao_por_extenso', 'mes_reuniao_por_extenso', 'ano_reuniao_por_extenso', 'horario_inicio_reuniao', 'horario_inicio_reuniao_por_extenso', 'horario_encerramento_reuniao', 'horario_encerramento_reuniao_por_extenso', 'redator_ata'] } } });
+    expect(campos).toHaveLength(12);
+    const composicao = { ...config.composicao_padrao, corpo: campos.map(c => ({ tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [{ tipo: 'campo', campo_id: c.id, apresentacao: 'individual' }] })) };
+    const modelo = (await http('post', '/secretaria/modelos').send({ publicar: true, contexto_id: conselho, idempotencia: randomUUID(),
+      nome: 'Ata com endereço', tipo: 'ATA', finalidade: 'ATA_REUNIAO', configuracao: { ...config, composicao_padrao: composicao },
+    }).expect(201)).body;
+    const versaoAta = { modelo_versao_id: modelo.versao_id, reuniao_id: reuniao.id, assunto: 'Ata com endereço', data_documento: '2026-02-01',
+      conteudo: { teor: '', composicao, campos: {}, anexos: [], arrolados: [] } };
+    const criarAta = (pessoa_id: string) => http('post', '/secretaria/documentos').send({ contexto_id: conselho, restrito: false, idempotencia: randomUUID(),
+      versao: { ...versaoAta, conteudo: { ...versaoAta.conteudo, redator_ata: { pessoa_id, nome: 'Nome fornecido pelo cliente' } } } });
+    const externo = await prisma.pessoas.create({ data: { igreja_id: outraIgreja, nome_completo: 'Outra igreja', sexo: 'MASCULINO', data_nascimento: dia } });
+    await criarAta(externo.id).expect(400);
+    const ata = (await criarAta(membro).expect(201)).body;
+    const urlAta = '/secretaria/documentos/' + ata.id;
+    const salva = (await http('get', urlAta).expect(200)).body.versoes[0].conteudo;
+    expect(salva.redator_ata).toEqual({ pessoa_id: membro, nome: 'Membro de teste' });
+    const valores = salva.valores;
+    const esperados = { ...encontrado, redator_ata: 'Membro de teste', local_reuniao: 'Templo', dia_reuniao_por_extenso: 'primeiro', mes_reuniao_por_extenso: 'dezembro', ano_reuniao_por_extenso: 'dois mil e vinte e cinco',
+      horario_inicio_reuniao: '19:30', horario_inicio_reuniao_por_extenso: 'dezenove horas e trinta minutos',
+      horario_encerramento_reuniao: '22:01', horario_encerramento_reuniao_por_extenso: 'vinte e duas horas e um minuto' };
+    for (const c of campos) expect(valores[c.id].valor).toBe(esperados[c.origem]);
+    const campoRedator = campos.find(c => c.origem === 'redator_ata')!;
+    await http('patch', urlAta).send({ revisao: 1, idempotencia: randomUUID(), versao: versaoAta }).expect(200);
+    expect((await http('get', urlAta).expect(200)).body.versoes[0].conteudo.redator_ata).toEqual(salva.redator_ata);
+    await http('patch', urlAta).send({ revisao: 2, idempotencia: randomUUID(),
+      versao: { ...versaoAta, conteudo: { ...versaoAta.conteudo, redator_ata: null } } }).expect(200);
+    expect((await http('get', urlAta).expect(200)).body.versoes[0].conteudo.valores[campoRedator.id].valor).toBeNull();
+  });
+
   it('vincula uma reunião regular do Conselho à ata legada e preserva sua referência', async () => {
     const caminho = '/secretaria/atas-legadas';
     const dadosReuniao = {
@@ -688,11 +886,9 @@ integracao('E09 – referências documentais', () => {
       resultado: '',
       participantes: [{ pessoa_id: pessoa, presente: true, papeis: ['SECRETARIO'] }],
     };
-    for (const contexto_id of [assembleia, junta]) {
-      await http('post', '/secretaria/reunioes')
-        .send({ contexto_id, idempotencia: randomUUID(), dados: dadosReuniao })
-        .expect(400);
-    }
+    await http('post', '/secretaria/reunioes')
+      .send({ contexto_id: assembleia, idempotencia: randomUUID(), dados: dadosReuniao })
+      .expect(400);
     const reuniao = await http('post', '/secretaria/reunioes')
       .send({ contexto_id: conselho, idempotencia: randomUUID(), dados: dadosReuniao })
       .expect(201);

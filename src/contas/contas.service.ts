@@ -1,3 +1,5 @@
+import { gravarPorServico } from '../autorizacao/escrita-servico';
+import type { Ator, Tx } from '../autorizacao/politica';
 import { Prisma } from '@prisma/client';
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { CreateContaDto } from './dto/create-conta.dto';
@@ -19,8 +21,10 @@ export class ContasService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @param createContaDto Dados para criação.
    */
-  async create(igreja_id: string, createContaDto: CreateContaDto) {
-    return this.prisma.contas.create({ data: { ...createContaDto, igreja_id } });
+  async create(igreja_id: string, createContaDto: CreateContaDto, ator?: Ator) {
+    return gravarPorServico(this.prisma, ator, 'CONTAS_CADASTRAR', async tx => {
+      return tx.contas.create({ data: { ...createContaDto, igreja_id } });
+    });
   }
 
   /**
@@ -51,8 +55,8 @@ export class ContasService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @throws {NotFoundException} Se não encontrada nesta igreja.
    */
-  async findOne(id: string, igreja_id: string) {
-    const conta = await this.prisma.contas.findFirst({ where: { id, igreja_id } });
+  async findOne(id: string, igreja_id: string, tx: Tx = this.prisma) {
+    const conta = await tx.contas.findFirst({ where: { id, igreja_id } });
 
     if (!conta) {
       throw new NotFoundException(`Conta com ID ${id} não encontrada.`);
@@ -66,9 +70,11 @@ export class ContasService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @param updateContaDto Dados para atualização.
    */
-  async update(id: string, igreja_id: string, updateContaDto: UpdateContaDto) {
-    await this.findOne(id, igreja_id);
-    return this.prisma.contas.update({ where: { id }, data: updateContaDto });
+  async update(id: string, igreja_id: string, updateContaDto: UpdateContaDto, ator?: Ator) {
+    return gravarPorServico(this.prisma, ator, 'CONTAS_EDITAR', async tx => {
+      await this.findOne(id, igreja_id, tx);
+      return tx.contas.update({ where: { id }, data: updateContaDto });
+    });
   }
 
   /**
@@ -76,16 +82,18 @@ export class ContasService {
    * @param id UUID da conta.
    * @param igreja_id ID da igreja extraído do token JWT.
    */
-  async remove(id: string, igreja_id: string): Promise<{ message: string }> {
-    await this.findOne(id, igreja_id);
-    try {
-      await this.prisma.contas.delete({ where: { id } });
-    } catch (erro) {
-      if (erro instanceof Prisma.PrismaClientKnownRequestError && erro.code === 'P2003') {
-        throw new ConflictException('A conta possui registros associados que precisam ser preservados.');
+  async remove(id: string, igreja_id: string, ator?: Ator): Promise<{ message: string }> {
+    return gravarPorServico(this.prisma, ator, 'CONTAS_EXCLUIR', async tx => {
+      await this.findOne(id, igreja_id, tx);
+      try {
+        await tx.contas.delete({ where: { id } });
+      } catch (erro) {
+        if (erro instanceof Prisma.PrismaClientKnownRequestError && erro.code === 'P2003') {
+          throw new ConflictException('A conta possui registros associados que precisam ser preservados.');
+        }
+        throw erro;
       }
-      throw erro;
-    }
-    return { message: `Conta com ID ${id} removida com sucesso.` };
+      return { message: `Conta com ID ${id} removida com sucesso.` };
+    });
   }
 }

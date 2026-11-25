@@ -1,3 +1,6 @@
+import { estadoDaLiberacao, exigirOperacaoDisponivel, exigirRotaLegada } from '../autorizacao/liberacao-servico';
+import type { Ator } from '../autorizacao/politica';
+import { permissaoMandato } from '../orgaos/permissao-mandato';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { logs_atividades_acao, membresia_rol, pessoas_sexo, Prisma, usuarios_perfil } from '@prisma/client';
 import { z } from 'zod';
@@ -29,19 +32,29 @@ export function terminoCincoAnos(inicio: Date, marco: 'DIA_28_FEVEREIRO' | 'DIA_
 export class MandatoService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async encerrar(igrejaId: string, usuarioId: string, mandatoId: string, dados: Encerramento) {
+  async encerrar(igrejaId: string, usuarioId: string, mandatoId: string, dados: Encerramento, ator?: Ator) {
     const parsed = encerramentoSchema.safeParse(dados);
     if (!parsed.success) throw new BadRequestException('Dados de encerramento inválidos.');
     const v = parsed.data, efeito = data(v.data_efeito);
     return this.prisma.$transaction(async tx => {
-      const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO] } }, select: { id: true } });
+      const estado = await estadoDaLiberacao(tx, igrejaId, 'MANDATOS_REGISTRAR', true);
+      exigirOperacaoDisponivel(estado);
+      const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true,
+        perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO, usuarios_perfil.COMUM] } },
+        select: { perfil: true } });
       if (!operador) throw new ForbiddenException('Operador não autorizado nesta igreja.');
       // Serializa o encerramento com prévias e inclusões de eventos do oficial.
       await tx.$queryRaw`SELECT o.id FROM oficial o JOIN mandato_oficial m ON m.oficial_id = o.id AND m.igreja_id = o.igreja_id WHERE m.id = ${mandatoId} AND m.igreja_id = ${igrejaId} FOR UPDATE OF o`;
-      const mandatos = await tx.$queryRaw<Array<{ id: string; data_posse: Date; termino_previsto: Date; termino_efetivo: Date | null }>>`
-        SELECT id, data_posse, termino_previsto, termino_efetivo FROM mandato_oficial WHERE id = ${mandatoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
+      const mandatos = await tx.$queryRaw<Array<{ id: string; orgao_id: string | null; pessoa_id: string; data_posse: Date; termino_previsto: Date; termino_efetivo: Date | null }>>`
+        SELECT m.id, m.orgao_id, o.pessoa_id, m.data_posse, m.termino_previsto, m.termino_efetivo FROM mandato_oficial m JOIN oficial o ON o.id=m.oficial_id AND o.igreja_id=m.igreja_id WHERE m.id = ${mandatoId} AND m.igreja_id = ${igrejaId} FOR UPDATE OF m`;
       const atual = mandatos[0];
       if (!atual) throw new NotFoundException('Mandato não encontrado nesta igreja.');
+      if (atual.orgao_id || estado === 'ATRIBUICAO' || operador.perfil === usuarios_perfil.COMUM) {
+        const poder = ator && ator.igreja_id === igrejaId && ator.sub === usuarioId ? await permissaoMandato(tx, ator) : null;
+        if (!poder || poder.pessoa === atual.pessoa_id) throw new ForbiddenException('O encerramento exige serviço vigente e operador distinto do titular.');
+        await tx.evento_autorizacao.create({ data: { igreja_id: igrejaId, operador_id: usuarioId, operador_pessoa_id: poder.pessoa,
+          pessoa_id: atual.pessoa_id, acao: 'MANDATO_ENCERRADO', recurso_id: mandatoId, fundamento: v.autoridade, dados: { orgao_id: atual.orgao_id, atribuicao_id: poder.atribuicao, data_efeito: v.data_efeito } } });
+      }
       if (atual.termino_efetivo || efeito < atual.data_posse || efeito > atual.termino_previsto) throw new BadRequestException('Mandato já encerrado ou data de encerramento inválida.');
       const encerrado = await tx.mandato_oficial.update({ where: { id: mandatoId }, data: { termino_efetivo: efeito, motivo_encerramento: v.motivo } });
       await tx.logs_atividades.create({ data: { igreja_id: igrejaId, usuario_id: usuarioId, acao: logs_atividades_acao.ATUALIZACAO, tabela_afetada: 'mandato_oficial', registro_id: mandatoId,
@@ -55,6 +68,7 @@ export class MandatoService {
     if (!parsed.success) throw new BadRequestException('Dados do mandato inválidos.');
     const v = parsed.data, posse = data(v.data_posse);
     return this.prisma.$transaction(async tx => {
+      exigirRotaLegada(await estadoDaLiberacao(tx, igrejaId, 'MANDATOS_REGISTRAR', true));
       const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO] } }, select: { id: true } });
       if (!operador) throw new ForbiddenException('Operador não autorizado nesta igreja.');
       // A mesma linha é bloqueada pelo trigger de alterações de membresia.

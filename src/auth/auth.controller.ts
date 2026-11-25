@@ -1,3 +1,4 @@
+import { ContaComum } from '../autorizacao/politica';
 import {
   Body,
   Controller,
@@ -52,6 +53,7 @@ export class AuthController {
   }
 
   @UseGuards(AuthGuard)
+  @ContaComum()
   @Post('alterar-senha')
   @HttpCode(HttpStatus.NO_CONTENT)
   async alterarSenha(@Request() req, @Body() dados: AlterarSenhaDto, @Res({ passthrough: true }) res: Response) {
@@ -60,31 +62,45 @@ export class AuthController {
   }
 
   @UseGuards(AuthGuard)
+  @ContaComum()
   @Get('mfa')
   @Header('Cache-Control', 'no-store')
   mfaStatus(@Request() req) { return this.mfa.status(req.user.sub, req.user.igreja_id); }
 
   @UseGuards(AuthGuard)
+  @Post('mfa/desativar-no-espelho')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async desativarMfaNoEspelho(@Request() req, @Body() dto: MfaSetupDto, @Res({ passthrough: true }) res: Response) {
+    await this.mfa.desativarNoEspelho(req.user.sub, req.user.igreja_id, req.user.auth_version, req.user.sessao_id, dto.senha);
+    res.clearCookie('provisao_session', { httpOnly: true, sameSite: 'lax', path: '/' });
+  }
+
+  @UseGuards(AuthGuard)
+  @ContaComum()
   @Post('mfa/setup')
   @Header('Cache-Control', 'no-store')
   setupMfa(@Request() req, @Body() dto: MfaSetupDto) { return this.mfa.setup(req.user.sub, req.user.igreja_id, dto.senha); }
 
   @UseGuards(AuthGuard)
+  @ContaComum()
   @Post('mfa/activate')
   @Header('Cache-Control', 'no-store')
   activateMfa(@Request() req, @Body() dto: MfaActivateDto) { return this.mfa.activate(req.user.sub, req.user.igreja_id, req.user.auth_version, dto.codigo); }
 
   @UseGuards(AuthGuard)
+  @ContaComum()
   @Post('mfa/recovery')
   @Header('Cache-Control', 'no-store')
   renewRecovery(@Request() req, @Body() dto: MfaRecoveryDto) { return this.mfa.regenerate(req.user.sub, req.user.igreja_id, req.user.auth_version, req.user.sessao_id, dto.senha, dto.codigo); }
 
   @UseGuards(AuthGuard)
+  @ContaComum()
   @Post('mfa/recovery/resume')
   @Header('Cache-Control', 'no-store')
   resumeRecovery(@Request() req, @Body() dto: MfaResumeDto) { return this.mfa.resumeRecovery(req.user.sub, req.user.igreja_id, req.user.auth_version, req.user.sessao_id, dto.senha); }
 
   @UseGuards(AuthGuard)
+  @ContaComum()
   @Post('mfa/recovery/confirm')
   @Header('Cache-Control', 'no-store')
   confirmRecovery(@Request() req, @Body() dto: MfaConfirmRecoveryDto) { return this.mfa.confirmRecovery(req.user.sub, req.user.igreja_id, req.user.auth_version, req.user.sessao_id, dto.codigo); }
@@ -95,6 +111,7 @@ export class AuthController {
   mfaPolicy(@Request() req, @Body() dto: MfaPolicyDto) { return this.mfa.setPolicy(req.user.sub, req.user.igreja_id, req.user.auth_version, dto.senha, dto.codigo, dto.obrigatorio); }
 
   @UseGuards(AuthGuard)
+  @ContaComum()
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   async logout(@Request() req: ExpressRequest, @Res({ passthrough: true }) res: Response) {
@@ -149,6 +166,7 @@ export class AuthController {
    * Rota: GET /auth/profile
    */
   @UseGuards(AuthGuard)
+  @ContaComum()
   @Get('profile')
   getProfile(@Request() req: any) {
     const { sub, igreja_id, perfil, username, login, mfa_enrollment_required, mfa_recovery_recent } = req.user;

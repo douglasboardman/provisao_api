@@ -1,0 +1,336 @@
+import { codigosServico, gruposServico, rotulosServico, Servico } from './catalogo-servicos';
+import { RotasServicosService } from './rotas-servicos.service';
+import { orgaosDeAtuacao, orgaosOficiaisDaConta, presidenciaSociedades } from '../orgaos/acesso-sociedades';
+import { SecretariaBaseService } from '../secretaria/secretaria-base.service';
+import { configuracaoSchema } from '../secretaria/secretaria.dto';
+import { recursoDaIgreja } from '../feature-flags/feature-flags';
+import { AtuacaoModeloService } from '../secretaria/atuacao-modelo.service';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { z } from 'zod';
+import { PrismaService } from '../prisma/prisma.service';
+import { hashAto, transacaoSerializavel } from '../orgaos/idempotencia';
+import { hojeDaIgreja } from '../orgaos/relogio-igreja';
+import { ComposicaoService } from '../orgaos/composicao.service';
+import { Ator, contaDaSessao, camposConta, compativel, Conta, comparar, decisaoAtribuicoes, decidirAcaoModelo, decidirServico, fundamento, papeisDaConta, servicos, Tx } from './politica';
+
+const escolha = z.strictObject({ pessoa_id: z.uuid(), conta_id: z.uuid().nullable(), anterior_id: z.uuid().nullable(), fundamento });
+const concessao = z.strictObject({ acao: servicos, inicio: z.iso.datetime({ offset: true }),
+  fim: z.iso.datetime({ offset: true }).nullable(), fundamento });
+const justificativa = z.strictObject({ fundamento });
+const acoesConversao = z.array(servicos).max(codigosServico.length)
+  .refine(v => new Set(v).size === v.length);
+const previaConversao = z.strictObject({ acoes: acoesConversao, competencias: z.array(z.uuid()).max(100).default([])
+  .refine(v => new Set(v).size === v.length) });
+const confirmarConversao = previaConversao.extend({ fundamento, previa: z.string().regex(/^[a-f0-9]{64}$/) });
+const perfisLegados = new Set(['SECRETARIO', 'TESOUREIRO', 'GESTOR', 'OPERADOR']);
+function conflitoConcorrente(erro: unknown): never {
+  if (erro instanceof Prisma.PrismaClientKnownRequestError && ['P2002','P2004'].includes(erro.code))
+    throw new ConflictException('Outra decisão foi registrada para este escopo. Atualize os dados.');
+  throw erro;
+}
+
+function validar<T>(schema: z.ZodType<T>, body: unknown): T {
+  const r = schema.safeParse(body);
+  if (!r.success) throw new BadRequestException('Confira os dados e o fundamento informados.');
+  return r.data;
+}
+
+@Injectable()
+export class ContasAutorizacaoService {
+  constructor(private readonly db: PrismaService, private readonly composicao: ComposicaoService, private readonly atuacao: AtuacaoModeloService, private readonly secretaria: SecretariaBaseService, private readonly rotas: RotasServicosService) {}
+
+  private async administrador(tx: Tx, a: Ator, escrita = true) {
+    const u = await contaDaSessao(tx, a);
+    if (u.perfil !== 'ADMINISTRADOR' || (escrita && !u.pessoa_id))
+      throw new ForbiddenException('A governança exige administrador identificado.');
+    return u;
+  }
+
+  private async destinatario(tx: Tx, igreja_id: string, id: string) {
+    const u = await tx.usuarios.findFirst({ where: { id, igreja_id }, select: camposConta });
+    if (!u) throw new NotFoundException('Conta não encontrada.');
+    return u;
+  }
+
+  private independente(operador: Conta, usuario: Conta) {
+    if (operador.id === usuario.id || !usuario.pessoa_id || operador.pessoa_id === usuario.pessoa_id)
+      throw new ForbiddenException('Outra pessoa identificada deve registrar esta decisão.');
+  }
+
+  private evento(tx: Tx, operador: Conta, acao: string, recurso_id: string, motivo: string,
+    pessoa_id: string | null, destinatario_id: string | null, dados: Prisma.InputJsonObject) {
+    return tx.evento_autorizacao.create({ data: { igreja_id: operador.igreja_id, operador_id: operador.id,
+      operador_pessoa_id: operador.pessoa_id, acao, recurso_id, fundamento: motivo, pessoa_id, destinatario_id, dados } });
+  }
+
+  escolher(a: Ator, body: unknown) {
+    const v = validar(escolha, body);
+    return transacaoSerializavel(this.db, async tx => {
+      const u = await this.administrador(tx, a);
+      if (u.pessoa_id === v.pessoa_id) throw new ForbiddenException('Outra pessoa deve escolher sua conta de atuação.');
+      const pessoa = await tx.pessoas.findFirst({ where: { id: v.pessoa_id, igreja_id: u.igreja_id }, select: { id: true } });
+      if (!pessoa) throw new NotFoundException('Pessoa não encontrada.');
+      const anterior = await tx.usuarios.findFirst({ where: { igreja_id: u.igreja_id, pessoa_id: pessoa.id, conta_atuacao: true }, select: { id: true } });
+      if ((anterior?.id ?? null) !== v.anterior_id) throw new ConflictException('A escolha foi alterada. Atualize os dados.');
+      if (v.conta_id) {
+        const alvo = await this.destinatario(tx, u.igreja_id, v.conta_id);
+        this.independente(u, alvo);
+        if (!alvo.ativo || alvo.pessoa_id !== pessoa.id || ['AUDITOR','ADMINISTRADOR'].includes(alvo.perfil))
+          throw new BadRequestException('Selecione uma conta operacional ativa e vinculada à pessoa.');
+      }
+      if (v.conta_id !== v.anterior_id) {
+        if (anterior) await tx.usuarios.update({ where: { id: anterior.id }, data: { conta_atuacao: false } });
+        if (v.conta_id) await tx.usuarios.update({ where: { id: v.conta_id }, data: { conta_atuacao: true } });
+        await this.evento(tx, u, 'ESCOLHER_CONTA', pessoa.id, v.fundamento, pessoa.id, v.conta_id, { anterior_id: v.anterior_id });
+      }
+      return { conta_id: v.conta_id };
+    }).catch(conflitoConcorrente);
+  }
+
+  conceder(a: Ator, id: string, body: unknown) {
+    const v = validar(concessao, body), inicio = new Date(v.inicio), fim = v.fim ? new Date(v.fim) : null;
+    if (fim && (fim <= inicio || fim <= new Date())) throw new BadRequestException('Vigência inválida.');
+    return transacaoSerializavel(this.db, async tx => {
+      const u = await this.administrador(tx, a);
+      const alvo = await this.destinatario(tx, u.igreja_id, id);
+      this.independente(u, alvo);
+      if (!alvo.ativo || !compativel(alvo.perfil, v.acao)) throw new BadRequestException('Serviço incompatível com a conta.');
+      await tx.$queryRaw`SELECT id FROM usuarios WHERE id=${id} FOR UPDATE`;
+      const where = { usuario_id: id, igreja_id: u.igreja_id, geracao_vinculo: alvo.geracao_vinculo, acao: v.acao, revogado_em: null };
+      if (await tx.atribuicao_servico.findFirst({ where: { ...where, ...(fim && { inicio: { lt: fim } }),
+        OR: [{ fim: null }, { fim: { gt: inicio } }] } })) throw new ConflictException('Já existe atribuição para o período.');
+      const r = await tx.atribuicao_servico.create({ data: { ...where, pessoa_id: alvo.pessoa_id!, inicio, fim } });
+      await this.evento(tx, u, 'CONCEDER_SERVICO', r.id, v.fundamento, alvo.pessoa_id, id, { acao: v.acao, inicio: v.inicio, fim: v.fim, escopo: u.igreja_id });
+      return { id: r.id };
+    }).catch(conflitoConcorrente);
+  }
+
+  revogar(a: Ator, id: string, body: unknown) {
+    const v = validar(justificativa, body);
+    return transacaoSerializavel(this.db, async tx => {
+      const u = await this.administrador(tx, a);
+      const r = await tx.atribuicao_servico.findFirst({ where: { id, igreja_id: u.igreja_id } });
+      if (!r) throw new NotFoundException('Atribuição não encontrada.');
+      if (!r.revogado_em) {
+        await tx.atribuicao_servico.update({ where: { id }, data: { revogado_em: new Date() } });
+        await this.evento(tx, u, 'REVOGAR_SERVICO', id, v.fundamento, r.pessoa_id, r.usuario_id, { acao: r.acao });
+      }
+      return { id };
+    });
+  }
+
+  consultar(a: Ator, id?: string) {
+    return this.db.$transaction(async tx => {
+      const operador = id ? await this.administrador(tx, a, false) : await contaDaSessao(tx, a);
+      const u = id ? await this.destinatario(tx, operador.igreja_id, id) : operador;
+      const selecionada = u.pessoa_id ? await tx.usuarios.findFirst({ where: { igreja_id: u.igreja_id, pessoa_id: u.pessoa_id, conta_atuacao: true }, select: { id: true } }) : null;
+      const historicas = await tx.atribuicao_servico.findMany({ where: { usuario_id: u.id, igreja_id: u.igreja_id }, orderBy: { inicio: 'desc' } });
+      const atribuicoes = historicas.filter(r => r.geracao_vinculo === u.geracao_vinculo && !r.revogado_em);
+      const agora = new Date();
+      const servicosPropostos = servicos.options.map(acao => ({
+        acao, rotulo: rotulosServico[acao], ...decisaoAtribuicoes(u, acao, historicas.filter(r => r.acao === acao), agora),
+      }));
+      const cargos: { contexto_id: string; contexto: string; cargo: string; origem_id: string }[] = [];
+      if (u.ativo && u.conta_atuacao && u.pessoa_id) {
+        const dia = await hojeDaIgreja(tx, u.igreja_id), data = new Date(dia);
+        const contextos = await tx.contexto_secretaria.findMany({ where: { igreja_id: u.igreja_id, orgao: { ativo: true } }, include: { orgao: true } });
+        for (const c of contextos) {
+          const exercicio = await this.atuacao.papeis(tx, c, u.pessoa_id, dia);
+          const proposta = await papeisDaConta(tx, u, exercicio, dia);
+          if (proposta.presidencia_id) cargos.push({ contexto_id: c.id, contexto: c.orgao.nome, cargo: 'Presidente do Conselho', origem_id: proposta.presidencia_id });
+          const ids = [...proposta.papeis].filter(p => p !== 'PRESIDENCIA_CONSELHO');
+          if (!ids.length) continue;
+          const ocupacoes = await tx.ocupacao_cargo.findMany({ where: { igreja_id: u.igreja_id, pessoa_id: u.pessoa_id, cargo_id: { in: ids },
+            inicio: { lte: data }, OR: [{ fim: null }, { fim: { gt: data } }], AND: [{ OR: [{ termino_previsto: null }, { termino_previsto: { gte: data } }] }] },
+            include: { cargo: { select: { nome: true } } } });
+          for (const o of ocupacoes) cargos.push({ contexto_id: c.id, contexto: c.orgao.nome, cargo: o.cargo.nome, origem_id: o.id });
+        }
+      }
+      const competencias = id && u.pessoa_id && perfisLegados.has(u.perfil) ? await tx.competencia_secretaria.findMany({
+        where: { igreja_id: u.igreja_id, usuario_id: u.id, pessoa_id: u.pessoa_id,
+          OR: [{ fim: null }, { fim: { gt: new Date(await hojeDaIgreja(tx, u.igreja_id)) } }] },
+        select: { id: true, inicio: true, fim: true, pode_aprovar: true, pode_deliberar: true, pode_consultar_restritos: true,
+          pode_instalar_mesa: true, contexto: { select: { nome: true } } },
+      }) : [];
+      return { cargos_propostos: cargos, usuario_id: u.id, pessoa_id: u.pessoa_id, conta_atuacao: u.conta_atuacao,
+        ...(id && {
+          selecionada_id: selecionada?.id ?? null, competencias, pode_converter: !!u.pessoa_id && u.ativo && perfisLegados.has(u.perfil),
+          catalogo: codigosServico.filter(acao => compativel(u.perfil, acao) || perfisLegados.has(u.perfil) && compativel('COMUM', acao))
+            .map(acao => ({ acao, rotulo: rotulosServico[acao] })),
+        }), atribuicoes, servicos_propostos: servicosPropostos };
+    }, { isolationLevel: 'RepeatableRead' });
+  }
+
+  navegacao(a: Ator) {
+    return this.db.$transaction(async tx => {
+      const u = await contaDaSessao(tx, a);
+      const agora = new Date(), comum = u.perfil === 'COMUM';
+      const configuracoes = await tx.liberacao_servico.findMany({ where: { igreja_id: u.igreja_id }, select: { acao: true, estado: true } });
+      const modos = new Map(configuracoes.map(c => [c.acao, c.estado]));
+      const registros = comum || configuracoes.length ? await tx.atribuicao_servico.findMany({ where: { igreja_id: u.igreja_id, usuario_id: u.id,
+        geracao_vinculo: u.geracao_vinculo, revogado_em: null } }) : [];
+      const ativos = new Set(registros.filter(r => r.inicio <= agora && (!r.fim || r.fim > agora) &&
+        servicos.safeParse(r.acao).success && compativel(u.perfil, r.acao as Servico)).map(r => r.acao as Servico));
+      const rotas = comum ? [] : this.rotas.listar().filter(r => r.perfis.includes(u.perfil));
+      const permissoes: Record<string, string[]> = {};
+      for (const [modulo, acoes] of Object.entries(gruposServico)) {
+        permissoes[modulo] = Object.entries(acoes).filter(([, acao]) => modos.get(acao) !== 'PAUSADO' &&
+          (comum || modos.get(acao) === 'ATRIBUICAO' ? ativos.has(acao) : rotas.some(r => r.acao === acao)))
+          .map(([operacao]) => operacao);
+      }
+      const dia = await hojeDaIgreja(tx, u.igreja_id);
+      if (recursoDaIgreja('orgaos', u.igreja_id) && recursoDaIgreja('governanca', u.igreja_id)) {
+        const temOrgao = comum ? ativos.has('ORGAOS_CONSULTAR') || ativos.has('CARGOS_REGISTRAR') || ativos.has('MANDATOS_REGISTRAR') ||
+          !!await presidenciaSociedades(tx, u, dia) || (await orgaosOficiaisDaConta(tx, u, dia, this.atuacao)).length > 0 || (await orgaosDeAtuacao(tx, u, dia)).length > 0
+          : ['ADMINISTRADOR','GESTOR','SECRETARIO','AUDITOR'].includes(u.perfil);
+        permissoes.orgaos = temOrgao ? ['view'] : [];
+      } else { permissoes.orgaos = []; }
+      if (!recursoDaIgreja('governanca', u.igreja_id)) permissoes.oficiais = [];
+      permissoes.secretaria = [];
+      if (recursoDaIgreja('secretaria', u.igreja_id)) {
+        if (!comum && ['ADMINISTRADOR','GESTOR','SECRETARIO','AUDITOR'].includes(u.perfil)) permissoes.secretaria = ['view'];
+        if (comum && u.pessoa_id) {
+          const contextos = await tx.contexto_secretaria.findMany({ where: { igreja_id: u.igreja_id }, include: { orgao: true } });
+          if ((await Promise.all(contextos.map(c => this.secretaria.contextoVisivel(tx, c, u)))).some(Boolean)) permissoes.secretaria = ['view'];
+        }
+      } else { permissoes['autorizacoes-financeiras'] = []; }
+      if (u.perfil === 'ADMINISTRADOR') permissoes.usuarios.push('create', 'edit', 'delete');
+      if (!comum) {
+        const acesso = u.perfil === 'ADMINISTRADOR' || u.perfil === 'GESTOR' && !!u.pessoa_id && !!await tx.competencia_acesso.findFirst({
+          where: { igreja_id: u.igreja_id, usuario_id: u.id, pessoa_id: u.pessoa_id, revogado_em: null }, select: { id: true },
+        });
+        permissoes['solicitacoes-acesso'] = permissoes['solicitacoes-acesso'].filter(operacao => {
+          const acao = operacao === 'view' ? 'ACESSO_CONSULTAR' : 'ACESSO_ANALISAR';
+          return modos.get(acao) === 'ATRIBUICAO' || acesso;
+        });
+        permissoes['autorizacoes-financeiras'] = permissoes['autorizacoes-financeiras'].filter(a => a !== 'create' ||
+          modos.get('AUTORIZACOES_FINANCEIRAS_REGISTRAR') === 'ATRIBUICAO' ||
+          ['ADMINISTRADOR','GESTOR','TESOUREIRO'].includes(u.perfil));
+      }
+      return { permissoes, mandatos_legados: !modos.has('MANDATOS_REGISTRAR') };
+    }, { isolationLevel: 'RepeatableRead' });
+  }
+
+  private async propostaConversao(tx: Tx, alvo: Conta, acoes: Servico[], competencias: string[], agora: Date) {
+    if (!alvo.ativo || !alvo.pessoa_id || !perfisLegados.has(alvo.perfil))
+      throw new BadRequestException('A conversão exige conta ativa com perfil legado e pessoa vinculada.');
+    if (acoes.some(acao => !compativel('COMUM', acao))) throw new BadRequestException('Confira os serviços compatíveis com uma conta comum.');
+    const existentes = await tx.atribuicao_servico.findMany({ where: { usuario_id: alvo.id, igreja_id: alvo.igreja_id,
+      pessoa_id: alvo.pessoa_id, geracao_vinculo: alvo.geracao_vinculo, revogado_em: null,
+      OR: [{ fim: null }, { fim: { gt: agora } }] }, orderBy: [{ acao: 'asc' }, { inicio: 'asc' }] });
+    const dia = new Date(await hojeDaIgreja(tx, alvo.igreja_id));
+    const contextuais = competencias.length ? await tx.competencia_secretaria.findMany({ where: {
+      id: { in: competencias }, igreja_id: alvo.igreja_id, usuario_id: alvo.id, pessoa_id: alvo.pessoa_id,
+      OR: [{ fim: null }, { fim: { gt: dia } }],
+    }, orderBy: { id: 'asc' } }) : [];
+    if (contextuais.length !== competencias.length) throw new BadRequestException('Uma competência contextual selecionada está indisponível.');
+    const outraConta = await tx.usuarios.findMany({ where: { igreja_id: alvo.igreja_id, pessoa_id: alvo.pessoa_id, ativo: true,
+      id: { not: alvo.id } }, select: { id: true, conta_atuacao: true }, orderBy: { id: 'asc' } });
+    const rotas = this.rotas.listar().map(r => ({
+      rota: r.rota, acao: r.acao, antes: r.perfis.includes(alvo.perfil), depois: acoes.includes(r.acao),
+    })).filter(r => r.antes || r.depois);
+    const prev = hashAto({ id: alvo.id, perfil: alvo.perfil, pessoa: alvo.pessoa_id, atuacao: alvo.conta_atuacao,
+      versao: alvo.auth_version, geracao: alvo.geracao_vinculo, contextuais: contextuais.map(c => ({ ...c, inicio: c.inicio.toISOString(), fim: c.fim?.toISOString() ?? null })), acoes: [...acoes].sort(), outraConta,
+      existentes: existentes.map(r => ({ id: r.id, acao: r.acao, inicio: r.inicio.toISOString(), fim: r.fim?.toISOString() ?? null })) });
+    return { previa: prev, perfil_anterior: alvo.perfil, conta_atuacao: alvo.conta_atuacao, outra_conta: outraConta.length > 0,
+      rotas, rotas_legadas: this.rotas.legado(alvo.perfil), existentes, acoes };
+  }
+
+  converter(a: Ator, id: string, body: unknown, gravar: boolean) {
+    const confirmacao = gravar ? validar(confirmarConversao, body) : null;
+    const { acoes, competencias } = confirmacao ?? validar(previaConversao, body);
+    return transacaoSerializavel(this.db, async tx => {
+      const operador = await this.administrador(tx, a);
+      const alvo = await this.destinatario(tx, operador.igreja_id, id);
+      this.independente(operador, alvo);
+      if (gravar) await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${id} AND igreja_id = ${operador.igreja_id} FOR UPDATE`;
+      const agora = new Date();
+      const proposta = await this.propostaConversao(tx, alvo, acoes, competencias, agora);
+      if (!confirmacao) return proposta;
+      if (proposta.previa !== confirmacao.previa) throw new ConflictException('A conta ou suas atribuições mudaram. Gere uma nova prévia.');
+      const nova = await tx.usuarios.update({ where: { id }, data: { perfil: 'COMUM' }, select: camposConta });
+      if (alvo.conta_atuacao) await tx.usuarios.update({ where: { id }, data: { conta_atuacao: true } });
+      await tx.sessoes.updateMany({ where: { usuario_id: id, revogada_em: null }, data: { revogada_em: agora } });
+      if (competencias.length) await tx.competencia_secretaria.updateMany({
+        where: { id: { in: competencias }, igreja_id: operador.igreja_id, usuario_id: id },
+        data: { geracao_vinculo: nova.geracao_vinculo },
+      });
+      await tx.competencia_acesso.updateMany({ where: { usuario_id: id, igreja_id: operador.igreja_id, revogado_em: null },
+        data: { revogado_em: agora, revogado_por: operador.id } });
+      const igreja_id = operador.igreja_id, pessoa_id = alvo.pessoa_id!;
+      for (const acao of acoes) {
+        const anteriores = proposta.existentes.filter(r => r.acao === acao);
+        await tx.atribuicao_servico.createMany({ data: (anteriores.length ? anteriores : [{ inicio: agora, fim: null }]).map(r => ({
+          igreja_id, pessoa_id, usuario_id: id, geracao_vinculo: nova.geracao_vinculo, acao, inicio: r.inicio, fim: r.fim,
+        })) });
+      }
+      await this.evento(tx, operador, 'CONVERTER_CONTA', id, confirmacao.fundamento, pessoa_id, id, {
+        perfil_anterior: alvo.perfil, acoes, competencias, conta_atuacao: alvo.conta_atuacao, rotas: proposta.rotas, rotas_legadas: proposta.rotas_legadas,
+      });
+      return { id, perfil: nova.perfil };
+    }).catch(conflitoConcorrente);
+  }
+
+  compararModelo(a: Ator, usuarioId: string, modeloId: string) {
+    return this.db.$transaction(async tx => {
+      const operador = await this.administrador(tx, a, false);
+      const u = await this.destinatario(tx, operador.igreja_id, usuarioId);
+      if (!recursoDaIgreja('secretaria', u.igreja_id)) throw new NotFoundException('Secretaria indisponível.');
+      const m = await tx.modelo_documento.findFirst({ where: { id: modeloId, igreja_id: u.igreja_id },
+        include: { contexto: { include: { orgao: true } }, rascunho: true, versoes: { orderBy: { numero: 'desc' }, take: 1 } } });
+      if (!m) throw new NotFoundException('Modelo não encontrado.');
+      const dia = await hojeDaIgreja(tx, u.igreja_id);
+      const v = m.versoes[0], config = configuracaoSchema.safeParse(v?.configuracao);
+      const regra = !m.rascunho && config.success ? config.data.atuacao : undefined;
+      const papeis = await this.atuacao.papeis(tx, m.contexto, u.ativo ? u.pessoa_id : null, dia);
+      const vigente = await papeisDaConta(tx, u, papeis, dia);
+      const legadoHabilitado = u.ativo && ['GESTOR','SECRETARIO','ADMINISTRADOR'].includes(u.perfil) &&
+        await this.secretaria.podePreparar(tx, { sub: u.id, igreja_id: u.igreja_id, perfil: u.perfil }, m.contexto_id, u);
+      return Promise.all((['criar','preparar'] as const).map(async acao => {
+        const legado = !!(legadoHabilitado && regra?.[acao].some(c => papeis.has(c)));
+        const proposta = decidirAcaoModelo(acao, regra, vigente);
+        await comparar(tx, u, 'MODELO_' + acao.toUpperCase(), v?.id ?? m.id, legado, proposta, 'PERFIL_COMPETENCIA_E_MODELO', operador);
+        return { acao, legado, proposta };
+      }));
+    }, { isolationLevel: 'RepeatableRead' });
+  }
+
+  presidencia(a: Ator, id: string, confirmar: boolean, body: unknown) {
+    const v = validar(justificativa, body);
+    return transacaoSerializavel(this.db, async tx => {
+      const u = await this.administrador(tx, a);
+      const autoridade = confirmar ? await decidirServico(tx, u, 'PRESIDENCIA_CONFERIR') : null;
+      if (autoridade && !autoridade.permite) throw new ForbiddenException('A conferência exige atribuição vigente de revisor.');
+      const dia = await hojeDaIgreja(tx, u.igreja_id), data = new Date(dia);
+      const p = await tx.presidencia_conselho.findFirst({ where: { id, igreja_id: u.igreja_id, inicio: { lte: data },
+        OR: [{ fim: null }, { fim: { gt: data } }] }, include: { oficial: { select: { pessoa_id: true } } } });
+      if (!p) throw new NotFoundException('Presidência vigente não encontrada.');
+      const pessoa = p.oficial.pessoa_id;
+      if (u.pessoa_id === pessoa) throw new ForbiddenException('O beneficiário não pode verificar a própria presidência.');
+      const membros = await this.composicao.consultarNaTransacao(tx, u.igreja_id, 'CONSELHO', dia, [pessoa]);
+      if (!membros.membros.some(m => m.oficios.includes('PRESBITERO_DOCENTE') && !m.revisao_pendente))
+        throw new ConflictException('O exercício pastoral precisa de conferência.');
+      const eventos = await tx.evento_autorizacao.findMany({ where: { igreja_id: u.igreja_id, recurso_id: id,
+        acao: { in: ['PRESIDENCIA_ENCAMINHADA','PRESIDENCIA_CONFERIDA'] } } });
+      const pedido = eventos.find(e => e.acao === 'PRESIDENCIA_ENCAMINHADA');
+      if (confirmar && (!pedido || pedido.operador_id === u.id || pedido.operador_pessoa_id === u.pessoa_id || pedido.pessoa_id !== pessoa))
+        throw new ForbiddenException('A conferência exige encaminhamento de outra pessoa identificada.');
+      const acao = confirmar ? 'PRESIDENCIA_CONFERIDA' : 'PRESIDENCIA_ENCAMINHADA';
+      if (eventos.some(e => e.acao === acao)) throw new ConflictException('Esta etapa já foi registrada.');
+      const e = await this.evento(tx, u, acao, id, v.fundamento, pessoa, null, { oficial_id: p.oficial_id, encaminhamento_id: pedido?.id ?? null, atribuicao_revisor_id: autoridade?.origem ?? null });
+      return { id: e.id };
+    }).catch(conflitoConcorrente);
+  }
+
+  historico(a: Ator, cursor?: string) {
+    return this.db.$transaction(async tx => {
+      const u = await this.administrador(tx, a, false);
+      if (cursor && !await tx.evento_autorizacao.findFirst({ where: { id: cursor, igreja_id: u.igreja_id } }))
+        throw new BadRequestException('Cursor inválido.');
+      const linhas = await tx.evento_autorizacao.findMany({ where: { igreja_id: u.igreja_id }, orderBy: [{ instante: 'desc' }, { id: 'desc' }],
+        take: 51, ...(cursor && { cursor: { id: cursor }, skip: 1 }) });
+      return { itens: linhas.slice(0, 50), proximo_cursor: linhas.length > 50 ? linhas[49].id : null };
+    });
+  }
+}

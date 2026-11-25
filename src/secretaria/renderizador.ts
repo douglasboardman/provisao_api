@@ -1,3 +1,9 @@
+import { paragrafos } from './composicao-pagina';
+import { paginarNotas, estiloParteNota, type FolhaNotas } from './paginar-notas';
+import { htmlResolucoes, htmlSignatarios, htmlTermo } from './complementos-leitura';
+import { imprimirComposicao } from './imprimir-composicao';
+import { regiaoHtml } from './pagina-html';
+import type { ComposicaoPagina } from './composicao-pagina';
 import { readFile } from 'fs/promises';
 import { chromium } from 'playwright';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
@@ -36,32 +42,6 @@ function campoFormatado(f: FonteRenderizacao, chave: string, original: string) {
     default: return valor;
   }
 }
-const apuracaoRotulos = {
-  favoraveis: 'Favoráveis', contrarios: 'Contrários', abstencoes: 'Abstenções',
-  impedimentos: 'Impedimentos', quorum: 'Quórum registrado',
-} as const;
-
-function htmlResolucoes(resolucoes: NonNullable<FonteRenderizacao['resolucoes']>) {
-  if (!resolucoes.length) return '';
-  const paragrafo = (label: string, conteudo: string) =>
-    `<p><strong>${label}</strong> ${escape(conteudo).replace(/\n/g, '<br>')}</p>`;
-  return `<section><h2>Resoluções</h2>${resolucoes.map(r => {
-    const campos = Object.keys(apuracaoRotulos) as (keyof typeof apuracaoRotulos)[];
-    const apuracao = campos.filter(chave => r.apuracao?.[chave] !== undefined)
-      .map(chave => `${apuracaoRotulos[chave]} ${r.apuracao?.[chave]}`).join(' · ');
-    return `<article><h3>${r.ordem}. ${escape(r.assunto)}</h3>
-      ${paragrafo('Resultado', r.resultado)}
-      ${r.proposta ? paragrafo('Texto proposto', r.proposta) : ''}
-      ${r.deliberado ? paragrafo('Texto deliberado', r.deliberado) : ''}
-      ${r.proponentes.length ? paragrafo('Proponentes', r.proponentes.join('; ')) : '<p>Sem proponente informado</p>'}
-      ${r.dissidentes.length ? paragrafo('Dissidentes registrados', r.dissidentes.join('; ')) : ''}
-      ${paragrafo('Eficácia', r.eficaz ? 'Registrada' + (r.dataEfeito ? ' · ' + r.dataEfeito.split('-').reverse().join('/') : '') : 'Sem efeito registrado')}
-      ${r.secreta ? '<p>Votação secreta</p>' : ''}
-      ${apuracao ? paragrafo('Apuração', apuracao) : ''}
-    </article>`;
-  }).join('')}</section>`;
-}
-
 export function htmlDocumento(f: FonteRenderizacao): string {
   let tamanhoTexto = 0;
   const plano = (s: string) => {
@@ -85,7 +65,7 @@ export function htmlDocumento(f: FonteRenderizacao): string {
   const assinaturas = () => {
     if (assinaturasInseridas) return '';
     assinaturasInseridas = true;
-    return f.signatarios.map(s => '<div class="signatario"><span></span>' + escape(s) + '</div>').join('');
+    return htmlSignatarios(f.signatarios);
   };
   const blocos = (lista: NonNullable<Conteudo['estrutura']>['corpo']) => lista.map(b => {
     switch (b.tipo) {
@@ -118,16 +98,42 @@ export function htmlDocumento(f: FonteRenderizacao): string {
   const local = [f.igreja.cidade, f.igreja.estado].filter(Boolean).join('/');
   const apresentacao = !f.livro && f.tipo === 'ATA' && f.perfil ? `<p class="serie">Série ${escape(f.perfil.replaceAll('_', ' '))}${f.registroLivro ? ' · Registro em livro previsto' : ''}</p>` : '';
   const livro = f.livro ? `<p class="serie">Livro nº ${f.livro.numero} · Série ${escape(f.livro.serie)}</p>` : '';
-  const campos = f.conteudo.campos;
-  const abertura = f.livro?.natureza === 'ABERTURA';
-  const encerramento = f.livro?.natureza === 'ENCERRAMENTO';
-  const totalAtas = encerramento
-    ? (campos.TOTAL_ATAS === '1' ? 'Foi registrada 1 ata' : `Foram registradas ${escape(campos.TOTAL_ATAS)} atas`)
-    : '';
-  const dadosTermo = abertura || encerramento ? `<section class="dados-livro">
-    <p>Livro nº ${escape(campos.NUMERO_LIVRO)} de ${escape(campos.TITULAR)}, ${escape(campos.MODALIDADE_LIVRO)}, com capacidade declarada de ${escape(campos.CAPACIDADE_FOLHAS)} folhas.</p>
-    ${encerramento ? `<p>${totalAtas}. Utilização de ${escape(campos.PAGINAS_UTILIZADAS)} faces em ${escape(campos.FOLHAS_UTILIZADAS)} folhas, com saldo de ${escape(campos.SALDO_FACES)} faces e ${escape(campos.SALDO_FOLHAS)} folhas inteiramente sem conteúdo efetivado. Intervalo dos registros: ${escape(campos.INTERVALO_REGISTROS)}.</p><p>Motivo: ${escape(campos.MOTIVO_ENCERRAMENTO)}.</p>` : ''}
-  </section>` : '';
+  const dadosTermo = htmlTermo(f.livro?.natureza, f.conteudo.campos);
+  const pagina = f.conteudo.composicao;
+  if (pagina) {
+    const c = pagina.pagina;
+    const m = c.margens_cm;
+    const resolver = (chave: string, original: string) => {
+      const valor = campoFormatado(f, chave, original);
+      tamanhoTexto += valor.length;
+      if (tamanhoTexto > 500000) throw new Error('Limite de expansão dos campos excedido.');
+      return valor;
+    };
+    const numerosNotas = new Map<string, number>();
+    for (const b of paragrafos(pagina.corpo)) {
+      for (const t of b.trechos) if (t.tipo === 'referencia_nota') numerosNotas.set(t.nota_id, numerosNotas.size + 1);
+    }
+    const regiao = (nome: 'cabecalho' | 'corpo' | 'rodape') => regiaoHtml(pagina[nome], resolver, escape, f.conteudo.valores, n => {
+      tamanhoTexto += n;
+      if (tamanhoTexto > 500000) throw new Error('Limite de expansão dos campos excedido.');
+    }, numerosNotas, b => blocos([b.tipo === 'imagem' ? { ...b, tipo: 'IMAGEM' } : { tipo: b.tipo === 'assinaturas' ? 'ASSINATURAS' : 'QUEBRA' }] ), i => {
+      return '<span data-ocorrencia="' + escape(i.ocorrencia_id) + '"></span>';
+    }, pagina.versao_formato === 2) || (numerosNotas.size && nome !== 'corpo' ? '<p><br></p>' : '');
+    const espaco = (nome: 'cabecalho' | 'corpo' | 'rodape') => {
+      const e = c.espacamento_cm[nome];
+      return e.superior + 'cm 0 ' + e.inferior + 'cm';
+    };
+    const cabecalho = regiao('cabecalho'), corpo = regiao('corpo'), rodape = regiao('rodape');
+    return `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:"><style>
+    *{box-sizing:border-box} body{margin:0;width:${21-m.esquerda-m.direita}cm;font:${c.tamanho_pt}pt/1.45 "${c.fonte}";overflow-wrap:anywhere}
+    .regiao img{max-width:100%;max-height:15cm}.regiao table{border-collapse:collapse;width:100%}.regiao th,.regiao td{border:1px solid;padding:3px}.regiao .quebra{break-after:page}.regiao h2,.regiao h3{white-space:pre-wrap}
+    .regiao p{margin:0;white-space:pre-wrap;orphans:1;widows:1} header{padding:${espaco('cabecalho')}}footer{padding:${espaco('rodape')}}
+    .rascunho{position:fixed;top:44%;left:12%;font:bold 48pt sans-serif;color:rgba(100,100,100,.13);transform:rotate(-35deg)}
+    .signatario{text-align:center;margin:12mm 0 3mm;break-inside:avoid}.signatario span{display:block;width:64mm;border-top:1px solid;margin:0 auto 2mm}
+    </style><body><header class="regiao">${cabecalho}</header>
+    <main class="regiao">${corpo}${dadosTermo}${htmlResolucoes(f.resolucoes ?? [])}${assinaturas()}</main>
+    <footer class="regiao">${rodape}</footer>${matriz ? '<small>' + escape(f.numero) + ' · Matriz aprovada</small>' : '<div class="rascunho">RASCUNHO</div>'}</body></html>`;
+  }
   return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'">
   <style>
@@ -163,13 +169,53 @@ export function htmlDocumento(f: FonteRenderizacao): string {
   ${estrutura?.rodape.length ? `<footer>${blocos(estrutura.rodape)}</footer>` : ''}
   ${temAssinaturas ? '' : assinaturas()}</body></html>`;
 }
-async function imprimirHtml(documento: string, opcoes: Parameters<import('playwright').Page['pdf']>[0]) {
-  const fontes = await Promise.all([400, 700].flatMap(peso => ['normal', 'italic'].map(async estilo => {
-    const bytes = await readFile(require.resolve(`@fontsource/noto-serif/files/noto-serif-latin-${peso}-${estilo}.woff2`));
-    return `@font-face{font-family:Noto;src:url(data:font/woff2;base64,${bytes.toString('base64')}) format('woff2');font-weight:${peso};font-style:${estilo}}`;
-  })));
-  const html = documento.replace('<style>', '<style>' + fontes.join(''));
-  if (Buffer.byteLength(html) > 16 * 1024 * 1024) throw new Error('Fonte de renderização excede o limite.');
+async function comPrazo<T>(operacao: Promise<T>, prazo: number) {
+  let timer: NodeJS.Timeout | undefined;
+  return await Promise.race([
+    operacao,
+    new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Tempo de renderização excedido.')), prazo); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function imprimirComLimite(page: import('playwright').Page, opcoes: Parameters<typeof page.pdf>[0]) {
+  return comPrazo(page.pdf({ format: 'A4', printBackground: true, ...opcoes }), 30000);
+}
+
+async function fontesDocumento(composicao?: ComposicaoPagina) {
+  const faces = new Map<string, { familia: string; peso: number; estilo: string }>();
+  function registrar(familia: string, peso: number, estilo: string) {
+    faces.set([familia, peso, estilo].join('/'), { familia, peso, estilo });
+  }
+  const padrao = composicao?.pagina.fonte ?? 'Noto';
+  for (const peso of [400, 700]) for (const estilo of ['normal', 'italic']) registrar(padrao, peso, estilo);
+  if (composicao) {
+    const blocos = [...composicao.cabecalho, ...composicao.corpo, ...composicao.rodape];
+    for (const b of paragrafos(blocos)) {
+      for (const t of b.trechos) if ('fonte' in t && t.fonte) {
+        registrar(t.fonte, t.negrito ? 700 : 400, t.italico ? 'italic' : 'normal');
+      }
+    }
+  }
+  const css = await Promise.all([...faces.values()].map(async ({ familia, peso, estilo }) => {
+    let caminho: string;
+    if (familia === 'Liberation Serif') {
+      const face = peso === 700 ? (estilo === 'italic' ? 'bolditalic' : 'bold') : (estilo === 'italic' ? 'italic' : 'regular');
+      caminho = `@universal-office/font-files/liberationserif-${face}.ttf`;
+    } else {
+      const nome = familia === 'Noto Sans' ? 'noto-sans' : 'noto-serif';
+      caminho = `@fontsource/${nome}/files/${nome}-latin-${peso}-${estilo}.woff2`;
+    }
+    const bytes = await readFile(require.resolve(caminho));
+    return `@font-face{font-family:"${familia}";src:url(data:font/${familia === 'Liberation Serif' ? 'ttf' : 'woff2'};base64,${bytes.toString('base64')});font-weight:${peso};font-style:${estilo}}`;
+  }));
+  return css.join('');
+}
+
+async function imprimirHtml(documento: string, opcoes: Parameters<import('playwright').Page['pdf']>[0], composicao?: ComposicaoPagina, arquivos: Record<string,string> = {}) {
+  const pagina = composicao?.pagina;
+  const html = documento.replace('<style>', '<style>' + await fontesDocumento(composicao));
+  const bytesImagens = composicao?.versao_formato === 2 ? Object.values(arquivos).reduce((total, uri) => total + Buffer.byteLength(uri), 0) : 0;
+  if (Buffer.byteLength(html) + bytesImagens > 16 * 1024 * 1024) throw new Error('Fonte de renderização excede o limite.');
   const browser = await chromium.launch({
     headless: true, timeout: 15000, chromiumSandbox: process.env.NODE_ENV === 'production',
     env: Object.fromEntries(Object.entries(process.env).filter(([k]) => ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'XDG_RUNTIME_DIR'].includes(k))),
@@ -180,14 +226,107 @@ async function imprimirHtml(documento: string, opcoes: Parameters<import('playwr
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
     await page.setContent(html, { waitUntil: 'load', timeout: 15000 });
-    const imagensComFalha = await page.evaluate(() => Array.from(document.images).some(img => !img.naturalWidth));
-    if (imagensComFalha) throw new Error('Não foi possível decodificar uma das imagens.');
-    let timer: NodeJS.Timeout | undefined;
-    return await Promise.race([
-      page.pdf({ format: 'A4', printBackground: true, ...opcoes }),
-      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Tempo de renderização excedido.')), 30000); }),
-    ]).finally(() => clearTimeout(timer));
+    if (await page.evaluate(() => Array.from(document.images).some(img => !img.naturalWidth))) throw new Error('Não foi possível decodificar uma das imagens.');
+    if (pagina) {
+      await page.emulateMedia({ media: 'print' });
+      if (composicao?.versao_formato === 2) return await comPrazo(imprimirComposicao(page, composicao, arquivos, imprimirComLimite), 60000);
+      const alturas = await page.evaluate(async () => {
+        await document.fonts.ready;
+        return ['header', 'footer'].map(tag => document.querySelector(tag)!.getBoundingClientRect().height);
+      });
+      const m = pagina.margens_cm, e = pagina.espacamento_cm.corpo;
+      const topo = alturas[0] + e.superior * 96 / 2.54, base = alturas[1] + e.inferior * 96 / 2.54;
+      if ((29.7 - m.superior - m.inferior) * 96 / 2.54 - topo - base < pagina.tamanho_pt * 96 / 72 * 1.45) {
+        throw new Error('Reduza as margens ou o conteúdo fixo para que o corpo caiba na página.');
+      }
+      if (Object.keys(composicao!.notas).length) {
+        const altura = (29.7 - m.superior - m.inferior) * 96 / 2.54 - topo - base;
+        return await imprimirComNotas(page, composicao!, altura);
+      }
+      // Chromium recorta regiões fixas posicionadas nas margens de uma página
+      // fragmentada. Imprimir as regiões uma vez e aplicá-las sobre cada folha
+      // preserva fontes incorporadas, seleção de texto e posição física.
+      const imprimir = () => imprimirComLimite(page, { preferCSSPageSize: true });
+      const aplicar = (css: string) => page.evaluate(regras => {
+        let style = document.getElementById('paginacao');
+        if (!style) { style = document.createElement('style'); style.id = 'paginacao'; document.head.append(style); }
+        style.textContent = regras;
+      }, css);
+      const cmPx = 96 / 2.54;
+      await aplicar(`@page{size:A4;margin:${m.superior + topo/cmPx}cm ${m.direita}cm ${m.inferior + base/cmPx}cm ${m.esquerda}cm} header,footer{display:none}`);
+      const corpo = await imprimir();
+      if (!await page.evaluate(() => ['header','footer'].some(tag => document.querySelector(tag)?.textContent?.trim() || document.querySelector(tag + ' img, ' + tag + ' table')))) return corpo;
+      await aplicar(`@page{size:A4;margin:0} body>:not(header):not(footer){display:none}
+        header,footer{position:fixed;left:${m.esquerda}cm;right:${m.direita}cm}header{top:${m.superior}cm}footer{bottom:${m.inferior}cm}`);
+      const regioes = await imprimir();
+      const pdf = await PDFDocument.load(corpo);
+      const [fixas] = await pdf.embedPdf(regioes, [0]);
+      for (const folha of pdf.getPages()) folha.drawPage(fixas);
+      return Buffer.from(await pdf.save());
+    }
+    return await imprimirComLimite(page, opcoes);
   } finally { await browser.close(); }
+}
+
+async function imprimirComNotas(page: import('playwright').Page, comp: ComposicaoPagina, altura: number) {
+  await page.evaluate(estilo => {
+    const css = document.createElement('style');
+    css.textContent = '@page{size:A4;margin:0} main{display:flow-root} sup[data-nota]::before{content:"\u2060"} sup[data-nota]{font-size:.72em;line-height:0;vertical-align:baseline;position:relative;top:-.45em}';
+    document.head.append(css);
+    const main = document.querySelector('main')!;
+    const selo = document.querySelector('body > small');
+    if (selo) { const p = document.createElement('p'); p.append(selo); main.append(p); }
+    const medidor = document.createElement('p');
+    medidor.id = 'medidor-notas';
+    medidor.style.cssText = estilo + ';position:absolute;visibility:hidden;width:' + getComputedStyle(main).width;
+    document.body.append(medidor);
+  }, estiloParteNota);
+  const entrada = { corpo: 'main', medidor: '#medidor-notas', altura, notas: comp.notas };
+  const folhas = await page.evaluate<FolhaNotas[], typeof entrada>(paginarNotas, entrada);
+  await page.evaluate(({ folhas, config, estilo }) => {
+    const main = document.querySelector('main')!;
+    const topo = main.getBoundingClientRect().top;
+    const blocos = Array.from(main.children, el => ({ el, y: el.getBoundingClientRect().top - topo, base: el.getBoundingClientRect().bottom - topo }));
+    const header = document.querySelector('header')!, footer = document.querySelector('footer')!;
+    const marca = document.querySelector('.rascunho');
+    const paginas = document.createDocumentFragment();
+    const m = config.margens_cm, e = config.espacamento_cm.corpo;
+    for (const f of folhas) {
+      const folha = document.createElement('section');
+      folha.style.cssText = 'width:21cm;height:29.7cm;position:relative;display:flex;flex-direction:column;break-after:page;overflow:hidden;padding:' +
+        [m.superior,m.direita,m.inferior,m.esquerda].map(n => n+'cm').join(' ');
+      folha.append(header.cloneNode(true));
+      const janela = document.createElement('div');
+      janela.className = 'regiao';
+      janela.style.cssText = 'position:relative;overflow:clip;flex:none;margin-top:'+e.superior+'cm;height:'+(f.fim-f.inicio)+'px';
+      // Copiar apenas os blocos que intersectam a folha conserva a quebra de
+      // linhas e a justificação original mesmo no meio de um parágrafo longo.
+      for (const b of blocos) if (b.y < f.fim && b.base > f.inicio) {
+        const copia = b.el.cloneNode(true) as HTMLElement;
+        Object.assign(copia.style, { position:'absolute', margin:'0', left:'0', width:'100%', top:(b.y-f.inicio)+'px' });
+        janela.append(copia);
+      }
+      folha.append(janela);
+      const notas = document.createElement('aside');
+      notas.style.cssText = 'margin-top:auto;padding-top:'+e.inferior+'cm';
+      for (const parte of f.notas) {
+        const p = document.createElement('p');
+        p.style.cssText = estilo;
+        p.textContent = parte.legenda + parte.texto;
+        notas.append(p);
+      }
+      folha.append(notas, footer.cloneNode(true));
+      if (marca) {
+        const selo = marca.cloneNode(true) as HTMLElement;
+        selo.style.position = 'absolute';
+        folha.append(selo);
+      }
+      paginas.append(folha);
+    }
+    document.body.replaceChildren(paginas);
+    (document.body.lastElementChild as HTMLElement).style.breakAfter = 'auto';
+  }, { folhas, config: comp.pagina, estilo: estiloParteNota });
+  return imprimirComLimite(page, { preferCSSPageSize: true });
 }
 
 export function imprimirComprovante(titulo: string, dados: string[], linhas: { nome: string; detalhe: string }[]) {
@@ -204,7 +343,13 @@ export function imprimirComprovante(titulo: string, dados: string[], linhas: { n
   return imprimirHtml(html, { margin: { top: '22mm', bottom: '22mm', left: '22mm', right: '22mm' } });
 }
 
+export const margensConcilio = { superior: 3, direita: 3, inferior: 3, esquerda: 3 };
 export async function gerarPdf(f: FonteRenderizacao): Promise<Buffer> {
+  if (f.livro?.perfil === 'CONCILIO_IPB_2025' && f.conteudo.composicao) {
+    const comp = structuredClone(f.conteudo.composicao);
+    comp.pagina.margens_cm = margensConcilio;
+    f = { ...f, conteudo: { ...f.conteudo, composicao: comp } };
+  }
   const endereco = [f.igreja.logradouro, f.igreja.numero, f.igreja.complemento, f.igreja.bairro, f.igreja.cidade, f.igreja.estado, f.igreja.cep].filter(Boolean).join(', ');
   const paginas = 'Pág. <span class="pageNumber"></span> de <span class="totalPages"></span>';
   const rodape = f.livro ? '<span></span>' : f.tipo === 'ATA'
@@ -220,9 +365,9 @@ export async function gerarPdf(f: FonteRenderizacao): Promise<Buffer> {
     : { top: '23mm', bottom: '32mm', left: '20mm', right: '20mm' };
   const header = f.finalidade === 'MATRIZ_APROVADA' ? '<span></span>' :
     '<div style="width:100%;text-align:center;color:#666;font:10px sans-serif">RASCUNHO</div>';
-  const pdf = await imprimirHtml(htmlDocumento(f), {
+  const pdf = await imprimirHtml(htmlDocumento(f), f.conteudo.composicao ? { preferCSSPageSize: true } : {
     displayHeaderFooter: true, headerTemplate: header, footerTemplate: rodape, margin,
-  });
+  }, f.conteudo.composicao, f.imagens);
   if (pdf.length > 10 * 1024 * 1024) throw new Error('PDF excede o limite.');
   if (!f.livro?.paginas) return pdf;
   const livro = f.livro;

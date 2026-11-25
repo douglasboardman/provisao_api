@@ -32,6 +32,8 @@ integration('E03: instituição de unidade', () => {
       await prisma.ato_orgao.deleteMany({ where: { orgao_id: orgaoId } });
       await prisma.membro_orgao.deleteMany({ where: { orgao_id: orgaoId } });
       await prisma.cargo_orgao.deleteMany({ where: { orgao_id: orgaoId } });
+      await prisma.contexto_secretaria.deleteMany({ where: { orgao_id: orgaoId } });
+      await prisma.versao_orgao.deleteMany({ where: { orgao_id: orgaoId } });
       await prisma.orgao_interno.deleteMany({ where: { id: orgaoId } });
     }
     await prisma.requisicao_institucional.deleteMany({ where: { igreja_id: igreja, idempotencia: { in: [chaveCompetencia, chaveEncerramento, chaveFutura, chaveCancelamento] } } });

@@ -1,3 +1,5 @@
+import { gravarPorServico } from '../autorizacao/escrita-servico';
+import type { Ator, Tx } from '../autorizacao/politica';
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { StorageService } from 'src/storage/storage.service';
@@ -23,7 +25,11 @@ export class IgrejaService {
       if (!matriz) throw new NotFoundException('Igreja matriz não encontrada.');
     }
 
-    return this.prisma.igreja.create({ data: dto });
+    return this.prisma.$transaction(async tx => {
+      const igreja = await tx.igreja.create({ data: dto });
+      await tx.$executeRaw`SELECT instalar_estrutura_institucional(${igreja.id})`;
+      return igreja;
+    });
   }
 
   async findAllPublic(): Promise<Pick<igreja, 'id' | 'nome'>[]> {
@@ -34,29 +40,33 @@ export class IgrejaService {
     });
   }
 
-  async findMe(igreja_id: string): Promise<igreja> {
-    const record = await this.prisma.igreja.findUnique({ where: { id: igreja_id } });
+  async findMe(igreja_id: string, tx: Tx = this.prisma): Promise<igreja> {
+    const record = await tx.igreja.findUnique({ where: { id: igreja_id } });
     if (!record) throw new NotFoundException('Igreja não encontrada.');
     return record;
   }
 
-  async updateMe(igreja_id: string, dto: UpdateIgrejaDto): Promise<igreja> {
-    await this.findMe(igreja_id);
+  async updateMe(igreja_id: string, dto: UpdateIgrejaDto, ator?: Ator): Promise<igreja> {
+    return gravarPorServico(this.prisma, ator, 'IGREJA_EDITAR', async tx => {
+      await this.findMe(igreja_id, tx);
 
-    if (dto.cnpj) {
-      const existing = await this.prisma.igreja.findUnique({ where: { cnpj: dto.cnpj } });
-      if (existing && existing.id !== igreja_id) {
-        throw new ConflictException('Este CNPJ já está cadastrado.');
+      if (dto.cnpj) {
+        const existing = await tx.igreja.findUnique({ where: { cnpj: dto.cnpj } });
+        if (existing && existing.id !== igreja_id) {
+          throw new ConflictException('Este CNPJ já está cadastrado.');
+        }
       }
-    }
 
-    return this.prisma.igreja.update({ where: { id: igreja_id }, data: dto });
+      return tx.igreja.update({ where: { id: igreja_id }, data: dto });
+    });
   }
 
-  async updateLogo(igreja_id: string, file: Express.Multer.File): Promise<igreja> {
-    await this.findMe(igreja_id);
-    const url_logo = await this.storageService.uploadFile(file, 'church-logos');
-    return this.prisma.igreja.update({ where: { id: igreja_id }, data: { url_logo } });
+  async updateLogo(igreja_id: string, file: Express.Multer.File, ator?: Ator): Promise<igreja> {
+    return gravarPorServico(this.prisma, ator, 'IGREJA_EDITAR', async tx => {
+      await this.findMe(igreja_id, tx);
+      const url_logo = await this.storageService.uploadFile(file, 'church-logos');
+      return tx.igreja.update({ where: { id: igreja_id }, data: { url_logo } });
+    });
   }
 
   async findCongregacoes(igreja_id: string): Promise<igreja[]> {

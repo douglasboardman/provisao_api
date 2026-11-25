@@ -1,3 +1,4 @@
+import { ServicoDaRota } from '../autorizacao/politica';
 import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Request, Query } from '@nestjs/common';
 import { LancamentosService } from './lancamentos.service';
 import { CreateLancamentoDto } from './dto/create-lancamento.dto';
@@ -13,12 +14,14 @@ import { usuarios_perfil as Perfil } from '@prisma/client';
 export class LancamentosController {
   constructor(private readonly lancamentosService: LancamentosService) {}
 
+  @ServicoDaRota('LANCAMENTOS_REGISTRAR')
   @Post()
   @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO, Perfil.OPERADOR)
   create(@Request() req, @Body() dto: CreateLancamentoDto) {
-    return this.lancamentosService.create(req.user.igreja_id, req.user.sub, dto);
+    return this.lancamentosService.create(req.user.igreja_id, req.user.sub, dto, req.user);
   }
 
+  @ServicoDaRota('LANCAMENTOS_CONSULTAR')
   @Get()
   findAll(
     @Request() req,
@@ -37,6 +40,7 @@ export class LancamentosController {
     });
   }
 
+  @ServicoDaRota('BALANCO_CONSULTAR')
   @Get('balanco')
   balanco(
     @Request() req,
@@ -48,20 +52,23 @@ export class LancamentosController {
     return this.lancamentosService.balanco(req.user.igreja_id, mesNum, anoNum);
   }
 
+  @ServicoDaRota('LANCAMENTOS_CONSULTAR')
   @Get(':id')
   findOne(@Request() req, @Param('id') id: string) {
     return this.lancamentosService.findOne(id, req.user.igreja_id);
   }
 
+  @ServicoDaRota('LANCAMENTOS_EDITAR')
   @Patch(':id')
   @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO, Perfil.OPERADOR)
   update(@Request() req, @Param('id') id: string, @Body() dto: UpdateLancamentoDto) {
-    return this.lancamentosService.update(id, req.user.igreja_id, dto);
+    return this.lancamentosService.update(id, req.user.igreja_id, dto, req.user);
   }
 
+  @ServicoDaRota('LANCAMENTOS_EXCLUIR')
   @Delete(':id')
   @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO)
   remove(@Request() req, @Param('id') id: string) {
-    return this.lancamentosService.remove(id, req.user.igreja_id);
+    return this.lancamentosService.remove(id, req.user.igreja_id, req.user);
   }
 }

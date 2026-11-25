@@ -1,6 +1,8 @@
+import type { Ator } from '../autorizacao/politica';
+import { exigirServicoHistorico } from './autorizacao-historico';
 import { createHash } from 'crypto';
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { logs_atividades_acao, oficial_evento_tipo, Prisma, usuarios_perfil } from '@prisma/client';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { logs_atividades_acao, oficial_evento_tipo, Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
 import { exigirAcessoSensivel } from './acesso-sensivel.service';
@@ -14,10 +16,10 @@ const civil = (d: Date) => d.toISOString().slice(0, 10);
 @Injectable()
 export class InsercaoRetroativaOficialService {
   constructor(private readonly prisma: PrismaService) {}
-  private async autorizar(tx: Tx, igreja: string, usuario: string, acao: 'consultar' | 'registrar') {
-    const perfis: usuarios_perfil[] = [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO]; if (acao === 'consultar') perfis.push(usuarios_perfil.AUDITOR);
-    if (!await tx.usuarios.findFirst({ where: { id: usuario, igreja_id: igreja, ativo: true, perfil: { in: perfis } }, select: { id: true } })) throw new ForbiddenException('Operador não autorizado nesta igreja.');
-    await exigirAcessoSensivel(tx, igreja, usuario, acao);
+  private async autorizar(tx: Tx, igreja: string, usuario: string, modo: 'consultar' | 'registrar', ator?: Ator) {
+    const escrita = modo === 'registrar';
+    await exigirServicoHistorico(tx, igreja, usuario, escrita ? 'HISTORICO_OFICIAIS_REGISTRAR' : 'HISTORICO_OFICIAIS_CONSULTAR', escrita, ator);
+    await exigirAcessoSensivel(tx, igreja, usuario, modo);
   }
   private async calcular(tx: Tx, igreja: string, oficialId: string, proposta: Proposta) {
     const oficial = await tx.oficial.findFirst({ where: { id: oficialId, igreja_id: igreja }, select: { id: true, tipo: true } }); if (!oficial) throw new NotFoundException('Oficial não encontrado nesta igreja.');
@@ -56,18 +58,18 @@ export class InsercaoRetroativaOficialService {
     const estado = { igreja, impacto, eventos, mandatos, vinculos };
     return { ...impacto, hash: createHash('sha256').update(JSON.stringify(estado)).digest('hex') };
   }
-  async previa(igreja: string, usuario: string, oficial: string, dados: Proposta) {
+  async previa(igreja: string, usuario: string, oficial: string, dados: Proposta, ator?: Ator) {
     const p = propostaSchema.safeParse(dados); if (!p.success) throw new BadRequestException('Proposta inválida.');
-    return this.prisma.$transaction(async tx => { await this.autorizar(tx, igreja, usuario, 'consultar'); const r = await this.calcular(tx, igreja, oficial, p.data); await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CONSULTA, tabela_afetada: 'previa_insercao_oficial', registro_id: oficial } }); return r; }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    return this.prisma.$transaction(async tx => { await this.autorizar(tx, igreja, usuario, 'consultar', ator); const r = await this.calcular(tx, igreja, oficial, p.data); await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CONSULTA, tabela_afetada: 'previa_insercao_oficial', registro_id: oficial } }); return r; }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
-  async listar(igreja: string, usuario: string, oficial: string) {
-    return this.prisma.$transaction(async tx => { await this.autorizar(tx, igreja, usuario, 'consultar'); if (!await tx.oficial.findFirst({ where: { id: oficial, igreja_id: igreja }, select: { id: true } })) throw new NotFoundException('Oficial não encontrado nesta igreja.'); const r = await tx.insercao_retroativa_oficial.findMany({ where: { igreja_id: igreja, oficial_id: oficial }, select: { id: true, evento_id: true, impacto: true, justificativa: true, criado_em: true, criado_por: { select: { nome_usuario: true } } }, orderBy: { criado_em: 'desc' } }); await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CONSULTA, tabela_afetada: 'previa_insercao_oficial', registro_id: oficial } }); return r; });
+  async listar(igreja: string, usuario: string, oficial: string, ator?: Ator) {
+    return this.prisma.$transaction(async tx => { await this.autorizar(tx, igreja, usuario, 'consultar', ator); if (!await tx.oficial.findFirst({ where: { id: oficial, igreja_id: igreja }, select: { id: true } })) throw new NotFoundException('Oficial não encontrado nesta igreja.'); const r = await tx.insercao_retroativa_oficial.findMany({ where: { igreja_id: igreja, oficial_id: oficial }, select: { id: true, evento_id: true, impacto: true, justificativa: true, criado_em: true, criado_por: { select: { nome_usuario: true } } }, orderBy: { criado_em: 'desc' } }); await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CONSULTA, tabela_afetada: 'previa_insercao_oficial', registro_id: oficial } }); return r; });
   }
-  async aplicar(igreja: string, usuario: string, oficial: string, dados: Aplicacao) {
+  async aplicar(igreja: string, usuario: string, oficial: string, dados: Aplicacao, ator?: Ator) {
     const p = aplicarSchema.safeParse(dados); if (!p.success) throw new BadRequestException('Inclusão inválida.');
     const { hash_previa, justificativa, idempotencia, ciente: _ciente, ...proposta } = p.data, chave = idempotencia.toLowerCase();
     return this.prisma.$transaction(async tx => {
-      await this.autorizar(tx, igreja, usuario, 'registrar');
+      await this.autorizar(tx, igreja, usuario, 'registrar', ator);
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${igreja + ':insercao-oficial:' + chave}, 0))`;
       const anterior = await tx.insercao_retroativa_oficial.findUnique({ where: { igreja_id_idempotencia: { igreja_id: igreja, idempotencia: chave } } });
       if (anterior) { const impacto = anterior.impacto as Prisma.JsonObject; if (anterior.oficial_id !== oficial || anterior.criado_por_id !== usuario || anterior.justificativa !== justificativa || impacto.hash !== hash_previa || !impacto.proposta || typeof impacto.proposta !== 'object' || Object.entries(proposta).some(([k, v]) => (impacto.proposta as Prisma.JsonObject)[k] !== v)) throw new ConflictException('Chave já utilizada para outra inclusão.'); return anterior; }

@@ -1,3 +1,4 @@
+import { ObservarServico, ServicoDaRota } from '../autorizacao/politica';
 import {
   Controller, Get, Post, Body, Patch, Param, Delete, Header,
   UseGuards, UseInterceptors, UploadedFile, BadRequestException, ForbiddenException, Request,
@@ -39,6 +40,8 @@ export class UsuariosController {
    * Lista todos os usuários da mesma igreja do solicitante.
    * Rota: GET /usuarios
    */
+  @ObservarServico('USUARIOS_CONSULTAR')
+  @ServicoDaRota('USUARIOS_CONSULTAR')
   @Get()
   findAll(@Request() req) {
     return this.usuariosService.findAll(req.user.igreja_id);
@@ -53,6 +56,7 @@ export class UsuariosController {
    * Retorna um usuário pelo ID, dentro da mesma igreja.
    * Rota: GET /usuarios/:id
    */
+  @ServicoDaRota('USUARIOS_CONSULTAR')
   @Get(':id')
   findOne(@Request() req, @Param('id') id: string) {
     return this.usuariosService.findOne(id, req.user.igreja_id);

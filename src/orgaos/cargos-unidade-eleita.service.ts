@@ -32,9 +32,9 @@ export class CargosUnidadeEleitaService {
       if (anterior) return anterior;
       if (v.data_posse !== hoje || v.data_eleicao > v.data_posse || v.termino_previsto < v.data_posse) throw new BadRequestException('Posse deve ser hoje, após a eleição e antes do término.');
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, ativo: true, tipo: 'UNIDADE_MINISTERIAL', constituicao: 'ELEICAO' }, select: { data_criacao: true } });
+      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, ativo: true, gestao_presidencial: false, tipo: 'UNIDADE_MINISTERIAL', constituicao: 'ELEICAO' }, select: { data_criacao: true } });
       if (!orgao) throw new NotFoundException('Unidade eleita não encontrada nesta igreja.');
-      if (data(v.data_eleicao) < orgao.data_criacao) throw new BadRequestException('Eleição anterior à criação da unidade.');
+      if (orgao.data_criacao && data(v.data_eleicao) < orgao.data_criacao) throw new BadRequestException('Eleição anterior à criação da unidade.');
       const ordem = await ordemDoAto(tx, igrejaId, orgaoId, data(v.data_posse), v.ordem_efeito);
       const cargo = await tx.cargo_orgao.findFirst({ where: { id: cargoId, igreja_id: igrejaId, orgao_id: orgaoId, ativo: true } });
       if (!cargo) throw new NotFoundException('Cargo não encontrado nesta unidade.');
@@ -72,7 +72,7 @@ export class CargosUnidadeEleitaService {
       if (anterior) return anterior;
       if (v.data_efeito !== hoje) throw new BadRequestException('Data diferente de hoje exige revisão de impacto.');
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, tipo: 'UNIDADE_MINISTERIAL', constituicao: 'ELEICAO' }, select: { id: true } });
+      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, gestao_presidencial: false, tipo: 'UNIDADE_MINISTERIAL', constituicao: 'ELEICAO' }, select: { id: true } });
       if (!orgao) throw new NotFoundException('Unidade eleita não encontrada nesta igreja.');
       const ordem = await ordemDoAto(tx, igrejaId, orgaoId, efeito, v.ordem_efeito);
       const ocupacao = await tx.ocupacao_cargo.findFirst({ where: { id: ocupacaoId, igreja_id: igrejaId, orgao_id: orgaoId, politica_unidade_id: { not: null } } });

@@ -3,6 +3,8 @@ import { logs_atividades_acao, oficial_evento_tipo, oficio_tipo, Prisma, usuario
 import { z } from 'zod';
 import { exigirAcessoSensivel } from './acesso-sensivel.service';
 import { PrismaService } from '../prisma/prisma.service';
+import type { Ator } from '../autorizacao/politica';
+import { exigirServicoHistorico } from './autorizacao-historico';
 
 const dia = z.iso.date().refine(s => { const d = new Date(`${s}T00:00:00.000Z`); return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === s; });
 const texto = z.string().trim().min(1).max(1000);
@@ -73,12 +75,12 @@ export class OficiaisService {
     });
   }
 
-  async registrarEvento(igrejaId: string, usuarioId: string, oficialId: string, dados: z.infer<typeof eventoSchema>, exigirConcessao = false) {
+  async registrarEvento(igrejaId: string, usuarioId: string, oficialId: string, dados: z.infer<typeof eventoSchema>, exigirConcessao = false, ator?: Ator) {
     const validado = eventoSchema.safeParse(dados);
     if (!validado.success) throw new BadRequestException('Dados do evento inválidos.');
     const v = validado.data, data = new Date(`${v.data_efeito}T00:00:00.000Z`);
     return this.prisma.$transaction(async tx => {
-      await this.autorizar(tx, igrejaId, usuarioId);
+      await exigirServicoHistorico(tx, igrejaId, usuarioId, 'HISTORICO_OFICIAIS_REGISTRAR', true, ator);
       if (exigirConcessao) await exigirAcessoSensivel(tx, igrejaId, usuarioId, 'registrar');
       await this.oficialBloqueado(tx, igrejaId, oficialId);
       // Alterações retroativas precisam do futuro relatório de impacto; não alterar autoridade silenciosamente.

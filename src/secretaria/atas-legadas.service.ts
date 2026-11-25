@@ -37,7 +37,7 @@ export class AtasLegadasService {
         igreja_id: a.igreja_id,
         usuario_id: a.sub,
         anexos_documento: { none: {} },
-        imagens_modelo: { none: {} },
+        imagens_modelo: { none: {} }, imagens_modelo_rascunho: { none: {} },
         artefatos_documento: { none: {} },
         livros_historicos: { none: {} },
         registros_livro: { none: {} },
@@ -284,7 +284,8 @@ export class AtasLegadasService {
     const modalidade = nova.modalidade ?? r.modalidade;
     if (alterados.some(([campo, valor]) => ['data', 'modalidade', 'local', 'pauta'].includes(campo) && !valor))
       throw new BadRequestException('A reunião vinculada precisa manter data, modalidade, local e pauta.');
-    await tx.reuniao.update({ where: { id }, data: { data: dataCivil(data), modalidade, dados: json(dados), revisao: { increment: 1 } } });
+    if (alterados.some(([campo]) => campo === 'pauta') && nova.pauta) await this.cadastros.salvarPauta(tx, r, nova.pauta);
+    await tx.reuniao.update({ where: { id }, data: { ...(alterados.some(([campo]) => campo === 'local') && { local_id: null, local_retrato: Prisma.DbNull }), data: dataCivil(data), modalidade, dados: json(dados), revisao: { increment: 1 } } });
   }
 
   vincularLivro(a: AtorSecretaria, id: string, dados: unknown) {

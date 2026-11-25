@@ -33,7 +33,7 @@ export class PoliticaUnidadeService {
         return { id: repetido.ocupacao_id };
       }
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, ativo: true, tipo: 'UNIDADE_MINISTERIAL', constituicao: 'ELEICAO' }, select: { id: true } });
+      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, ativo: true, gestao_presidencial: false, tipo: 'UNIDADE_MINISTERIAL', constituicao: 'ELEICAO' }, select: { id: true } });
       if (!orgao) throw new NotFoundException('Unidade eleita não encontrada nesta igreja.');
       const politica = await tx.politica_unidade.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, registrado_por: usuarioId, versao: v.versao, fonte: v.fonte, autoridade: v.autoridade, evidencia: v.evidencia, inicio: data(v.inicio), fim: data(v.fim), prazo_maximo_meses: v.prazo_maximo_meses } });
       const ato = await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, operador_id: usuarioId, tipo: 'POLITICA_UNIDADE', data_efeito: hoje, autoridade: v.autoridade, evidencia: v.evidencia, idempotencia, hash_requisicao: hash, detalhes: { politica_id: politica.id, versao: v.versao, fonte: v.fonte, inicio: v.inicio, fim: v.fim, prazo_maximo_meses: v.prazo_maximo_meses } } });

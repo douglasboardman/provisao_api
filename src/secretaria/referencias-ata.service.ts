@@ -1,3 +1,7 @@
+import { exigirServicoNaTransacao } from '../autorizacao/escrita-servico';
+import { estadoDaLiberacao } from '../autorizacao/liberacao-servico';
+import { camposConta, decidirServico } from '../autorizacao/politica';
+import { orgaosJuvenisRestritos } from '../orgaos/acesso-sociedades';
 import { selecionarDocumentos } from './selecao-documental';
 import {
   BadRequestException,
@@ -32,9 +36,14 @@ type Acesso = {
   igreja: string;
   perfil: AtorSecretaria['perfil'];
   restritos: string[];
+  orgaosOmitidos: string[];
+  contextosOmitidos: string[];
   grupos: string[];
   sensivel: boolean;
   registraSensivel: boolean;
+  registraVinculo: boolean;
+  registraFinanceiro: boolean;
+  vinculoPorAtribuicao: boolean;
 };
 type Revisao = {
   id: string;
@@ -67,21 +76,27 @@ export class ReferenciasAtaService {
   private async acesso(tx: Tx, ator: AtorSecretaria): Promise<Acesso> {
     const u = await tx.usuarios.findFirst({
       where: { id: ator.sub, igreja_id: ator.igreja_id, ativo: true },
-      select: { perfil: true },
+      select: camposConta,
     });
-    if (!u || ![...editores, 'AUDITOR', 'TESOUREIRO'].includes(u.perfil)) {
+    if (!u || ![...editores, 'AUDITOR', 'TESOUREIRO', 'COMUM'].includes(u.perfil)) {
       throw new ForbiddenException('Operador não autorizado.');
     }
-    const grupos =
-      u.perfil === 'TESOUREIRO'
-        ? ['FINANCEIRO']
-        : [
-            'MEMBRESIA',
-            'FINANCEIRO',
-            ...Object.entries(recursos)
-              .filter(([, recurso]) => recursoDaIgreja(recurso, ator.igreja_id))
-              .map(([grupo]) => grupo),
-          ];
+    const operacoes = ['VINCULOS_DOCUMENTAIS_CONSULTAR', 'VINCULOS_DOCUMENTAIS_REGISTRAR',
+      'AUTORIZACOES_FINANCEIRAS_CONSULTAR', 'AUTORIZACOES_FINANCEIRAS_REGISTRAR'] as const;
+    const legadas = [true, editores.includes(u.perfil), true, operadoresFinanceiros.includes(u.perfil)];
+    const modos = await Promise.all(operacoes.map(acao => estadoDaLiberacao(tx, u.igreja_id, acao)));
+    const exigeAtribuicao = (indice: number) => u.perfil === 'COMUM' || modos[indice] === 'ATRIBUICAO';
+    const [vinculos, registraVinculo, financeiro, registraFinanceiro] = await Promise.all(
+      operacoes.map(async (acao, i) => modos[i] !== 'PAUSADO' &&
+        (exigeAtribuicao(i) ? (await decidirServico(tx, u, acao)).permite : legadas[i])),
+    );
+    const grupos = [
+      ...((vinculos || registraVinculo) && u.perfil !== 'TESOUREIRO' ? [
+        'MEMBRESIA', ...Object.entries(recursos).filter(([, recurso]) => recursoDaIgreja(recurso, ator.igreja_id)).map(([grupo]) => grupo),
+      ] : []),
+      ...((financeiro || registraFinanceiro) ? ['FINANCEIRO'] : []),
+    ];
+    if (!grupos.length) throw new ForbiddenException('Operador não autorizado.');
     const concessoes = u.perfil === 'TESOUREIRO' ? [] : await this.base.concessoes(tx, ator);
     const sensivel =
       u.perfil === 'TESOUREIRO'
@@ -90,25 +105,34 @@ export class ReferenciasAtaService {
             where: { igreja_id: ator.igreja_id, usuario_id: ator.sub, revogado_em: null },
             select: { pode_registrar: true, pode_consultar: true },
           });
+    const orgaosOmitidos = await orgaosJuvenisRestritos(tx, u, await hojeDaIgreja(tx, ator.igreja_id));
+    const contextosOmitidos = orgaosOmitidos.length ? await tx.contexto_secretaria.findMany({ where: { igreja_id: ator.igreja_id,
+      orgao_id: { in: orgaosOmitidos } }, select: { id: true } }) : [];
     return {
       igreja: ator.igreja_id,
+      orgaosOmitidos,
+      contextosOmitidos: contextosOmitidos.map(c => c.id),
       perfil: u.perfil,
       grupos,
       restritos: concessoes.filter((c) => c.pode_consultar_restritos).map((c) => c.contexto_id),
       sensivel: Boolean(sensivel?.pode_consultar),
       registraSensivel: Boolean(sensivel?.pode_registrar),
+      registraVinculo,
+      registraFinanceiro,
+      vinculoPorAtribuicao: exigeAtribuicao(1) || modos[1] === 'PAUSADO',
     };
   }
 
   private alvoVisivel(acesso: Acesso) {
     return Prisma.sql`a.igreja_id = ${acesso.igreja} AND a.grupo IN (${Prisma.join(acesso.grupos)})
-      AND (NOT a.sensivel OR ${acesso.sensivel})`;
+      AND (NOT a.sensivel OR ${acesso.sensivel})
+      ${acesso.orgaosOmitidos.length ? Prisma.sql`AND (a.orgao_id IS NULL OR a.orgao_id NOT IN (${Prisma.join(acesso.orgaosOmitidos)}))` : Prisma.empty}`;
   }
 
   private documentoVisivel(acesso: Acesso) {
-    return acesso.restritos.length
-      ? Prisma.sql`(NOT d.restrito OR d.contexto_id IN (${Prisma.join(acesso.restritos)}))`
-      : Prisma.sql`NOT d.restrito`;
+    const restrito = acesso.restritos.length ? Prisma.sql`(NOT d.restrito OR d.contexto_id IN (${Prisma.join(acesso.restritos)}))` : Prisma.sql`NOT d.restrito`;
+    return Prisma.sql`(${restrito}
+      ${acesso.contextosOmitidos.length ? Prisma.sql`AND d.contexto_id NOT IN (${Prisma.join(acesso.contextosOmitidos)})` : Prisma.empty})`;
   }
 
   private async alvo(tx: Tx, acesso: Acesso, chave: ChaveAlvoAta) {
@@ -177,10 +201,10 @@ export class ReferenciasAtaService {
       SELECT r.id, r.ata_documento_id, r.versao_id, r.referencia_externa,
         r.justificativa, r.criado_em, u.nome_usuario AS operador, ${this.situacao()} AS situacao,
         CASE WHEN d.id IS NOT NULL THEN jsonb_build_object(
-          'documento_id', d.id, 'numero', d.numero, 'ano', d.ano, 'sigla', d.sigla,
+          'documento_id', d.id, 'contexto_id', d.contexto_id, 'versao_id', v.id, 'numero', d.numero, 'ano', d.ano, 'sigla', d.sigla,
           'data', v.data_documento, 'versao', v.numero, 'estado', d.estado,
           'contexto', coalesce(v.fonte_congelada #>> '{contexto,nome}', c.nome),
-          'numero_formatado', coalesce(v.numero_original, v.fonte_congelada->>'numero')) END AS ata
+          'numero_formatado', coalesce(v.numero_original, v.fonte_congelada->>'numero', d.identificacao_livro)) END AS ata
       FROM e09_referencia r
       JOIN usuarios u ON u.id = r.registrado_por_id AND u.igreja_id = r.igreja_id
       LEFT JOIN documento_versao v ON v.id = r.versao_id AND v.igreja_id = r.igreja_id
@@ -224,13 +248,21 @@ export class ReferenciasAtaService {
 
   private podeEditar(acesso: Acesso, alvo: Alvo) {
     const perfis = alvo.grupo === 'FINANCEIRO' ? [...operadoresFinanceiros, 'SECRETARIO'] : editores;
-    return perfis.includes(acesso.perfil) && (!alvo.sensivel || acesso.registraSensivel);
+    const pode = acesso.vinculoPorAtribuicao
+      ? acesso.registraVinculo && (alvo.grupo !== 'FINANCEIRO' || acesso.registraFinanceiro)
+      : perfis.includes(acesso.perfil);
+    return pode && (!alvo.sensivel || acesso.registraSensivel);
   }
 
   async registrar(ator: AtorSecretaria, chave: ChaveAlvoAta, entrada: unknown) {
     const dados = validar(referenciaAta, entrada);
     try {
       return await transacaoSerializavel(this.prisma, async (tx) => {
+        if (ator.sessao_id && ator.auth_version !== undefined) {
+          await exigirServicoNaTransacao(tx, { ...ator, sessao_id: ator.sessao_id, auth_version: ator.auth_version }, 'VINCULOS_DOCUMENTAIS_REGISTRAR');
+        } else if (ator.perfil === 'COMUM' || await estadoDaLiberacao(tx, ator.igreja_id, 'VINCULOS_DOCUMENTAIS_REGISTRAR', true) !== 'LEGADO') {
+          throw new ForbiddenException('Sessão indisponível.');
+        }
         const acesso = await this.acesso(tx, ator);
         const alvo = await this.alvo(tx, acesso, chave);
         if (!this.podeEditar(acesso, alvo))
@@ -397,7 +429,7 @@ export class ReferenciasAtaService {
           ${conta ? Prisma.sql`AND f.conta_id = ${conta}` : Prisma.empty}
         ORDER BY f.data_decisao DESC, f.id OFFSET ${pagina * tamanho} LIMIT ${tamanho + 1}
       `) as unknown[];
-        return { ...this.pagina(itens), pode_criar: operadoresFinanceiros.includes(acesso.perfil) };
+        return { ...this.pagina(itens), pode_criar: acesso.registraFinanceiro };
       },
       { isolationLevel: 'RepeatableRead' },
     );
@@ -408,8 +440,13 @@ export class ReferenciasAtaService {
     const { idempotencia, tipo, assunto, data_decisao, autoridade, evidencia, projeto_id, conta_id } = dados;
     try {
       return await transacaoSerializavel(this.prisma, async (tx) => {
+        if (ator.sessao_id && ator.auth_version !== undefined) {
+          await exigirServicoNaTransacao(tx, { ...ator, sessao_id: ator.sessao_id, auth_version: ator.auth_version }, 'AUTORIZACOES_FINANCEIRAS_REGISTRAR');
+        } else if (ator.perfil === 'COMUM' || await estadoDaLiberacao(tx, ator.igreja_id, 'AUTORIZACOES_FINANCEIRAS_REGISTRAR', true) !== 'LEGADO') {
+          throw new ForbiddenException('Sessão indisponível.');
+        }
         const acesso = await this.acesso(tx, ator);
-        if (!operadoresFinanceiros.includes(acesso.perfil))
+        if (!acesso.registraFinanceiro)
           throw new ForbiddenException('Perfil sem permissão para registrar autorizações financeiras.');
         if (data_decisao > (await hojeDaIgreja(tx, acesso.igreja)))
           throw new BadRequestException('A data da decisão deve corresponder a um ato já realizado.');

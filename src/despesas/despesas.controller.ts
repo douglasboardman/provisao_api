@@ -1,3 +1,4 @@
+import { ServicoDaRota } from '../autorizacao/politica';
 import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, ParseIntPipe, Request } from '@nestjs/common';
 import { DespesasService } from './despesas.service';
 import { CreateDespesaDto } from './dto/create-despesa.dto';
@@ -17,16 +18,18 @@ export class DespesasController {
    * Cria um novo tipo de despesa na mesma igreja do solicitante.
    * Rota: POST /despesas
    */
+  @ServicoDaRota('DESPESAS_CADASTRAR')
   @Post()
   @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO, Perfil.OPERADOR)
   create(@Request() req, @Body() createDespesaDto: CreateDespesaDto) {
-    return this.despesasService.create(req.user.igreja_id, createDespesaDto);
+    return this.despesasService.create(req.user.igreja_id, createDespesaDto, req.user);
   }
 
   /**
    * Lista todos os tipos de despesa da mesma igreja do solicitante.
    * Rota: GET /despesas
    */
+  @ServicoDaRota('DESPESAS_CONSULTAR')
   @Get()
   findAll(@Request() req) {
     return this.despesasService.findAll(req.user.igreja_id);
@@ -36,6 +39,7 @@ export class DespesasController {
    * Retorna um tipo de despesa pelo ID, dentro da mesma igreja.
    * Rota: GET /despesas/:id
    */
+  @ServicoDaRota('DESPESAS_CONSULTAR')
   @Get(':id')
   findOne(@Request() req, @Param('id', ParseIntPipe) id: number) {
     return this.despesasService.findOne(id, req.user.igreja_id);
@@ -45,19 +49,21 @@ export class DespesasController {
    * Atualiza um tipo de despesa da mesma igreja.
    * Rota: PATCH /despesas/:id
    */
+  @ServicoDaRota('DESPESAS_EDITAR')
   @Patch(':id')
   @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO, Perfil.OPERADOR)
   update(@Request() req, @Param('id', ParseIntPipe) id: number, @Body() updateDespesaDto: UpdateDespesaDto) {
-    return this.despesasService.update(id, req.user.igreja_id, updateDespesaDto);
+    return this.despesasService.update(id, req.user.igreja_id, updateDespesaDto, req.user);
   }
 
   /**
    * Remove um tipo de despesa da mesma igreja. Restrito ao ADMIN.
    * Rota: DELETE /despesas/:id
    */
+  @ServicoDaRota('DESPESAS_EXCLUIR')
   @Delete(':id')
   @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO)
   remove(@Request() req, @Param('id', ParseIntPipe) id: number) {
-    return this.despesasService.remove(id, req.user.igreja_id);
+    return this.despesasService.remove(id, req.user.igreja_id, req.user);
   }
 }

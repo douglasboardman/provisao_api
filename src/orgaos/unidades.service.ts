@@ -66,6 +66,8 @@ export class UnidadesService {
         ? [['LIDER', 'Líder'], ['VICE_LIDER', 'Vice-líder']]
         : [['PRESIDENTE', 'Presidente'], ['VICE_PRESIDENTE', 'Vice-presidente'], ['SECRETARIO', 'Secretário'], ['TESOUREIRO', 'Tesoureiro']];
       await tx.cargo_orgao.createMany({ data: cargos.map(([codigo, nome]) => ({ igreja_id: igrejaId, orgao_id: orgao.id, codigo, nome, funcao: codigo })) });
+      await tx.$executeRaw`SELECT configurar_orgao_inicial(${orgao.id}, ${igrejaId},
+        jsonb_build_object('composicao', ${v.constituicao}::text), 'Ato de instituição da unidade')`;
       await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgao.id, operador_id: operadorId, tipo: 'INSTITUICAO', data_efeito: data, autoridade: gestor.pessoa_id, evidencia: v.evidencia, idempotencia, hash_requisicao: hash, detalhes: { orgao_id: orgao.id, competencia_id: autoridade.id } } });
       await this.auditar(tx, igrejaId, operadorId, 'orgao_interno', orgao.id, { tipo: orgao.tipo, instituicao: v.data_criacao, instituido_por: gestor.pessoa_id, competencia_id: autoridade.id });
       return { id: orgao.id };

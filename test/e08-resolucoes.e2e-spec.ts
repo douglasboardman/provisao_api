@@ -1,3 +1,4 @@
+import { habilitarAutorDeTeste } from './fixtures/autor-modelo';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -137,9 +138,7 @@ integration('E08: resoluções, integridade e consulta de atuação', () => {
           idempotencia: randomUUID(),
           via_sha256: sha256(via),
           evidencia: 'Conferência local',
-          assinaturas: [
-            { arrolado_id: v.arrolados.find((a) => a.pessoa_id === lider).id, data, evidencia: 'Firma conferida' },
-          ],
+          assinaturas: v.arrolados.filter(a => a.assina && a.obrigatorio).map(a => ({ arrolado_id: a.id, data, evidencia: 'Firma conferida' })),
         }),
       )
       .attach('file', Buffer.from(await scan.save()), 'scan.pdf')
@@ -214,15 +213,18 @@ integration('E08: resoluções, integridade e consulta de atuação', () => {
         evidencia: 'Competência sintética',
       },
     });
+    const criar = [await habilitarAutorDeTeste(prisma, igreja, usuario.id)];
     for (const politica of ['OBRIGATORIO', 'NAO_PERMITE']) {
       const m = await http('post', 'modelos')
         .send({
+          publicar: true,
           tipo: 'ATA',
           finalidade: 'ATA_AGO',
           contexto_id: contexto,
           nome: 'Ata de teste ' + politica,
           idempotencia: randomUUID(),
           configuracao: {
+              atuacao: { criar, preparar: [], assinar: [] },
             perfil: 'ATA',
             contexto: 'ASSEMBLEIA_GERAL',
             motivador: 'NAO_PERMITE',
@@ -246,7 +248,7 @@ integration('E08: resoluções, integridade e consulta de atuação', () => {
             modalidade: 'AGO',
             data,
             local: 'Templo',
-            pauta: 'Pauta sintética',
+            itens_pauta: [{ descricao: 'Primeiro assunto', proponente_id: null }, { descricao: 'Segundo assunto', proponente_id: null }],
             competencia: 'Assembleia',
             universo_informado: 3,
             quorum_minimo: 2,
@@ -432,4 +434,66 @@ integration('E08: resoluções, integridade e consulta de atuação', () => {
     const { texto } = await expedirFisicamente(aprovado);
     expect(texto).toContain('Sem proponente informado');
   }, 120_000);
+  it('confere a identidade da mesa e reúne os papéis de quem presidiu e secretariou', async () => {
+    const original = await prisma.modelo_documento_versao.findUniqueOrThrow({ where: { id: modelo } });
+    const m = await http('post', 'modelos').send({ contexto_id: contexto, nome: 'Ata assinada pela mesa', tipo: 'ATA',
+      finalidade: 'ATA_AGO', publicar: true, idempotencia: randomUUID(),
+      configuracao: { ...(original.configuracao as object), assinaturas_reuniao: 'MESA' } }).expect(201);
+    const entrada = versao([resolucao()]);
+    entrada.modelo_versao_id = m.body.versao_id;
+    entrada.conteudo.arrolados = entrada.conteudo.arrolados.map(p => ({
+      ...p, obrigatorio: p.pessoa_id === coautora, assina: p.pessoa_id === coautora,
+      papeis: ['PRESIDENTE','SECRETARIO'], fundamento: 'Indicação para conferência',
+    }));
+    const { id } = (await criar(entrada).expect(201)).body;
+    const detalhe = (await http('get', 'documentos/' + id).expect(200)).body;
+    expect(detalhe.sugestoes_arrolados.filter(p => p.obrigatorio)).toEqual([
+      expect.objectContaining({ pessoa_id: lider, papeis: ['PRESIDENTE','SECRETARIO'] }),
+    ]);
+    expect(detalhe.tramitacao.pendencias).toContainEqual({ destino: 'arrolados', mensagem: expect.stringContaining('signatário obrigatório com o papel de PRESIDENTE e SECRETARIO') });
+    await http('post', 'documentos/' + id + '/encaminhar').send(comando(1)).expect(400);
+  });
+
+  it('recepciona várias decisões por item, exige os presentes e posiciona as decisões na matriz paginada', async () => {
+    const original = await prisma.modelo_documento_versao.findUniqueOrThrow({ where: { id: modelo } });
+    const campo = await prisma.campo_secretaria.findFirstOrThrow({ where: { igreja_id: igreja, origem: 'deliberacoes_reuniao' } });
+    const espaco = { superior: 0, inferior: 0 };
+    const paragrafo = (texto: string) => ({ tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [{ tipo: 'texto', texto }] });
+    const composicao = { versao_formato: 2, pagina: { papel: 'A4', orientacao: 'retrato', fonte: 'Noto Serif', tamanho_pt: 12,
+      margens_cm: { superior: 2, inferior: 2, esquerda: 2, direita: 2 }, altura_minima_cm: { cabecalho: 0, rodape: 0 },
+      espacamento_cm: { cabecalho: espaco, corpo: espaco, rodape: espaco } }, cabecalho: [], rodape: [], notas: {},
+      corpo: [paragrafo('Abertura da pauta'), { tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [
+        { tipo: 'campo', campo_id: campo.id, apresentacao: 'em_linha' }] }, paragrafo('Encerramento da pauta')] };
+    const m = await http('post', 'modelos').send({ contexto_id: contexto, nome: 'Ata com deliberações em linha', tipo: 'ATA',
+      finalidade: 'ATA_AGO', publicar: true, idempotencia: randomUUID(),
+      configuracao: { ...(original.configuracao as object), assinaturas_reuniao: 'PRESENTES', composicao_padrao: composicao } }).expect(201);
+    const itens = await prisma.item_pauta_reuniao.findMany({ where: { reuniao_id: reuniao }, orderBy: { ordem: 'asc' } });
+    const decisoes = ['Primeira escolha', 'Segunda escolha', 'Terceira escolha'].map((assunto,i) =>
+      ({ ...resolucao(i+1), assunto, item_pauta_id: itens[i === 2 ? 1 : 0].id }));
+    decisoes[1].texto_deliberado = 'Explicação da decisão tomada. '.repeat(180);
+    const entrada = versao([...decisoes].reverse());
+    entrada.modelo_versao_id = m.body.versao_id;
+    entrada.conteudo.teor = '';
+    await criar({ ...entrada, resolucoes: [{ ...decisoes[0], item_pauta_id: randomUUID() }] }).expect(400);
+    const { id } = (await criar(entrada).expect(201)).body;
+    const detalhe = (await http('get', 'documentos/' + id).expect(200)).body;
+    await expect(prisma.documento_versao.update({ where: { id: detalhe.versoes[0].id }, data: { reuniao_id: null } })).rejects.toMatchObject({ code: 'P2003' });
+    expect(detalhe.sugestoes_arrolados.map(p => p.pessoa_id).sort()).toEqual([lider, coautora, observador].sort());
+    expect(detalhe.sugestoes_arrolados.every(p => p.assina && p.obrigatorio)).toBe(true);
+    expect(detalhe.versoes[0].resolucoes.map(r => r.item_pauta_id)).toEqual([itens[0].id, itens[0].id, itens[1].id]);
+    await http('post', 'documentos/' + id + '/encaminhar').send(comando(1)).expect(400);
+    entrada.conteudo = { ...detalhe.versoes[0].conteudo, arrolados: detalhe.sugestoes_arrolados.map(p => ({ ...p, responsavel: p.pessoa_id === lider })) };
+    await http('patch', 'documentos/' + id).send({ idempotencia: randomUUID(), revisao: 1, versao: entrada }).expect(200);
+    const aprovado = await aprovar(id, 2);
+    const v = aprovado.versoes[0];
+    expect(v.conteudo.valores[campo.id].valor.map((s: string) => s.split(' — ')[0])).toEqual(decisoes.map(r => r.assunto));
+    const { texto } = await expedirFisicamente(aprovado);
+    const limpo = texto.replace(/\s+/g, ' ');
+    expect(limpo.indexOf('Abertura da pauta')).toBeLessThan(limpo.indexOf('Primeira escolha'));
+    expect(limpo.indexOf('Terceira escolha')).toBeLessThan(limpo.indexOf('Encerramento da pauta'));
+    for (const frase of ['Abertura da pauta', ...decisoes.map(r => r.assunto), 'Encerramento da pauta']) expect(limpo.split(frase)).toHaveLength(2);
+    expect(texto.indexOf('Primeira escolha')).toBeLessThan(texto.indexOf('\f'));
+    expect(texto.indexOf('Encerramento da pauta')).toBeGreaterThan(texto.indexOf('\f'));
+  }, 120_000);
+
 });

@@ -1,5 +1,7 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { estado_documental_historico, fato_historico_oficial, logs_atividades_acao, Prisma, usuarios_perfil } from '@prisma/client';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { estado_documental_historico, fato_historico_oficial, logs_atividades_acao } from '@prisma/client';
+import type { Ator } from '../autorizacao/politica';
+import { exigirServicoHistorico } from './autorizacao-historico';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
 import { exigirAcessoSensivel } from './acesso-sensivel.service';
@@ -10,16 +12,12 @@ type Entrada = z.infer<typeof schema>;
 @Injectable()
 export class AcervoHistoricoService {
   constructor(private readonly prisma: PrismaService) {}
-  private async operador(tx: Prisma.TransactionClient, igrejaId: string, usuarioId: string) {
-    const usuario = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO] } }, select: { id: true } });
-    if (!usuario) throw new ForbiddenException('Operador não autorizado nesta igreja.');
-  }
-  async registrar(igrejaId: string, usuarioId: string, oficialId: string, entrada: Entrada) {
+  async registrar(igrejaId: string, usuarioId: string, oficialId: string, entrada: Entrada, ator?: Ator) {
     const parsed = schema.safeParse(entrada);
     if (!parsed.success) throw new BadRequestException('Dados históricos inválidos.');
     const v = { ...parsed.data, idempotencia: parsed.data.idempotencia.toLowerCase() };
     return this.prisma.$transaction(async tx => {
-      await this.operador(tx, igrejaId, usuarioId);
+      await exigirServicoHistorico(tx, igrejaId, usuarioId, 'HISTORICO_OFICIAIS_REGISTRAR', true, ator);
       const oficial = await tx.oficial.findFirst({ where: { id: oficialId, igreja_id: igrejaId }, select: { id: true } });
       if (!oficial) throw new NotFoundException('Oficial não encontrado nesta igreja.');
       // Trava por igreja/chave antes de consultar, inclusive entre requisições concorrentes.
@@ -40,8 +38,9 @@ export class AcervoHistoricoService {
     if (!oficial) throw new NotFoundException('Oficial não encontrado nesta igreja.');
     return this.prisma.registro_historico_oficial.findMany({ where: { igreja_id: igrejaId, oficial_id: oficialId }, select: { id: true, tipo: true, data_evento: true, situacao_documental: true, criado_em: true }, orderBy: [{ criado_em: 'desc' }, { id: 'asc' }] });
   }
-  async detalhe(igrejaId: string, usuarioId: string, id: string) {
+  async detalhe(igrejaId: string, usuarioId: string, id: string, ator?: Ator) {
     return this.prisma.$transaction(async tx => {
+      await exigirServicoHistorico(tx, igrejaId, usuarioId, 'HISTORICO_OFICIAIS_CONSULTAR', false, ator);
       await exigirAcessoSensivel(tx, igrejaId, usuarioId, 'consultar');
       const registro = await tx.registro_historico_oficial.findFirst({ where: { id, igreja_id: igrejaId }, select: { id: true, oficial_id: true, tipo: true, data_evento: true, data_descricao: true, situacao_documental: true, referencia_externa: true, autoridade: true, criado_em: true, criado_por: { select: { nome_usuario: true } } } });
       if (!registro) throw new NotFoundException('Registro histórico não encontrado nesta igreja.');

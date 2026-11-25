@@ -1,9 +1,11 @@
+import type { Ator } from '../autorizacao/politica';
+import { exigirServicoHistorico } from './autorizacao-historico';
 import { revisarOrgaosNaAplicacao } from '../orgaos/revisao-aplicacao';
-import { transacaoSerializavel } from '../orgaos/idempotencia';
+import { conflitoDeIdempotencia, transacaoComRetentativa } from '../orgaos/idempotencia';
 import { consumirDecisaoEleitoral } from './consumir-decisao-eleitoral';
 import { createHash } from 'crypto';
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { logs_atividades_acao, membresia_rol, Prisma, usuarios_perfil } from '@prisma/client';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { logs_atividades_acao, membresia_rol, Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { eventoVigente } from '../eventos-membresia/estado-temporal';
 import { PrismaService } from '../prisma/prisma.service';
@@ -20,11 +22,9 @@ const civil = (d: Date) => d.toISOString().slice(0, 10);
 @Injectable()
 export class CorrecaoMembresiaService {
   constructor(private readonly prisma: PrismaService) {}
-  private async autorizar(tx: Tx, igreja: string, usuario: string, modo: 'consultar' | 'registrar') {
-    const perfis: usuarios_perfil[] = [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO];
-    if (modo === 'consultar') perfis.push(usuarios_perfil.AUDITOR);
-    const operador = await tx.usuarios.findFirst({ where: { id: usuario, igreja_id: igreja, ativo: true, perfil: { in: perfis } }, select: { id: true } });
-    if (!operador) throw new ForbiddenException('Operador não autorizado nesta igreja.');
+  private async autorizar(tx: Tx, igreja: string, usuario: string, modo: 'consultar' | 'registrar', ator?: Ator) {
+    const escrita = modo === 'registrar';
+    await exigirServicoHistorico(tx, igreja, usuario, escrita ? 'HISTORICO_MEMBRESIA_RETIFICAR' : 'HISTORICO_MEMBRESIA_CONSULTAR', escrita, ator);
     await exigirAcessoSensivel(tx, igreja, usuario, modo);
   }
   private async pessoaDoAlvo(tx: Tx, igreja: string, id: string, porPessoa: boolean) {
@@ -101,38 +101,38 @@ export class CorrecaoMembresiaService {
     const hash = createHash('sha256').update(JSON.stringify(estado)).digest('hex');
     return { ...impacto, hash };
   }
-  async listarCorrecoes(igreja: string, usuario: string, oficialId: string, porPessoa = false) {
+  async listarCorrecoes(igreja: string, usuario: string, oficialId: string, porPessoa = false, ator?: Ator) {
     return this.prisma.$transaction(async tx => {
-      await this.autorizar(tx, igreja, usuario, 'consultar');
+      await this.autorizar(tx, igreja, usuario, 'consultar', ator);
       const pessoaId = await this.pessoaDoAlvo(tx, igreja, oficialId, porPessoa);
       const registros = await tx.correcao_data_membresia.findMany({ where: { igreja_id: igreja, evento: { pessoa_id: pessoaId } }, select: { id: true, evento_id: true, data_anterior: true, data_nova: true, impacto: true, justificativa: true, autoridade: true, evidencia: true, criado_em: true, criado_por: { select: { nome_usuario: true } } }, orderBy: [{ criado_em: 'desc' }, { id: 'asc' }] });
       await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CONSULTA, tabela_afetada: 'previa_correcao_membresia', registro_id: oficialId } });
       return registros;
     });
   }
-  async listarEventos(igreja: string, usuario: string, oficialId: string) {
+  async listarEventos(igreja: string, usuario: string, oficialId: string, ator?: Ator) {
     return this.prisma.$transaction(async tx => {
-      await this.autorizar(tx, igreja, usuario, 'consultar');
+      await this.autorizar(tx, igreja, usuario, 'consultar', ator);
       const pessoaId = await this.pessoaDoAlvo(tx, igreja, oficialId, false);
       const eventos = await tx.eventos_membresia.findMany({ where: { igreja_id: igreja, pessoa_id: pessoaId }, select: { id: true, tipo_evento: true, data_evento: true, ordem_dia: true, rol: true }, orderBy: [{ data_evento: 'asc' }, { id: 'asc' }] });
       await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CONSULTA, tabela_afetada: 'previa_correcao_membresia', registro_id: oficialId } });
       return eventos;
     });
   }
-  async previa(igreja: string, usuario: string, oficialId: string, dados: Proposta, porPessoa = false) {
+  async previa(igreja: string, usuario: string, oficialId: string, dados: Proposta, porPessoa = false, ator?: Ator) {
     const parsed = propostaSchema.safeParse(dados); if (!parsed.success) throw new BadRequestException('Proposta inválida.');
     return this.prisma.$transaction(async tx => {
-      await this.autorizar(tx, igreja, usuario, 'consultar');
+      await this.autorizar(tx, igreja, usuario, 'consultar', ator);
       const resultado = await this.calcular(tx, igreja, oficialId, parsed.data, porPessoa);
       await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CONSULTA, tabela_afetada: 'previa_correcao_membresia', registro_id: parsed.data.evento_id } });
       return resultado;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
-  async aplicar(igreja: string, usuario: string, oficialId: string, dados: Aplicacao, porPessoa = false) {
+  async aplicar(igreja: string, usuario: string, oficialId: string, dados: Aplicacao, porPessoa = false, ator?: Ator) {
     const parsed = aplicarSchema.safeParse(dados); if (!parsed.success) throw new BadRequestException('Correção inválida.');
     const v = { ...parsed.data, idempotencia: parsed.data.idempotencia.toLowerCase() };
-    return transacaoSerializavel(this.prisma, async tx => {
-      await this.autorizar(tx, igreja, usuario, 'registrar');
+    return transacaoComRetentativa(this.prisma, async tx => {
+      await this.autorizar(tx, igreja, usuario, 'registrar', ator);
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${igreja + ':correcao:' + v.idempotencia}, 0))`;
       const anterior = await tx.correcao_data_membresia.findUnique({ where: { igreja_id_idempotencia: { igreja_id: igreja, idempotencia: v.idempotencia } } });
       if (anterior) {
@@ -157,6 +157,6 @@ export class CorrecaoMembresiaService {
       await tx.eventos_membresia.update({ where: { id: v.evento_id }, data: { data_evento: new Date(`${v.nova_data}T00:00:00.000Z`) } });
       await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.ATUALIZACAO, tabela_afetada: 'correcao_data_membresia', registro_id: correcao.id, dados_novos: { evento_id: v.evento_id, hash: previa.hash } } });
       return correcao;
-    });
+    }, Prisma.TransactionIsolationLevel.Serializable, conflitoDeIdempotencia);
   }
 }

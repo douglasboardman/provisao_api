@@ -1,3 +1,4 @@
+import { estadoDaLiberacao, exigirRotaLegada } from '../autorizacao/liberacao-servico';
 import { selecionarDocumentos, tabelasDocumentais } from '../secretaria/selecao-documental';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -41,7 +42,7 @@ function validar<T>(schema: z.ZodType<T>, dados: unknown): T {
 export class IndicacoesEleicaoService {
   constructor(private readonly prisma: PrismaService, private readonly secretaria: SecretariaBaseService) {}
 
-  private async acesso(tx: Tx, ator: AtorSecretaria) {
+  async acesso(tx: Tx, ator: AtorSecretaria) {
     if (!recursoDaIgreja('secretaria', ator.igreja_id)) throw new NotFoundException('Secretaria indisponível para esta igreja.');
     const usuario = await this.secretaria.operador(tx, ator);
     if (usuario.perfil === 'AUDITOR') throw new ForbiddenException('Operador não autorizado.');
@@ -50,24 +51,24 @@ export class IndicacoesEleicaoService {
     return { hoje, restritos: concessoes.filter(c => c.pode_consultar_restritos).map(c => c.contexto_id) };
   }
 
-  private escopoAtas(igreja: string, restritos: string[], tipo: TipoAta, hoje: Date) {
+  private escopoAtas(igreja: string, restritos: string[], tipo: TipoAta, hoje: Date, historica = false) {
     const contexto = tipo === 'CONSELHO' ? Prisma.sql`o.tipo = 'CONSELHO'` : Prisma.sql`c.tipo = 'ASSEMBLEIA_GERAL'`;
     return Prisma.sql`
       ${tabelasDocumentais}
       LEFT JOIN orgao_interno o ON o.id = c.orgao_id AND o.igreja_id = c.igreja_id
-      WHERE d.igreja_id = ${igreja} AND d.tipo = 'ATA' AND v.numero = d.versao_atual
+      WHERE d.igreja_id = ${igreja} AND d.tipo = 'ATA' ${historica ? Prisma.empty : Prisma.sql`AND v.numero = d.versao_atual`}
         AND d.estado IN ('APROVADO', 'EXPEDIDO', 'LEGADA_CONFERIDA')
         AND v.data_documento <= ${hoje}::date AND ${contexto}
         AND (NOT d.restrito ${restritos.length ? Prisma.sql`OR d.contexto_id IN (${Prisma.join(restritos)})` : Prisma.empty})`;
   }
 
-  private async atas(tx: Tx, igreja: string, restritos: string[], tipo: TipoAta, hoje: Date, filtros: { versao?: string; query?: string }) {
+  private async atas(tx: Tx, igreja: string, restritos: string[], tipo: TipoAta, hoje: Date, filtros: { versao?: string; query?: string; historica?: boolean }) {
     const busca = filtros.query?.replace(/[\\%_]/g, '\\$&');
     const numero = busca && /^\d+$/.test(busca) ? busca.replace(/^0+/, '') : '';
     return tx.$queryRaw<Ata[]>`
       SELECT v.id AS versao_id, d.id AS documento_id, v.data_documento AS data, v.assunto,
         COALESCE(v.numero_original, v.fonte_congelada->>'numero', d.numero::text) AS numero
-      ${this.escopoAtas(igreja, restritos, tipo, hoje)}
+      ${this.escopoAtas(igreja, restritos, tipo, hoje, filtros.historica)}
         ${filtros.versao ? Prisma.sql`AND v.id = ${filtros.versao}` : Prisma.empty}
         ${busca ? Prisma.sql`AND (
           v.assunto ILIKE ${'%' + busca + '%'} OR COALESCE(v.numero_original, d.numero::text) ILIKE ${busca + '%'}
@@ -78,10 +79,34 @@ export class IndicacoesEleicaoService {
     `;
   }
 
-  private async ata(tx: Tx, ator: AtorSecretaria, acesso: { hoje: Date; restritos: string[] }, tipo: TipoAta, versao: string) {
+  async ata(tx: Tx, ator: AtorSecretaria, acesso: { hoje: Date; restritos: string[] }, tipo: TipoAta, versao: string) {
     const [documento] = await this.atas(tx, ator.igreja_id, acesso.restritos, tipo, acesso.hoje, { versao });
     if (!documento) throw new NotFoundException('Ata indisponível ou incompatível com o ato.');
     return documento;
+  }
+
+  indicacoesDoMandato(tx: Tx, ator: AtorSecretaria, acesso: { hoje: Date; restritos: string[] },
+    pessoa_id: string, oficio: 'DIACONO' | 'PRESBITERO_REGENTE', eleicao: Date) {
+    return tx.indicacao_eleicao_oficial.findMany({
+      where: { igreja_id: ator.igreja_id, pessoa_id, oficio, data_assembleia: eleicao, mandato: null,
+        ata_conselho: { data_documento: { lte: eleicao }, documento: { tipo: 'ATA',
+          estado: { in: ['APROVADO', 'EXPEDIDO', 'LEGADA_CONFERIDA'] }, contexto: { orgao: { tipo: 'CONSELHO' } },
+          OR: [{ restrito: false }, { contexto_id: { in: acesso.restritos } }],
+        } },
+      },
+      select: { id: true, ata_conselho: { select: { id: true, assunto: true, data_documento: true } } },
+    });
+  }
+
+  async antecedenteDoMandato(tx: Tx, ator: AtorSecretaria, acesso: { hoje: Date; restritos: string[] },
+    id: string, pessoa: string, oficio: 'DIACONO' | 'PRESBITERO_REGENTE', eleicao: Date) {
+    await tx.$queryRaw`SELECT id FROM indicacao_eleicao_oficial WHERE id = ${id} AND igreja_id = ${ator.igreja_id} FOR UPDATE`;
+    const resultado = (await this.indicacoesDoMandato(tx, ator, acesso, pessoa, oficio, eleicao)).find(i => i.id === id);
+    if (!resultado) throw new NotFoundException('Indicação disponível para esta pessoa, ofício e eleição não encontrada.');
+    const [ata] = await this.atas(tx, ator.igreja_id, acesso.restritos, 'CONSELHO', acesso.hoje,
+      { versao: resultado.ata_conselho.id, historica: true });
+    if (!ata) throw new NotFoundException('Ata da indicação indisponível.');
+    return resultado;
   }
 
   selecionarAtas(ator: AtorSecretaria, tipo: string, filtros: unknown) {
@@ -100,11 +125,12 @@ export class IndicacoesEleicaoService {
     });
   }
 
-  candidatos(ator: AtorSecretaria, versao: string, busca?: string) {
+  candidatos(ator: AtorSecretaria, versao: string, busca?: string, tipo: string = 'CONSELHO') {
     const id = validar(uuid, versao), nome = validar(z.string().trim().max(100).optional(), busca);
     return this.prisma.$transaction(async tx => {
       const acesso = await this.acesso(tx, ator);
-      const ata = await this.ata(tx, ator, acesso, 'CONSELHO', id);
+      const contexto = validar(tipoAta, tipo);
+      const ata = await this.ata(tx, ator, acesso, contexto, id);
       const pessoas = await tx.pessoas.findMany({
         where: { igreja_id: ator.igreja_id, sexo: 'MASCULINO',
           eventos_membresia: { some: { data_evento: { lte: ata.data }, rol: 'COMUNGANTES' } },
@@ -119,7 +145,7 @@ export class IndicacoesEleicaoService {
         const vigente = eventoVigente(p.eventos_membresia, ata.data);
         const atual = eventoVigente(p.eventos_membresia, acesso.hoje);
         return maioridade(p.data_nascimento, ata.data) && vigente.situacao === 'DEFINIDO' && vigente.evento.rol === 'COMUNGANTES'
-          && atual.situacao === 'DEFINIDO' && atual.evento.rol === 'COMUNGANTES';
+          && (contexto === 'ASSEMBLEIA' || (atual.situacao === 'DEFINIDO' && atual.evento.rol === 'COMUNGANTES'));
       }).slice(0, 50).map(({ id, nome_completo }) => ({ id, nome_completo }));
     });
   }
@@ -141,6 +167,24 @@ export class IndicacoesEleicaoService {
         orderBy: [{ data_assembleia: 'asc' }, { pessoa: { nome_completo: 'asc' } }, { id: 'asc' }],
       });
     });
+  }
+
+  historico(ator: AtorSecretaria, id?: string, cursor?: string) {
+    if (cursor) validar(uuid, cursor);
+    return this.prisma.$transaction(async tx => {
+      const acesso = await this.acesso(tx, ator);
+      const igreja_id = ator.igreja_id;
+      const oficial = id ? await tx.oficial.findFirst({ where: { id, igreja_id } }) : null;
+      if (id && !oficial) throw new NotFoundException('Ofício indisponível.');
+      const where = { igreja_id, ...(oficial && { pessoa_id: oficial.pessoa_id, oficio: oficial.tipo }),
+        ata_conselho: { documento: { OR: [{ restrito: false }, { contexto_id: { in: acesso.restritos } }] } } };
+      if (cursor && !await tx.indicacao_eleicao_oficial.findFirst({ where: { ...where, id: cursor }, select: { id: true } })) throw new BadRequestException('Cursor inválido.');
+      const rows = await tx.indicacao_eleicao_oficial.findMany({ where,
+        select: { id: true, data_assembleia: true, oficio: true, pessoa: { select: { nome_completo: true } },
+          mandato: { select: { id: true } }, ata_conselho: { select: { id: true, contexto_id: true, documento_id: true } } },
+        orderBy: [{ data_assembleia: 'desc' }, { id: 'asc' }], take: 31, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
+      return { itens: rows.slice(0,30), proximo_cursor: rows.length > 30 ? rows[29].id : null };
+    }, { isolationLevel: 'RepeatableRead' });
   }
 
   private async membro(tx: Tx, igreja: string, pessoa: string, referencia: Date) {
@@ -178,6 +222,7 @@ export class IndicacoesEleicaoService {
   registrarMandato(ator: AtorSecretaria, dados: unknown) {
     const v = validar(eleicaoSchema, dados);
     return transacaoSerializavel(this.prisma, async tx => {
+      exigirRotaLegada(await estadoDaLiberacao(tx, ator.igreja_id, 'MANDATOS_REGISTRAR', true));
       const igreja = ator.igreja_id, acesso = await this.acesso(tx, ator);
       const assembleia = await this.ata(tx, ator, acesso, 'ASSEMBLEIA', v.ata_assembleia_versao_id);
       await tx.$queryRaw`SELECT id FROM indicacao_eleicao_oficial WHERE id = ${v.indicacao_id} AND igreja_id = ${igreja} FOR UPDATE`;

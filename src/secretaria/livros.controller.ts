@@ -23,7 +23,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles/roles.guard';
 import { LivrosService } from './livros.service';
 import type { AtorSecretaria } from './secretaria-base.service';
-import { SecretariaGuard } from './secretaria.guard';
+import { OperacaoContextual, SecretariaGuard } from './secretaria.guard';
 import { codigo, validar } from './secretaria.dto';
 
 type RequestSecretaria = { user: AtorSecretaria };
@@ -34,6 +34,7 @@ type RequestSecretaria = { user: AtorSecretaria };
 export class LivrosController {
   constructor(private readonly livros: LivrosService) {}
 
+  @OperacaoContextual()
   @Get()
   @Header('Cache-Control', 'private, no-store')
   listar(
@@ -71,6 +72,7 @@ export class LivrosController {
     return this.livros.importar(req.user, dados);
   }
 
+  @OperacaoContextual()
   @Get(':id')
   @Header('Cache-Control', 'private, no-store')
   detalhe(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string) {
@@ -110,6 +112,7 @@ export class LivrosController {
     return this.livros.complementar(req.user, id, dados);
   }
 
+  @OperacaoContextual()
   @Get(':id/registros/:registro/arquivo')
   async baixarRegistro(
     @Request() req: RequestSecretaria,
@@ -127,6 +130,7 @@ export class LivrosController {
     res.send(bytes);
   }
 
+  @OperacaoContextual()
   @Get(':id/arquivos/:tipo')
   async baixar(
     @Request() req: RequestSecretaria,

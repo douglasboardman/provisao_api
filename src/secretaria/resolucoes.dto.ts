@@ -30,6 +30,7 @@ const teor = z.string().trim().min(1).max(20000).nullable().default(null);
 
 const resolucaoSchema = z
   .object({
+    item_pauta_id: z.uuid().nullable().optional(),
     ordem: z.number().int().min(1).max(1000000),
     assunto: z.string().trim().min(1).max(255),
     texto_proposta: teor,

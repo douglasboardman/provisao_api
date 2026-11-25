@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { gravarPorServico } from '../autorizacao/escrita-servico';
+import type { Ator, Tx } from '../autorizacao/politica';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { CreateReceitaDto } from './dto/create-receita.dto';
 import { UpdateReceitaDto } from './dto/update-receita.dto';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -20,8 +22,13 @@ export class ReceitasService {
    * @param createReceitaDto Dados para criação.
    * @returns O tipo de receita criado.
    */
-  async create(igreja_id: string, createReceitaDto: CreateReceitaDto): Promise<receitas> {
-    return this.prisma.receitas.create({ data: { ...createReceitaDto, igreja_id } });
+  async create(igreja_id: string, createReceitaDto: CreateReceitaDto, ator?: Ator): Promise<receitas> {
+    return gravarPorServico(this.prisma, ator, 'RECEITAS_CADASTRAR', async tx => {
+      const categoria = createReceitaDto.cat_receita_id;
+      if (categoria && !await tx.cat_receita.findFirst({ where: { id: categoria, igreja_id }, select: { id: true } }))
+        throw new BadRequestException('Categoria indisponível nesta igreja.');
+      return tx.receitas.create({ data: { ...createReceitaDto, igreja_id } });
+    });
   }
 
   /**
@@ -29,10 +36,11 @@ export class ReceitasService {
    * @param igreja_id ID da igreja extraído do token JWT.
    */
   async findAll(igreja_id: string): Promise<receitas[]> {
-    return this.prisma.receitas.findMany({
+    const linhas = await this.prisma.receitas.findMany({
       where: { igreja_id },
       include: { cat_receita: true },
     });
+    return linhas.map(l => ({ ...l, cat_receita: l.cat_receita.igreja_id === igreja_id ? l.cat_receita : null }));
   }
 
   /**
@@ -41,8 +49,8 @@ export class ReceitasService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @throws {NotFoundException} Se não encontrado nesta igreja.
    */
-  async findOne(id: number, igreja_id: string): Promise<receitas> {
-    const receita = await this.prisma.receitas.findFirst({
+  async findOne(id: number, igreja_id: string, tx: Tx = this.prisma) {
+    const receita = await tx.receitas.findFirst({
       where: { id, igreja_id },
       include: { cat_receita: true },
     });
@@ -50,7 +58,7 @@ export class ReceitasService {
     if (!receita) {
       throw new NotFoundException(`Receita com ID ${id} não encontrada.`);
     }
-    return receita;
+    return { ...receita, cat_receita: receita.cat_receita.igreja_id === igreja_id ? receita.cat_receita : null };
   }
 
   /**
@@ -59,9 +67,14 @@ export class ReceitasService {
    * @param igreja_id ID da igreja extraído do token JWT.
    * @param updateReceitaDto Dados para atualização.
    */
-  async update(id: number, igreja_id: string, updateReceitaDto: UpdateReceitaDto): Promise<receitas> {
-    await this.findOne(id, igreja_id);
-    return this.prisma.receitas.update({ where: { id }, data: updateReceitaDto });
+  async update(id: number, igreja_id: string, updateReceitaDto: UpdateReceitaDto, ator?: Ator): Promise<receitas> {
+    return gravarPorServico(this.prisma, ator, 'RECEITAS_EDITAR', async tx => {
+      const categoria = updateReceitaDto.cat_receita_id;
+      if (categoria && !await tx.cat_receita.findFirst({ where: { id: categoria, igreja_id }, select: { id: true } }))
+        throw new BadRequestException('Categoria indisponível nesta igreja.');
+      await this.findOne(id, igreja_id, tx);
+      return tx.receitas.update({ where: { id }, data: updateReceitaDto });
+    });
   }
 
   /**
@@ -69,9 +82,11 @@ export class ReceitasService {
    * @param id ID da receita.
    * @param igreja_id ID da igreja extraído do token JWT.
    */
-  async remove(id: number, igreja_id: string): Promise<{ message: string }> {
-    await this.findOne(id, igreja_id);
-    await this.prisma.receitas.delete({ where: { id } });
-    return { message: `Receita com ID ${id} removida com sucesso.` };
+  async remove(id: number, igreja_id: string, ator?: Ator): Promise<{ message: string }> {
+    return gravarPorServico(this.prisma, ator, 'RECEITAS_EXCLUIR', async tx => {
+      await this.findOne(id, igreja_id, tx);
+      await tx.receitas.delete({ where: { id } });
+      return { message: `Receita com ID ${id} removida com sucesso.` };
+    });
   }
 }

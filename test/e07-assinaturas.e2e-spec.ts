@@ -1,3 +1,5 @@
+import { habilitarAutorDeTeste } from './fixtures/autor-modelo';
+import { configuracaoSchema } from '../src/secretaria/secretaria.dto';
 import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -70,7 +72,7 @@ integration('E07: assinatura e expedição por versão', () => {
       process.env.DATABASE_URL !==
         'postgresql://provisao_test:provisao_test@127.0.0.1:55439/provisao_test?schema=public' ||
       process.env.SMTP_HOST !== '127.0.0.1' ||
-      process.env.SMTP_PORT !== '51025'
+      process.env.SMTP_PORT !== (process.env.E2E_SMTP_PORT ?? '51025')
     ) {
       throw new Error('Requer o banco e o SMTP descartáveis do ambiente E00.');
     }
@@ -145,17 +147,26 @@ integration('E07: assinatura e expedição por versão', () => {
         idempotencia: randomUUID(),
       })
       .expect(201);
+    const criar = [await habilitarAutorDeTeste(prisma, igreja, secretario), await habilitarAutorDeTeste(prisma, igreja, gestor)];
     modelo = (
       await post('/secretaria/modelos', secretario)
         .send({
+          publicar: true,
           contexto_id: contexto,
           tipo: 'OUTRO',
-          finalidade: 'CARTA',
-          nome: 'Carta de teste',
+          finalidade: 'OFICIO',
+          nome: 'Ofício de teste',
           idempotencia: randomUUID(),
           configuracao: {
+              atuacao: { criar, preparar: [], assinar: [] },
             contexto: 'ASSEMBLEIA_GERAL',
-            perfil: 'CARTA',
+            perfil: 'OFICIO',
+            composicao_padrao: {
+              versao_formato: 1, notas: {}, pagina: { papel: 'A4', orientacao: 'retrato', fonte: 'Noto Serif', tamanho_pt: 12,
+                margens_cm: { superior: 2, inferior: 2, esquerda: 2, direita: 2 },
+                espacamento_cm: Object.fromEntries(['cabecalho', 'corpo', 'rodape'].map(r => [r, { superior: 0, inferior: 0 }])) },
+              cabecalho: [], rodape: [], corpo: [{ tipo: 'paragrafo', alinhamento: 'esquerda', trechos: [{ tipo: 'texto', texto: 'Ofício emitido no editor da Secretaria.' }] }],
+            },
             motivador: 'NAO_PERMITE',
             resolucoes: 'NAO_PERMITE',
             campos_obrigatorios: [],
@@ -176,13 +187,13 @@ integration('E07: assinatura e expedição por versão', () => {
     }
   });
 
-  async function criar(modalidade: 'ELETRONICA' | 'FISICA', pessoas: string[], restrito = false) {
+  async function criar(modalidade: 'ELETRONICA' | 'FISICA', pessoas: string[], restrito = false, versaoModelo = modelo) {
     const versao = {
-      modelo_versao_id: modelo,
+      modelo_versao_id: versaoModelo,
       assunto: 'Conteúdo sintético E07',
       data_documento: data,
       conteudo: {
-        teor: 'Teor da versão aprovada.',
+        teor: '',
         campos: {},
         anexos: [],
         arrolados: pessoas.map((pessoa_id, i) => ({
@@ -267,7 +278,7 @@ integration('E07: assinatura e expedição por versão', () => {
       await app.get(OutboxService).runOnce();
     }
     expect(await prisma.outbox_email.findUniqueOrThrow({ where })).toMatchObject({ estado: 'ENVIADO', payload: null });
-    const caixa = 'http://127.0.0.1:58025/api/v1';
+    const caixa = `http://127.0.0.1:${Number(process.env.E2E_MAILPIT_PORT ?? 58025)}/api/v1`;
     const resultado = (await (await fetch(`${caixa}/search?query=${encodeURIComponent('to:' + email)}`)).json()) as {
       messages: { ID: string }[];
     };
@@ -276,6 +287,86 @@ integration('E07: assinatura e expedição por versão', () => {
     expect(token).toBeDefined();
     return token!;
   }
+
+  it('usa a matriz congelada com a imagem do modelo na via de coleta física', async () => {
+    const png = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAACgAAAAYCAIAAAAH5iiXAAAAKElEQVR4nO3NMREAAAgEIDX5RzeF5wIF6FTqw7ysYrFYLBaLxWLxiQVyTAEwT49s/QAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    const upload = await post('/secretaria/imagens', secretario)
+      .field('idempotencia', randomUUID())
+      .attach('file', png, 'logo.png')
+      .expect(201);
+    const versao = await prisma.modelo_documento_versao.findUniqueOrThrow({ where: { id: modelo } });
+    const fonte = configuracaoSchema.parse(versao.configuracao);
+    const comp = fonte.composicao_padrao!;
+    const composicao = {
+      ...comp,
+      versao_formato: 2,
+      pagina: { ...comp.pagina, altura_minima_cm: { cabecalho: 2, rodape: 0 } },
+      cabecalho: [
+        {
+          tipo: 'paragrafo',
+          alinhamento: 'centro',
+          trechos: [
+            {
+              tipo: 'imagem',
+              arquivo_id: upload.body.id,
+              ocorrencia_id: randomUUID(),
+              descricao: 'Logo da matriz',
+              largura_cm: 4,
+              altura_cm: 4,
+              manter_proporcao: true,
+              ajuste: 'preencher',
+              horizontal: 'esquerda',
+              vertical: 'centro',
+              x_cm: 0,
+              y_cm: 0,
+              relacao: 'a_frente',
+              opacidade: 1,
+              distancia_texto_cm: 0,
+              repeticao: 'primeira',
+            },
+          ],
+        },
+      ],
+    };
+    const publicado = await post('/secretaria/modelos', secretario)
+      .send({
+        publicar: true,
+        contexto_id: contexto,
+        tipo: 'OUTRO',
+        finalidade: 'OFICIO',
+        nome: 'Ofício com logo',
+        idempotencia: randomUUID(),
+        configuracao: { ...fonte, composicao_padrao: composicao },
+      })
+      .expect(201);
+    const d = (await criar('FISICA', [vinculado], false, publicado.body.versao_id))!;
+    const trabalho = await prisma.trabalho_renderizacao.findFirstOrThrow({
+      where: { versao_id: d.atual.id, finalidade: 'MATRIZ_APROVADA' },
+    });
+    const matriz = (await get(url(d.id) + '/artefatos/' + trabalho.id + '/arquivo', gestor).expect(200)).body;
+    await operacao(d.id, 'via')
+      .send({ ...d.base, idempotencia: randomUUID() })
+      .expect(201);
+    const via = (await arquivo(d.id, d.atual.id, 'via').expect(200)).body;
+    const listarImagens = (pdf: Buffer) =>
+      execFileSync('pdfimages', ['-list', '-'], { input: pdf })
+        .toString()
+        .split('\n')
+        .filter((linha) => /^\s*1\s+\d+\s+image\s/.test(linha))
+        .map((linha) => linha.trim().split(/\s+/).slice(2, 9));
+    const imagens = listarImagens(matriz);
+    expect(imagens).toHaveLength(1);
+    expect(listarImagens(via)).toEqual(imagens);
+    for (const pdf of [matriz, via]) {
+      expect(pdfTexto(pdf)).toContain('Matriz aprovada');
+      expect(pdfTexto(pdf)).not.toContain('RASCUNHO');
+    }
+    const expedicao = await prisma.expedicao_documento.findFirstOrThrow({ where: { versao_id: d.atual.id } });
+    expect(expedicao.matriz_id).toBe(trabalho.arquivo_id);
+  }, 60000);
 
   it('autentica o canal e a conta vinculada, serializa assinaturas e retoma a expedição', async () => {
     await criar('ELETRONICA', [opcional]);
@@ -396,6 +487,7 @@ integration('E07: assinatura e expedição por versão', () => {
       timeStyle: 'medium',
       timeZone: 'America/Sao_Paulo',
     }).format(assinatura.registrada_em);
+    expect(pdfTexto(pdf)).toContain('Ofício emitido no editor da Secretaria.');
     expect(pdfTexto(pdf)).toContain(horaLocal);
     expect(pdfTexto(pdf)).toContain('Signatária convidada');
     const verificar = () => get(`/assinaturas/verificacao/${final.codigo_verificacao}`);
@@ -478,6 +570,7 @@ integration('E07: assinatura e expedição por versão', () => {
       .expect(201);
     const via = (await arquivo(d.id, d.base.versao_id, 'via').expect(200)).body as Buffer;
     expect(pdfTexto(via)).toContain('ASSINATURAS PENDENTES');
+    expect(pdfTexto(via)).toContain('Ofício emitido no editor da Secretaria.');
     expect(await status(d.id)).toBe('APROVADO');
     const original = await PDFDocument.load(via);
     original.getPages().at(-1)!.drawText('Marca de conferência sintética', { x: 80, y: 70, size: 9 });

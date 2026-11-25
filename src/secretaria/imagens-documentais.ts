@@ -17,6 +17,13 @@ export function tipoImagemDocumental(bytes: Buffer) {
   }
 }
 
+export async function conferirCargaDeImagem(total: { bytes: number; pixels: number }, tamanho: number, usos: number, ler: () => Promise<Buffer>) {
+  total.bytes += tamanho * usos;
+  if (tamanho > limiteImagem || total.bytes > 2 * limiteImagem) throw new BadRequestException('Imagens de até 2 MB cada e 4 MB no total.');
+  total.pixels += tipoImagemDocumental(await ler()).pixels * usos;
+  if (total.pixels > limitePixelsDocumento) throw new BadRequestException('As imagens do documento devem somar até 32 megapixels.');
+}
+
 export function decodificarImagemDocumental(bytes: Buffer) {
   const { mime, pixels } = tipoImagemDocumental(bytes);
   return { uri: `data:${mime};base64,${bytes.toString('base64')}`, pixels };
@@ -24,7 +31,7 @@ export function decodificarImagemDocumental(bytes: Buffer) {
 
 export function imagemDocumental(bytes: Buffer) { return decodificarImagemDocumental(bytes).uri; }
 
-export async function logoDocumental(url: string | null): Promise<string | undefined> {
+export async function bytesLogoDocumental(url: string | null): Promise<Buffer | undefined> {
   const nome = url?.match(/^\/uploads\/church-logos\/([a-f0-9-]{36}\.(?:png|jpe?g|webp))$/i)?.[1];
   if (!nome) return;
   const pasta = resolve('uploads', 'church-logos');
@@ -34,11 +41,18 @@ export async function logoDocumental(url: string | null): Promise<string | undef
     arquivo = await open(join(pasta, nome), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await arquivo.stat();
     if (!stat.isFile() || stat.size > limiteImagem) return;
-    return imagemDocumental(await arquivo.readFile());
+    const bytes = await arquivo.readFile();
+    tipoImagemDocumental(bytes);
+    return bytes;
   } catch (erro) {
     if (erro instanceof BadRequestException || (erro as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw erro;
   } finally {
     await arquivo?.close();
   }
+}
+
+export async function logoDocumental(url: string | null): Promise<string | undefined> {
+  const bytes = await bytesLogoDocumental(url);
+  return bytes && imagemDocumental(bytes);
 }

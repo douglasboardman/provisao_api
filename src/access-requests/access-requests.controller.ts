@@ -1,3 +1,4 @@
+import { ServicoDaRota } from '../autorizacao/politica';
 import { Body, Controller, Get, Param, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { usuarios_perfil } from '@prisma/client';
 import { AuthGuard } from 'src/auth/auth.guard';
@@ -11,6 +12,7 @@ import { AccessRequestsService } from './access-requests.service';
 @Roles(usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR)
 export class AccessRequestsController {
   constructor(private readonly service: AccessRequestsService, private readonly authority: AccessAuthorityService) {}
+  @ServicoDaRota('ACESSO_CONSULTAR')
   @Get() list(@Request() req, @Query('pagina') pagina?: string) { return this.service.list(req.user.igreja_id, req.user.sub, pagina); }
   @Get('competencias')
   @Roles(usuarios_perfil.ADMINISTRADOR)
@@ -21,6 +23,8 @@ export class AccessRequestsController {
   @Patch('competencias/:id/revogar')
   @Roles(usuarios_perfil.ADMINISTRADOR)
   revokeAuthority(@Request() req, @Param('id') id: string) { return this.authority.revoke(req.user.igreja_id, req.user.sub, id); }
-  @Patch(':id/aprovar') approve(@Request() req, @Param('id') id: string) { return this.service.decide(id, req.user.igreja_id, req.user.sub, true); }
-  @Patch(':id/rejeitar') reject(@Request() req, @Param('id') id: string) { return this.service.decide(id, req.user.igreja_id, req.user.sub, false); }
+  @ServicoDaRota('ACESSO_ANALISAR')
+  @Patch(':id/aprovar') approve(@Request() req, @Param('id') id: string) { return this.service.decide(id, req.user.igreja_id, req.user.sub, true, req.user); }
+  @ServicoDaRota('ACESSO_ANALISAR')
+  @Patch(':id/rejeitar') reject(@Request() req, @Param('id') id: string) { return this.service.decide(id, req.user.igreja_id, req.user.sub, false, req.user); }
 }

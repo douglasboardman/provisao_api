@@ -1,10 +1,12 @@
+import type { Ator } from '../autorizacao/politica';
+import { exigirServicoHistorico } from './autorizacao-historico';
 import { bloquearRegrasMembresia, consultarRegrasDaIgreja } from '../regras-relacao-enum/parametros-membresia';
 import { revisarOrgaosNaAplicacao } from '../orgaos/revisao-aplicacao';
-import { transacaoSerializavel } from '../orgaos/idempotencia';
+import { conflitoDeIdempotencia, transacaoComRetentativa } from '../orgaos/idempotencia';
 import { consumirDecisaoEleitoral } from './consumir-decisao-eleitoral';
 import { createHash, randomUUID } from 'crypto';
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { logs_atividades_acao, membresia_motivacao_evento, membresia_rol, membresia_tipo_evento, Prisma, usuarios_perfil } from '@prisma/client';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { logs_atividades_acao, membresia_motivacao_evento, membresia_rol, membresia_tipo_evento, Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
 import { eventoVigente } from '../eventos-membresia/estado-temporal';
@@ -25,10 +27,9 @@ export class InsercaoRetroativaService {
     if (!parsed.success) throw new BadRequestException('Proposta inválida.');
     return this.calcular(tx, igreja, pessoa, parsed.data, coletar);
   }
-  private async autorizar(tx: Tx, igreja: string, usuario: string, modo: 'consultar' | 'registrar') {
-    const perfis: usuarios_perfil[] = [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO];
-    if (modo === 'consultar') perfis.push(usuarios_perfil.AUDITOR);
-    if (!await tx.usuarios.findFirst({ where: { id: usuario, igreja_id: igreja, ativo: true, perfil: { in: perfis } }, select: { id: true } })) throw new ForbiddenException('Operador não autorizado nesta igreja.');
+  private async autorizar(tx: Tx, igreja: string, usuario: string, modo: 'consultar' | 'registrar', ator?: Ator) {
+    const escrita = modo === 'registrar';
+    await exigirServicoHistorico(tx, igreja, usuario, escrita ? 'HISTORICO_MEMBRESIA_RETIFICAR' : 'HISTORICO_MEMBRESIA_CONSULTAR', escrita, ator);
     await exigirAcessoSensivel(tx, igreja, usuario, modo);
   }
   private async calcular(tx: Tx, igreja: string, pessoa: string, proposta: Proposta, coletar?: (detalhes: DetalheVinculoOrgao[]) => void) {
@@ -80,19 +81,19 @@ export class InsercaoRetroativaService {
     const estado = { igreja, impacto, eventos: eventos.map(e => ({ ...e, data_evento: civil(e.data_evento), updated_at: e.updated_at.toISOString() })), regras: regras.map(r => ({ id: r.id, updated_at: r.updated_at, valores: r.valores.map(v => [v.valor_classificador, v.valor_classificado]).sort() })) };
     return { ...impacto, hash: createHash('sha256').update(JSON.stringify(estado)).digest('hex') };
   }
-  async previa(igreja: string, usuario: string, pessoa: string, dados: Proposta) {
+  async previa(igreja: string, usuario: string, pessoa: string, dados: Proposta, ator?: Ator) {
     const p = propostaSchema.safeParse(dados); if (!p.success) throw new BadRequestException('Proposta inválida.');
-    return this.prisma.$transaction(async tx => { await this.autorizar(tx, igreja, usuario, 'consultar'); const r = await this.calcular(tx, igreja, pessoa, p.data); await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CONSULTA, tabela_afetada: 'previa_insercao_retroativa', registro_id: pessoa } }); return r; }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    return this.prisma.$transaction(async tx => { await this.autorizar(tx, igreja, usuario, 'consultar', ator); const r = await this.calcular(tx, igreja, pessoa, p.data); await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CONSULTA, tabela_afetada: 'previa_insercao_retroativa', registro_id: pessoa } }); return r; }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
-  async listar(igreja: string, usuario: string, pessoa: string) {
-    return this.prisma.$transaction(async tx => { await this.autorizar(tx, igreja, usuario, 'consultar'); if (!await tx.pessoas.findFirst({ where: { id: pessoa, igreja_id: igreja }, select: { id: true } })) throw new NotFoundException('Pessoa não encontrada nesta igreja.'); const r = await tx.insercao_retroativa_membresia.findMany({ where: { igreja_id: igreja, pessoa_id: pessoa }, select: { id: true, evento_id: true, data_evento: true, impacto: true, justificativa: true, autoridade: true, evidencia: true, criado_em: true, criado_por: { select: { nome_usuario: true } } }, orderBy: { criado_em: 'desc' } }); await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CONSULTA, tabela_afetada: 'previa_insercao_retroativa', registro_id: pessoa } }); return r; });
+  async listar(igreja: string, usuario: string, pessoa: string, ator?: Ator) {
+    return this.prisma.$transaction(async tx => { await this.autorizar(tx, igreja, usuario, 'consultar', ator); if (!await tx.pessoas.findFirst({ where: { id: pessoa, igreja_id: igreja }, select: { id: true } })) throw new NotFoundException('Pessoa não encontrada nesta igreja.'); const r = await tx.insercao_retroativa_membresia.findMany({ where: { igreja_id: igreja, pessoa_id: pessoa }, select: { id: true, evento_id: true, data_evento: true, impacto: true, justificativa: true, autoridade: true, evidencia: true, criado_em: true, criado_por: { select: { nome_usuario: true } } }, orderBy: { criado_em: 'desc' } }); await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CONSULTA, tabela_afetada: 'previa_insercao_retroativa', registro_id: pessoa } }); return r; });
   }
-  async aplicar(igreja: string, usuario: string, pessoa: string, dados: Aplicacao) {
+  async aplicar(igreja: string, usuario: string, pessoa: string, dados: Aplicacao, ator?: Ator) {
     const parsed = aplicarSchema.safeParse(dados); if (!parsed.success) throw new BadRequestException('Inclusão inválida.');
     const { hash_previa, decisao_id, decisoes_orgao, justificativa, autoridade, evidencia, idempotencia, ciente: _ciente, ...proposta } = parsed.data;
     const chave = idempotencia.toLowerCase();
-    return transacaoSerializavel(this.prisma, async tx => {
-      await this.autorizar(tx, igreja, usuario, 'registrar');
+    return transacaoComRetentativa(this.prisma, async tx => {
+      await this.autorizar(tx, igreja, usuario, 'registrar', ator);
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${igreja + ':insercao:' + chave}, 0))`;
       const anterior = await tx.insercao_retroativa_membresia.findUnique({ where: { igreja_id_idempotencia: { igreja_id: igreja, idempotencia: chave } } });
       if (anterior) {
@@ -118,6 +119,6 @@ export class InsercaoRetroativaService {
       await tx.eventos_membresia.create({ data: { id: evento_id, igreja_id: igreja, pessoa_id: pessoa, data_evento, ...previa.dados_evento } });
       await tx.logs_atividades.create({ data: { igreja_id: igreja, usuario_id: usuario, acao: logs_atividades_acao.CRIACAO, tabela_afetada: 'insercao_retroativa_membresia', registro_id: registro.id } });
       return registro;
-    });
+    }, Prisma.TransactionIsolationLevel.Serializable, conflitoDeIdempotencia);
   }
 }

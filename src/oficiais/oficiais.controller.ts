@@ -1,3 +1,6 @@
+import { estadoDaLiberacao, RotaLegadaDe } from '../autorizacao/liberacao-servico';
+import { ContaComum, ServicoDaRota, ServicoEmContexto, contaDaSessao, decidirServico } from '../autorizacao/politica';
+import { servicosDeConsulta, servicosDeHistorico } from '../autorizacao/catalogo-servicos';
 import { RevisaoEleitoralService } from './revisao-eleitoral.service';
 import { InsercaoRetroativaOficialService } from './insercao-retroativa-oficial.service';
 import { CorrecaoConteudoService } from './correcao-conteudo.service';
@@ -29,6 +32,7 @@ import { IndicacoesEleicaoService } from './indicacoes-eleicao.service';
 export class OficiaisController {
   constructor(private readonly revisoesEleitorais: RevisaoEleitoralService, private readonly insercoesOficial: InsercaoRetroativaOficialService, private readonly correcoesConteudo: CorrecaoConteudoService, private readonly insercoesRetroativas: InsercaoRetroativaService, private readonly prisma: PrismaService, private readonly alertas: AlertasOficiaisService, private readonly exercicio: SituacaoExercicioService, private readonly oficiais: OficiaisService, private readonly mandatos: MandatoService, private readonly politicas: PoliticaEleicaoService, private readonly conferencias: ConferenciaEleicaoService, private readonly acessoSensivel: AcessoSensivelService, private readonly acervo: AcervoHistoricoService, private readonly correcoes: CorrecaoMembresiaService, private readonly identidadePastoral: IdentidadePastoralService, private readonly notificacoes: NotificacoesMandatoService, private readonly ordenacoes: OrdenacaoMembresiaService, private readonly indicacoes: IndicacoesEleicaoService) {}
 
+  @ServicoDaRota('OFICIAIS_CONSULTAR')
   @Get()
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
@@ -40,6 +44,7 @@ export class OficiaisController {
     return { itens, proximo_cursor: rows.length > 50 ? itens[itens.length - 1].id : null };
   }
 
+  @ServicoDaRota('OFICIAIS_CONSULTAR')
   @Get('mandatos-vigentes')
   @Header('Cache-Control', 'private, no-store')
   quadro(@Request() req, @Query('data') referencia: string) {
@@ -99,29 +104,46 @@ export class OficiaisController {
   }
 
   @Get('meu-acesso-sensivel')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @ContaComum()
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   async meuAcesso(@Request() req) {
-    const acesso = await this.prisma.acesso_eventos_sensiveis.findFirst({ where: { igreja_id: req.user.igreja_id, usuario_id: req.user.sub, revogado_em: null }, select: { pode_consultar: true, pode_registrar: true } });
-    return acesso ? { ...acesso, pode_registrar: req.user.perfil === Perfil.AUDITOR ? false : acesso.pode_registrar } : { pode_consultar: false, pode_registrar: false };
+    return this.prisma.$transaction(async tx => {
+      const conta = await contaDaSessao(tx, req.user);
+      const acesso = await tx.acesso_eventos_sensiveis.findFirst({ where: { igreja_id: conta.igreja_id, usuario_id: conta.id, revogado_em: null },
+        select: { pode_consultar: true, pode_registrar: true } });
+      const operacoes = Object.fromEntries(await Promise.all(servicosDeHistorico.map(async acao => {
+        const estado = await estadoDaLiberacao(tx, conta.igreja_id, acao);
+        const permite = estado !== 'PAUSADO' && (estado === 'ATRIBUICAO' || conta.perfil === Perfil.COMUM
+          ? (await decidirServico(tx, conta, acao)).permite
+          : conta.perfil !== Perfil.AUDITOR || servicosDeConsulta.has(acao));
+        return [acao, permite] as const;
+      })));
+      return { pode_consultar: !!acesso?.pode_consultar,
+        pode_registrar: conta.perfil !== Perfil.AUDITOR && !!acesso?.pode_registrar, operacoes };
+    }, { isolationLevel: 'RepeatableRead' });
   }
 
+  @ServicoDaRota('HISTORICO_OFICIAIS_CONSULTAR')
   @Get(':id/insercoes-retroativas')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
   insercoesRetroativasOficial(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    return this.insercoesOficial.listar(req.user.igreja_id, req.user.sub, id);
+    return this.insercoesOficial.listar(req.user.igreja_id, req.user.sub, id, req.user);
   }
+  @ServicoDaRota('HISTORICO_OFICIAIS_CONSULTAR')
   @Post(':id/insercoes-retroativas/previa')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   previaInsercaoOficial(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<InsercaoRetroativaOficialService['previa']>[3]) {
-    return this.comando(() => this.insercoesOficial.previa(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.insercoesOficial.previa(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
+  @ServicoDaRota('HISTORICO_OFICIAIS_REGISTRAR')
   @Post(':id/insercoes-retroativas/aplicar')
   aplicarInsercaoOficial(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<InsercaoRetroativaOficialService['aplicar']>[3]) {
-    return this.comando(() => this.insercoesOficial.aplicar(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.insercoesOficial.aplicar(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
 
+  @ServicoDaRota('HISTORICO_OFICIAIS_CONSULTAR')
   @Get(':id/eventos-sensiveis')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
@@ -141,133 +163,156 @@ export class OficiaisController {
     return this.comando(() => this.acessoSensivel.revogar(req.user.igreja_id, req.user.sub, id, dados));
   }
 
+  @ServicoDaRota('REVISOES_ELEITORAIS_DECIDIR')
   @Post('revisoes-eleitorais/:id/concluir')
   concluirRevisaoEleitoral(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<RevisaoEleitoralService['concluir']>[3]) {
-    return this.comando(() => this.revisoesEleitorais.concluir(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.revisoesEleitorais.concluir(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/revisoes-eleitorais')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
   revisoesEleitoraisPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    return this.revisoesEleitorais.listar(req.user.igreja_id, req.user.sub, id);
+    return this.revisoesEleitorais.listar(req.user.igreja_id, req.user.sub, id, req.user);
   }
+  @ServicoDaRota('REVISOES_ELEITORAIS_DECIDIR')
   @Post('pessoas/:id/revisoes-eleitorais')
   registrarRevisaoEleitoral(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<RevisaoEleitoralService['registrar']>[3]) {
-    return this.comando(() => this.revisoesEleitorais.registrar(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.revisoesEleitorais.registrar(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/correcoes-conteudo')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
   correcoesConteudoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    return this.correcoesConteudo.listar(req.user.igreja_id, req.user.sub, id);
+    return this.correcoesConteudo.listar(req.user.igreja_id, req.user.sub, id, req.user);
   }
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post('pessoas/:id/correcoes-conteudo/previa')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   previaConteudoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoConteudoService['previa']>[3]) {
-    return this.comando(() => this.correcoesConteudo.previa(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.correcoesConteudo.previa(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
+  @ServicoDaRota('HISTORICO_MEMBRESIA_RETIFICAR')
   @Post('pessoas/:id/correcoes-conteudo/aplicar')
   aplicarConteudoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoConteudoService['aplicar']>[3]) {
-    return this.comando(() => this.correcoesConteudo.aplicar(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.correcoesConteudo.aplicar(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/insercoes-retroativas')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
   insercoesPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    return this.insercoesRetroativas.listar(req.user.igreja_id, req.user.sub, id);
+    return this.insercoesRetroativas.listar(req.user.igreja_id, req.user.sub, id, req.user);
   }
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post('pessoas/:id/insercoes-retroativas/previa')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   previaInsercaoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<InsercaoRetroativaService['previa']>[3]) {
-    return this.comando(() => this.insercoesRetroativas.previa(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.insercoesRetroativas.previa(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
+  @ServicoDaRota('HISTORICO_MEMBRESIA_RETIFICAR')
   @Post('pessoas/:id/insercoes-retroativas/aplicar')
   aplicarInsercaoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<InsercaoRetroativaService['aplicar']>[3]) {
-    return this.comando(() => this.insercoesRetroativas.aplicar(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.insercoesRetroativas.aplicar(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/correcoes-data')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
   correcoesPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    return this.correcoes.listarCorrecoes(req.user.igreja_id, req.user.sub, id, true);
+    return this.correcoes.listarCorrecoes(req.user.igreja_id, req.user.sub, id, true, req.user);
   }
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post('pessoas/:id/correcoes-data/previa')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   previaCorrecaoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoMembresiaService['previa']>[3]) {
-    return this.comando(() => this.correcoes.previa(req.user.igreja_id, req.user.sub, id, dados, true));
+    return this.comando(() => this.correcoes.previa(req.user.igreja_id, req.user.sub, id, dados, true, req.user));
   }
+  @ServicoDaRota('HISTORICO_MEMBRESIA_RETIFICAR')
   @Post('pessoas/:id/correcoes-data/aplicar')
   aplicarCorrecaoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoMembresiaService['aplicar']>[3]) {
-    return this.comando(() => this.correcoes.aplicar(req.user.igreja_id, req.user.sub, id, dados, true));
+    return this.comando(() => this.correcoes.aplicar(req.user.igreja_id, req.user.sub, id, dados, true, req.user));
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/eventos-para-ordem')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
   eventosPessoaParaOrdem(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    return this.ordenacoes.eventosPessoa(req.user.igreja_id, req.user.sub, id);
+    return this.ordenacoes.eventosPessoa(req.user.igreja_id, req.user.sub, id, req.user);
   }
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/ordenacoes-dia')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
   ordenacoesPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    return this.ordenacoes.listar(req.user.igreja_id, req.user.sub, id, true);
+    return this.ordenacoes.listar(req.user.igreja_id, req.user.sub, id, true, req.user);
   }
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post('pessoas/:id/ordenacoes-dia/previa')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   previaOrdemPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OrdenacaoMembresiaService['previa']>[3]) {
-    return this.comando(() => this.ordenacoes.previa(req.user.igreja_id, req.user.sub, id, dados, true));
+    return this.comando(() => this.ordenacoes.previa(req.user.igreja_id, req.user.sub, id, dados, true, req.user));
   }
+  @ServicoDaRota('HISTORICO_MEMBRESIA_RETIFICAR')
   @Post('pessoas/:id/ordenacoes-dia/aplicar')
   aplicarOrdemPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OrdenacaoMembresiaService['aplicar']>[3]) {
-    return this.comando(() => this.ordenacoes.aplicar(req.user.igreja_id, req.user.sub, id, dados, true));
+    return this.comando(() => this.ordenacoes.aplicar(req.user.igreja_id, req.user.sub, id, dados, true, req.user));
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get(':id/ordenacoes-dia')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
   listarOrdenacoes(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    return this.ordenacoes.listar(req.user.igreja_id, req.user.sub, id);
+    return this.ordenacoes.listar(req.user.igreja_id, req.user.sub, id, false, req.user);
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post(':id/ordenacoes-dia/previa')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   previaOrdenacao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OrdenacaoMembresiaService['previa']>[3]) {
-    return this.comando(() => this.ordenacoes.previa(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.ordenacoes.previa(req.user.igreja_id, req.user.sub, id, dados, false, req.user));
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_RETIFICAR')
   @Post(':id/ordenacoes-dia/aplicar')
   aplicarOrdenacao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OrdenacaoMembresiaService['aplicar']>[3]) {
-    return this.comando(() => this.ordenacoes.aplicar(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.ordenacoes.aplicar(req.user.igreja_id, req.user.sub, id, dados, false, req.user));
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get(':id/membresia-para-correcao')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
   eventosParaCorrecao(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    return this.correcoes.listarEventos(req.user.igreja_id, req.user.sub, id);
+    return this.correcoes.listarEventos(req.user.igreja_id, req.user.sub, id, req.user);
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get(':id/correcoes-data')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
   correcoesRegistradas(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    return this.correcoes.listarCorrecoes(req.user.igreja_id, req.user.sub, id);
+    return this.correcoes.listarCorrecoes(req.user.igreja_id, req.user.sub, id, false, req.user);
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post(':id/correcoes-data/previa')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   previaCorrecao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoMembresiaService['previa']>[3]) {
-    return this.comando(() => this.correcoes.previa(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.correcoes.previa(req.user.igreja_id, req.user.sub, id, dados, false, req.user));
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_RETIFICAR')
   @Post(':id/correcoes-data/aplicar')
   aplicarCorrecao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoMembresiaService['aplicar']>[3]) {
-    return this.comando(() => this.correcoes.aplicar(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.correcoes.aplicar(req.user.igreja_id, req.user.sub, id, dados, false, req.user));
   }
 
   @Get(':id/identidade-pastoral')
@@ -293,22 +338,25 @@ export class OficiaisController {
     return this.comando(() => this.identidadePastoral.revogar(req.user.igreja_id, req.user.sub, id, dados));
   }
 
+  @ServicoDaRota('HISTORICO_OFICIAIS_CONSULTAR')
   @Get(':id/acervo-historico')
   @Header('Cache-Control', 'private, no-store')
   listarAcervo(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.acervo.listar(req.user.igreja_id, id);
   }
 
+  @ServicoDaRota('HISTORICO_OFICIAIS_CONSULTAR')
   @Get('acervo-historico/:id/detalhe')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
   @Header('Cache-Control', 'private, no-store')
   detalheAcervo(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
-    return this.acervo.detalhe(req.user.igreja_id, req.user.sub, id);
+    return this.acervo.detalhe(req.user.igreja_id, req.user.sub, id, req.user);
   }
 
+  @ServicoDaRota('HISTORICO_OFICIAIS_REGISTRAR')
   @Post(':id/acervo-historico')
   registrarAcervo(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<AcervoHistoricoService['registrar']>[3]) {
-    return this.comando(() => this.acervo.registrar(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.acervo.registrar(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
 
   @Get('politicas')
@@ -332,8 +380,8 @@ export class OficiaisController {
 
   @Get('indicacoes/candidatos')
   @Header('Cache-Control', 'private, no-store')
-  candidatosDeEleicao(@Request() req, @Query('ata') ata: string, @Query('busca') busca?: string) {
-    return this.indicacoes.candidatos(req.user, ata, busca);
+  candidatosDeEleicao(@Request() req, @Query('ata') ata: string, @Query('busca') busca?: string, @Query('tipo') tipo?: string) {
+    return this.indicacoes.candidatos(req.user, ata, busca, tipo);
   }
 
   @Get('indicacoes')
@@ -348,6 +396,7 @@ export class OficiaisController {
   }
 
   @Post('indicacoes/mandatos')
+  @RotaLegadaDe('MANDATOS_REGISTRAR')
   registrarMandatoPorIndicacao(@Request() req, @Body() dados: unknown) {
     return this.comando(() => this.indicacoes.registrarMandato(req.user, dados));
   }
@@ -361,6 +410,19 @@ export class OficiaisController {
     return conferencias.map(({ revisoes_pendentes, ...c }) => ({ ...c, revisao_pendente: revisoes_pendentes.some(r => r.revisado_em === null), impedida_para_mandato: revisoes_pendentes.length > 0 }));
   }
 
+  @Get('indicacoes/historico')
+  @Header('Cache-Control', 'private, no-store')
+  indicacoesHistoricas(@Request() req, @Query('cursor') cursor?: string) {
+    return this.indicacoes.historico(req.user, undefined, cursor);
+  }
+
+  @Get(':id/indicacoes-historicas')
+  @Header('Cache-Control', 'private, no-store')
+  historicoIndicacoes(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Query('cursor') cursor?: string) {
+    return this.indicacoes.historico(req.user, id, cursor);
+  }
+
+  @ServicoDaRota('OFICIAIS_CONSULTAR')
   @Get(':id/periodos')
   @Header('Cache-Control', 'private, no-store')
   async listarPeriodos(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
@@ -380,6 +442,7 @@ export class OficiaisController {
     return this.alertas.mandatos(req.user.igreja_id, req.user.sub, data, Number(dias));
   }
 
+  @ServicoDaRota('OFICIAIS_CONSULTAR')
   @Get(':id/exercicio')
   @Header('Cache-Control', 'private, no-store')
   async consultarExercicio(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Query('data') data: string) {
@@ -417,12 +480,14 @@ export class OficiaisController {
     return this.comando(() => this.conferencias.registrar(req.user.igreja_id, req.user.sub, dados));
   }
 
+  @ServicoDaRota('HISTORICO_OFICIAIS_REGISTRAR')
   @Post(':id/eventos')
   evento(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OficiaisService['registrarEvento']>[3]) {
-    return this.comando(() => this.oficiais.registrarEvento(req.user.igreja_id, req.user.sub, id, dados, dados?.tipo !== 'ORDENACAO'));
+    return this.comando(() => this.oficiais.registrarEvento(req.user.igreja_id, req.user.sub, id, dados, dados?.tipo !== 'ORDENACAO', req.user));
   }
 
   @Post(':id/mandatos')
+  @RotaLegadaDe('MANDATOS_REGISTRAR')
   mandato(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<MandatoService['registrar']>[3]) {
     return this.comando(() => this.mandatos.registrar(req.user.igreja_id, req.user.sub, id, dados));
   }
@@ -433,8 +498,11 @@ export class OficiaisController {
   }
 
   @Patch('mandatos/:id/encerrar')
+  @ContaComum()
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.COMUM)
+  @ServicoEmContexto('MANDATOS_REGISTRAR')
   encerrarMandato(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<MandatoService['encerrar']>[3]) {
-    return this.comando(() => this.mandatos.encerrar(req.user.igreja_id, req.user.sub, id, dados));
+    return this.comando(() => this.mandatos.encerrar(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
 
   @Patch('vinculos-pastorais/:id/encerrar')

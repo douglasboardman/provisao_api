@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
-export const tiposOrdenados = ['DESIGNACAO', 'DISPENSA', 'PARTICIPACAO_INCLUSAO', 'PARTICIPACAO_SAIDA', 'ELEICAO_CARGO', 'ENCERRAMENTO_CARGO', 'ELEICAO_CARGO_UNIDADE', 'ENCERRAMENTO_CARGO_UNIDADE', 'DESATIVACAO'];
+export const tiposOrdenados = ['DESIGNACAO', 'DISPENSA', 'PARTICIPACAO_INCLUSAO', 'PARTICIPACAO_SAIDA', 'ELEICAO_CARGO', 'ENCERRAMENTO_CARGO', 'ELEICAO_CARGO_UNIDADE', 'ENCERRAMENTO_CARGO_UNIDADE', 'DESATIVACAO', 'ATIVACAO_SOCIEDADE', 'PROVIMENTO', 'MANUTENCAO_MINISTERIO'];
 
 /** Chamador mantém o bloqueio do órgão. Pedidos antigos sem ordem usam a próxima
  * sequência, atribuída sob esse mesmo bloqueio. Pedidos novos podem informá-la. */

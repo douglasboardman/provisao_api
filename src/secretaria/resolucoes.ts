@@ -17,6 +17,7 @@ type Resolucao = Prisma.resolucaoGetPayload<{ include: typeof incluirResolucao }
 
 export function entradaResolucoes(resolucoes: Resolucao[]): ResolucaoInput[] {
   return resolucoes.map((r) => ({
+    item_pauta_id: r.item_pauta_id,
     ordem: r.ordem,
     assunto: r.assunto,
     texto_proposta: r.texto_proposta,
@@ -31,7 +32,7 @@ export function entradaResolucoes(resolucoes: Resolucao[]): ResolucaoInput[] {
   }));
 }
 
-export function validarResolucoes(versao: VersaoInput, config: ConfiguracaoModelo, reuniao?: ReuniaoInput) {
+export function validarResolucoes(versao: VersaoInput, config: ConfiguracaoModelo, reuniao?: ReuniaoInput, pauta: { id: string }[] = []) {
   const resolucoes = versao.resolucoes ?? [];
   if (resolucoes.length && config.resolucoes === 'NAO_PERMITE')
     throw new BadRequestException('Modelo não permite resoluções.');
@@ -46,6 +47,8 @@ export function validarResolucoes(versao: VersaoInput, config: ConfiguracaoModel
     return participante?.presente && (participante.pode_propor ?? !!fundamento);
   };
   for (const r of resolucoes) {
+    if (r.item_pauta_id && !pauta.some(i => i.id === r.item_pauta_id))
+      throw new BadRequestException('O item selecionado não pertence à pauta desta reunião.');
     if ([...r.proponentes_pessoas_ids, ...r.dissidentes_pessoas_ids].some((id) => !arrolados.has(id))) {
       throw new BadRequestException(
         `Resolução ${r.ordem}: proponentes e dissidentes devem estar arrolados nesta versão.`,

@@ -24,6 +24,10 @@ export class EmailService {
     });
   }
 
+  sendAssemblyInvitation(nome: string, email: string, url: string, id: string, expira: Date) {
+    return this.enviar('assembleia', nome, email, url, expira, `<assembleia-${id}@provisao>`);
+  }
+
   sendAccessConfirmation(nome: string, email: string, url: string, expiraEm: Date) {
     return this.enviar('confirmacao', nome, email, url, expiraEm);
   }

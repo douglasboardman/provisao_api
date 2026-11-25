@@ -1,3 +1,4 @@
+import { ServicoDaRota } from '../autorizacao/politica';
 import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, Request } from '@nestjs/common';
 import { GruposFamiliaresService } from './grupos-familiares.service';
 import { CreateGruposFamiliareDto } from './dto/create-grupos-familiare.dto';
@@ -22,16 +23,18 @@ export class GruposFamiliaresController {
    * Restrito a ADMIN e GESTOR.
    * Rota: POST /grupos-familiares
    */
+  @ServicoDaRota('FAMILIAS_CADASTRAR')
   @Post()
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
   create(@Request() req, @Body() createGruposFamiliareDto: CreateGruposFamiliareDto) {
-    return this.gruposFamiliaresService.create(req.user.igreja_id, createGruposFamiliareDto);
+    return this.gruposFamiliaresService.create(req.user.igreja_id, createGruposFamiliareDto, req.user);
   }
 
   /**
    * Lista todos os grupos familiares da mesma igreja do solicitante.
    * Rota: GET /grupos-familiares
    */
+  @ServicoDaRota('FAMILIAS_CONSULTAR')
   @Get()
   findAll(@Request() req) {
     return this.gruposFamiliaresService.findAll(req.user.igreja_id);
@@ -41,6 +44,7 @@ export class GruposFamiliaresController {
    * Retorna um grupo familiar pelo ID, dentro da mesma igreja.
    * Rota: GET /grupos-familiares/:id
    */
+  @ServicoDaRota('FAMILIAS_CONSULTAR')
   @Get(':id')
   findOne(@Request() req, @Param('id') id: string) {
     return this.gruposFamiliaresService.findOne(id, req.user.igreja_id);
@@ -51,19 +55,21 @@ export class GruposFamiliaresController {
    * Restrito a ADMIN e GESTOR.
    * Rota: PATCH /grupos-familiares/:id
    */
+  @ServicoDaRota('FAMILIAS_EDITAR')
   @Patch(':id')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
   update(@Request() req, @Param('id') id: string, @Body() updateGruposFamiliareDto: UpdateGruposFamiliareDto) {
-    return this.gruposFamiliaresService.update(id, req.user.igreja_id, updateGruposFamiliareDto);
+    return this.gruposFamiliaresService.update(id, req.user.igreja_id, updateGruposFamiliareDto, req.user);
   }
 
   /**
    * Remove um grupo familiar da mesma igreja. Restrito ao ADMIN.
    * Rota: DELETE /grupos-familiares/:id
    */
+  @ServicoDaRota('FAMILIAS_EXCLUIR')
   @Delete(':id')
   @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
   remove(@Request() req, @Param('id') id: string) {
-    return this.gruposFamiliaresService.remove(id, req.user.igreja_id);
+    return this.gruposFamiliaresService.remove(id, req.user.igreja_id, req.user);
   }
 }

@@ -45,6 +45,8 @@ const complementoSchema = transicaoSchema.extend({ versao_id: z.uuid() }).strict
 type Documento = Awaited<ReturnType<SecretariaBaseService['documento']>>;
 type Versao = Documento['versoes'][number];
 type LivroVinculado = { livro: livro_atas; natureza: registro_livro_natureza };
+import { atasPendentesLivro } from './numeracao-ata-livro';
+
 type Transicao = 'suspender' | 'retomar' | 'preparar-encerramento' | 'desistir-encerramento';
 const transicoes = {
   suspender: { de: ['ABERTO'], para: 'SUSPENSO' },
@@ -93,6 +95,7 @@ export class LivrosService {
     ) {
       throw new NotFoundException('Livro indisponível nesta igreja.');
     }
+    await this.base.contexto(tx, a, livro.contexto_id);
     return livro;
   }
 
@@ -190,7 +193,7 @@ export class LivrosService {
           usuario_id: a.sub,
           artefatos_documento: { none: {} },
           anexos_documento: { none: {} },
-          imagens_modelo: { none: {} },
+          imagens_modelo: { none: {} }, imagens_modelo_rascunho: { none: {} },
           livros_historicos: { none: {} },
           registros_livro: { none: {} },
           ...arquivoSemVinculoDeExpedicao,
@@ -350,6 +353,11 @@ export class LivrosService {
         const { manifesto: _, ...resumo } = livro;
         return {
           ...resumo,
+          atas_pendentes: await atasPendentesLivro(tx, livro),
+          numeros_cancelados: await tx.reserva_ata_livro.findMany({
+            where: { livro_id: id, igreja_id: a.igreja_id, contexto_id: livro.contexto_id, cancelada_em: { not: null } },
+            select: { numero: true, cancelada_em: true, motivo: true }, orderBy: { numero: 'asc' },
+          }),
           capacidade_faces: capacidadeEmFaces(livro),
           totais: livro.arquivo_historico_id ? null : totaisLivro(livro, registros),
           registros: registros.map((r) => ({
@@ -381,6 +389,7 @@ export class LivrosService {
         const registros = await this.registros(tx, id);
         if (registros.some((r) => r.estado === 'RESERVADO'))
           throw new BadRequestException('Resolva todas as reservas antes de preparar o encerramento.');
+        if ((await atasPendentesLivro(tx, livro)).length) throw new BadRequestException('Conclua, transfira ou cancele as atas numeradas em aberto antes do encerramento.');
         reservarPosicao(livro, registros, 'ENCERRAMENTO', 1);
       }
       if (acao === 'desistir-encerramento') {
@@ -493,7 +502,7 @@ export class LivrosService {
       SERIE_LIVRO: livro.serie,
       MODALIDADE_LIVRO: livro.modalidade === 'ELETRONICO' ? 'eletrônico' : 'para encadernação',
     };
-    if (natureza === 'ABERTURA') return comuns;
+    if (natureza === 'ABERTURA') return { ...comuns, TITULAR_LIVRO: livro.titular, CAPACIDADE_FOLHAS_LIVRO: String(livro.capacidade_folhas) };
     const registros = await this.registros(tx, livro.id);
     if (registros.some((r) => r.estado === 'RESERVADO' && r.natureza !== 'ENCERRAMENTO'))
       throw new BadRequestException('Há reservas pendentes no inventário.');
@@ -517,18 +526,26 @@ export class LivrosService {
 
   async conferirResponsabilidade(tx: Tx, vinculo: LivroVinculado, entrada: dto.VersaoInput) {
     if (vinculo.livro.perfil !== 'CONCILIO_IPB_2025' || !termoDeLivro(vinculo.natureza)) return;
-    const { igreja_id } = vinculo.livro;
-    const data = dataCivil(entrada.data_documento);
+    return this.conferirPresidenciaTermo(tx, vinculo.livro.igreja_id, entrada.data_documento, entrada.conteudo.arrolados);
+  }
+
+  private async presidenciaTermo(tx: Tx, igreja_id: string, dia: string) {
+    const data = dataCivil(dia);
     const presidencia = await tx.presidencia_conselho.findMany({
       where: { igreja_id, inicio: { lte: data }, OR: [{ fim: null }, { fim: { gt: data } }] },
-      select: { id: true, oficial: { select: { pessoa_id: true } } },
+      select: { id: true, oficial: { select: { pessoa_id: true, pessoa: { select: { nome_completo: true } } } } },
     });
     const presidente = presidencia.length === 1 && presidencia[0].oficial.pessoa_id;
-    const composicao = await this.composicao.consultarNaTransacao(tx, igreja_id, 'CONSELHO', entrada.data_documento);
-    if (
-      !presidente ||
-      !composicao.membros.some((p) => p.pessoa_id === presidente && !p.revisao_pendente) ||
-      !entrada.conteudo.arrolados.some(
+    const composicao = await this.composicao.consultarNaTransacao(tx, igreja_id, 'CONSELHO', dia);
+    if (!presidente || !composicao.membros.some(p => p.pessoa_id === presidente && !p.revisao_pendente)) return null;
+    return { presidencia_id: presidencia[0].id, pessoa_id: presidente, nome: presidencia[0].oficial.pessoa.nome_completo };
+  }
+
+  async conferirPresidenciaTermo(tx: Tx, igreja_id: string, dia: string, arrolados: dto.VersaoInput['conteudo']['arrolados']) {
+    const titular = await this.presidenciaTermo(tx, igreja_id, dia);
+    const presidente = titular?.pessoa_id;
+    if (!titular ||
+      !arrolados.some(
         (p) => p.pessoa_id === presidente && p.assina && p.obrigatorio && p.papeis.includes('PRESIDENTE'),
       )
     ) {
@@ -536,7 +553,44 @@ export class LivrosService {
         'O termo do Conselho exige o presidente institucional em exercício como signatário obrigatório.',
       );
     }
-    return { presidencia_id: presidencia[0].id, pessoa_id: presidente };
+    return { presidencia_id: titular.presidencia_id, pessoa_id: titular.pessoa_id };
+  }
+
+  async responsaveisAbertura(tx: Tx, contexto: Awaited<ReturnType<SecretariaBaseService['contexto']>>, livro: livro_atas,
+    dia: string, config: dto.ConfiguracaoModelo, preparadorId?: string | null) {
+    const data = dataCivil(dia);
+    const orgao = contexto.tipo === 'ASSEMBLEIA_GERAL' ? { tipo: 'CONSELHO' as const, ativo: true } : { id: contexto.orgao_id!, ativo: true };
+    const substituto = config.atuacao?.substituicao_assinatura?.substituto;
+    const ocupacoes = await tx.ocupacao_cargo.findMany({ where: { igreja_id: livro.igreja_id,
+      cargo: { ativo: true, orgao, OR: [{ codigo: { in: ['PRIMEIRO_SECRETARIO', 'SECRETARIO'] } }, ...(substituto ? [{ id: substituto }] : [])] },
+      inicio: { lte: data }, OR: [{ fim: null }, { fim: { gt: data } }],
+      AND: [{ OR: [{ termino_previsto: null }, { termino_previsto: { gte: data } }] }],
+    }, select: { pessoa_id: true, cargo_id: true, pessoa: { select: { nome_completo: true } } } });
+    const papeis = await this.base.atuacao.papeisPorPessoa(tx, contexto, ocupacoes.map(o => o.pessoa_id), dia);
+    const elegiveis = ocupacoes.filter(o => papeis.get(o.pessoa_id)?.has(o.cargo_id));
+    function unico(grupo: typeof ocupacoes) {
+      const titular = grupo[0];
+      return titular && new Set(grupo.map(o => o.pessoa_id)).size === 1 ? { pessoa_id: titular.pessoa_id, nome: titular.pessoa.nome_completo } : null;
+    }
+    const titulares = elegiveis.filter(o => o.cargo_id !== substituto);
+    const suplente = unico(elegiveis.filter(o => o.cargo_id === substituto));
+    const secretario = suplente && (suplente.pessoa_id === preparadorId || !titulares.length) ? suplente : unico(titulares);
+    const preparador = preparadorId ? await tx.pessoas.findFirst({ where: { id: preparadorId, igreja_id: livro.igreja_id }, select: { nome_completo: true } }) : null;
+    const presidente = livro.perfil === 'CONCILIO_IPB_2025' ? await this.presidenciaTermo(tx, livro.igreja_id, dia) : null;
+    const pendencias: string[] = [];
+    if (!secretario) pendencias.push('Confira o cargo e a vigência do secretário responsável pelo livro na data do termo.');
+    if (!preparador) pendencias.push('Vincule uma pessoa à conta que prepara o termo.');
+    if (!presidente && livro.perfil === 'CONCILIO_IPB_2025') pendencias.push('Confira a presidência institucional do Conselho na data do termo.');
+    return { preparador: preparador && { pessoa_id: preparadorId!, nome: preparador.nome_completo },
+      secretario, titulares: [unico(titulares), suplente].filter(p => p !== null),
+      presidente: presidente && { pessoa_id: presidente.pessoa_id, nome: presidente.nome }, pendencias };
+  }
+
+  conferirSecretarioAbertura(abertura: { titulares: { pessoa_id: string }[] }, arrolados: dto.VersaoInput['conteudo']['arrolados']) {
+    const signatarios = arrolados.filter(p => p.assina && p.obrigatorio && p.papeis.includes('SECRETARIO'));
+    if (signatarios.length !== 1 || !abertura.titulares.some(p => p.pessoa_id === signatarios[0].pessoa_id)) {
+      throw new BadRequestException('Indique o secretário em exercício na data do termo como signatário obrigatório.');
+    }
   }
 
   async fixarTermo(tx: Tx, vinculo: LivroVinculado | null) {

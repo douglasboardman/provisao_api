@@ -1,6 +1,6 @@
 {
   "name": "provisao_api",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "",
   "author": "",
   "private": true,
@@ -22,12 +22,15 @@
     "worker:prod": "node dist/src/worker.js",
     "mfa:recuperacao-offline": "node dist/src/mfa/recovery-cli.js",
     "arquivos:reconciliar": "node scripts/reconciliar-arquivos.cjs",
-    "seed:secretaria": "ts-node -r tsconfig-paths/register prisma/seed-secretaria.ts"
+    "seed:secretaria": "ts-node -r tsconfig-paths/register prisma/seed-secretaria.ts",
+    "prova:imagens": "ts-node test/provas/imagens-editor.ts",
+    "prova:pagina": "ts-node test/provas/paginacao-editor.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
   },
   "dependencies": {
+    "@fontsource/noto-sans": "5.3.0",
     "@fontsource/noto-serif": "5.3.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.2",
@@ -37,8 +40,10 @@
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/serve-static": "^5.0.4",
     "@prisma/client": "^6.11.1",
+    "@universal-office/font-files": "0.9.4",
     "bcrypt": "^6.0.0",
     "express": "^5.2.1",
+    "extenso": "3.0.0",
     "image-size": "2.1.0",
     "nestjs-zod": "^5.2.1",
     "nodemailer": "^10.5.0",

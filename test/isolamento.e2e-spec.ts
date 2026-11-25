@@ -329,25 +329,29 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
       await app.get(SessionService).revoke(session);
     }
   });
-  it('vincula pessoa local com auditoria, impede cruzamento e duplicidade', async () => {
+  it('vincula duas contas à mesma pessoa com auditoria por conta e isolamento por igreja', async () => {
     const prisma = app.get(PrismaService);
     const actor = await prisma.usuarios.findUniqueOrThrow({ where: { id: 'e1000000-0000-4000-8000-000000000001' } });
     const session = await app.get(SessionService).create(actor.id, actor.igreja_id, actor.auth_version);
     const person = 'e2000000-0000-4000-8000-000000000001';
     const foreign = 'e2000000-0000-4000-8000-000000000002';
     const other = await prisma.usuarios.create({ data: { igreja_id: actor.igreja_id, nome_usuario: 'Temporário', email_login: 'vinculo@example.invalid', senha_hash: 'inutilizavel', perfil: 'OPERADOR', ativo: false } });
+    const segunda = await prisma.usuarios.create({ data: { igreja_id: actor.igreja_id, nome_usuario: 'Segunda conta', email_login: 'segunda-conta@example.invalid', senha_hash: 'inutilizavel', perfil: 'COMUM' } });
     const patch = (id: string, pessoa_id: string | null) => request(app.getHttpServer()).patch(`/usuarios/${id}/pessoa`).set('Cookie', `provisao_session=${session}`).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ pessoa_id });
     try {
       await patch(actor.id, foreign).expect(404);
       await expect(prisma.usuarios.update({ where: { id: actor.id }, data: { pessoa_id: foreign } })).rejects.toThrow();
-      await patch(actor.id, person).expect(200);
-      await patch(other.id, person).expect(409);
-      const audit = await prisma.logs_atividades.findFirst({ where: { igreja_id: actor.igreja_id, usuario_id: actor.id, registro_id: actor.id, tabela_afetada: 'usuarios', dados_novos: { path: ['pessoa_id'], equals: person } } });
+      await patch(actor.id, person).expect(403);
+      await patch(segunda.id, person).expect(200);
+      await patch(other.id, person).expect(200);
+      expect(await prisma.usuarios.count({ where: { id: { in: [segunda.id, other.id] }, pessoa_id: person } })).toBe(2);
+      const audit = await prisma.logs_atividades.findFirst({ where: { igreja_id: actor.igreja_id, usuario_id: actor.id, registro_id: other.id, tabela_afetada: 'usuarios', dados_novos: { path: ['pessoa_id'], equals: person } } });
       expect(audit).toBeTruthy();
-      await patch(actor.id, null).expect(200);
-      expect((await prisma.usuarios.findUniqueOrThrow({ where: { id: actor.id } })).pessoa_id).toBeNull();
+      await patch(segunda.id, null).expect(200);
+      expect((await prisma.usuarios.findUniqueOrThrow({ where: { id: segunda.id } })).pessoa_id).toBeNull();
+      expect((await prisma.usuarios.findUniqueOrThrow({ where: { id: other.id } })).pessoa_id).toBe(person);
     } finally {
-      await prisma.usuarios.update({ where: { id: actor.id }, data: { pessoa_id: null } });
+      await prisma.usuarios.delete({ where: { id: segunda.id } });
       await prisma.usuarios.delete({ where: { id: other.id } });
       await app.get(SessionService).revoke(session);
     }
@@ -526,6 +530,46 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
     } finally {
       await prisma.confirmacao_acesso.deleteMany({ where: { solicitacao_id: { in: created } } });
       await prisma.solicitacao_acesso.deleteMany({ where: { id: { in: created } } });
+    }
+  });
+  it('desativa MFA só no espelho autorizado após segundo fator recente e confirmação de senha', async () => {
+    const prisma = app.get(PrismaService);
+    const senha = 'senha-sintetica-espelho';
+    const conta = await prisma.usuarios.create({ data: {
+      igreja_id: 'e0000000-0000-4000-8000-000000000001', perfil: 'ADMINISTRADOR', nome_usuario: 'Teste MFA',
+      email_login: `espelho-${randomUUID()}@example.invalid`, senha_hash: await bcrypt.hash(senha, 4),
+    } });
+    const codigo = randomBytes(12).toString('hex');
+    const ambiente = { NODE_ENV: process.env.NODE_ENV, HOST: process.env.HOST, DEV_MFA_OPT_OUT_USER_ID: process.env.DEV_MFA_OPT_OUT_USER_ID };
+    const post = (rota: string) => request(app.getHttpServer()).post(rota).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1');
+    const login = (mfa_code?: string) => post('/auth/login').send({ igreja_id: conta.igreja_id, login: conta.email_login, senha, mfa_code });
+    try {
+      await prisma.mfa_credencial.create({ data: { usuario_id: conta.id, estado: 'ATIVO', segredo_cifrado: 'fixture' } });
+      await prisma.mfa_recuperacao.create({ data: { usuario_id: conta.id, hash: createHash('sha256').update(codigo).digest('hex') } });
+      await login().expect(401);
+      const autenticado = await login(codigo).expect(200);
+      const cookie = autenticado.headers['set-cookie'][0].split(';')[0];
+      const desativar = (password: string) => post('/auth/mfa/desativar-no-espelho').set('Cookie', cookie).send({ senha: password });
+      Object.assign(process.env, { NODE_ENV: 'production', HOST: '127.0.0.1', DEV_MFA_OPT_OUT_USER_ID: conta.id });
+      await desativar(senha).expect(403);
+      process.env.NODE_ENV = 'development';
+      process.env.DEV_MFA_OPT_OUT_USER_ID = randomUUID();
+      await desativar(senha).expect(403);
+      process.env.DEV_MFA_OPT_OUT_USER_ID = conta.id;
+      await desativar('incorreta').expect(401);
+      await prisma.sessoes.updateMany({ where: { usuario_id: conta.id }, data: { mfa_autenticado_em: new Date(0) } });
+      await desativar(senha).expect(403);
+      await prisma.sessoes.updateMany({ where: { usuario_id: conta.id }, data: { mfa_autenticado_em: new Date() } });
+      await desativar(senha).expect(204);
+      await request(app.getHttpServer()).get('/auth/profile').set('Cookie', cookie).expect(401);
+      await login().expect(200);
+      expect(await prisma.mfa_recuperacao.count({ where: { usuario_id: conta.id } })).toBe(0);
+      expect(await prisma.logs_atividades.count({ where: { usuario_id: conta.id, tabela_afetada: 'mfa_credencial', dados_novos: { path: ['operacao'], equals: 'desativacao_no_espelho' } } })).toBe(1);
+    } finally {
+      for (const [key, valor] of Object.entries(ambiente)) {
+        if (valor === undefined) delete process.env[key]; else process.env[key] = valor;
+      }
+      await prisma.usuarios.delete({ where: { id: conta.id } });
     }
   });
   it('ativa MFA com recuperação única, impede replay e limita tentativas', async () => {

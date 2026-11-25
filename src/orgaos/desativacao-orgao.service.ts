@@ -24,7 +24,7 @@ export class DesativacaoOrgaoService {
       const hoje = await hojeDaIgreja(tx, igrejaId), efeito = new Date(`${hoje}T00:00:00Z`);
       await bloquearChave(tx, igrejaId, idempotencia);
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId }, select: { tipo: true, ativo: true, data_criacao: true } });
+      const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, gestao_presidencial: false, tipo: { in: ['CONSELHO', 'JUNTA', 'UNIDADE_MINISTERIAL'] } }, select: { tipo: true, ativo: true, data_criacao: true } });
       if (!orgao) throw new NotFoundException('Órgão não encontrado nesta igreja.');
       if (orgao.tipo === 'UNIDADE_MINISTERIAL' && (operador.perfil !== 'GESTOR' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: operador.pessoa_id, inicio: { lte: efeito }, OR: [{ fim: null }, { fim: { gt: efeito } }] }, select: { id: true } }))) throw new ForbiddenException('Competência institucional não comprovada.');
       const repetido = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, orgao: orgaoId, idempotencia, tipo: 'DESATIVACAO', hash }, 'orgao_id');
@@ -33,7 +33,7 @@ export class DesativacaoOrgaoService {
         return { ato_id: repetido.ato_id, orgao_id: orgaoId };
       }
       if (v.data_efeito !== hoje) throw new BadRequestException('Data diferente de hoje exige conferência de impacto.');
-      if (!orgao.ativo || orgao.data_criacao > efeito) throw new BadRequestException('Órgão já desativado ou data inválida.');
+      if (!orgao.ativo || (orgao.data_criacao && orgao.data_criacao > efeito)) throw new BadRequestException('Órgão já desativado ou data inválida.');
       const ordem = await ordemDoAto(tx, igrejaId, orgaoId, efeito, v.ordem_efeito);
       const ocupacao = await tx.ocupacao_cargo.findFirst({ where: { igreja_id: igrejaId, orgao_id: orgaoId, AND: [{ OR: [{ fim: null }, { fim: { gt: efeito } }, { fim: efeito, fim_ordem: { gt: ordem } }] }, { OR: [{ termino_previsto: null }, { termino_previsto: { gte: efeito } }] }] }, select: { id: true } });
       if (ocupacao) throw new BadRequestException('Resolva as ocupações vigentes ou futuras antes de desativar o órgão.');

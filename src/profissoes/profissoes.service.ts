@@ -1,3 +1,5 @@
+import { gravarPorServico } from '../autorizacao/escrita-servico';
+import type { Ator } from '../autorizacao/politica';
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -11,22 +13,28 @@ export class ProfissoesService {
     return this.prisma.profissoes.findMany({ where: { igreja_id }, orderBy: { nome: 'asc' }, select: { id: true, nome: true } });
   }
 
-  criar(igreja_id: string, { nome }: SalvarProfissaoDto) {
-    return this.executar(() => this.prisma.profissoes.create({
-      data: { igreja_id, nome }, select: { id: true, nome: true },
-    }));
+  criar(igreja_id: string, { nome }: SalvarProfissaoDto, ator?: Ator) {
+    return gravarPorServico(this.prisma, ator, 'PROFISSOES_CADASTRAR', async tx => {
+      return this.executar(() => tx.profissoes.create({
+        data: { igreja_id, nome }, select: { id: true, nome: true },
+      }));
+    });
   }
 
-  atualizar(igreja_id: string, id: string, { nome }: SalvarProfissaoDto) {
-    return this.executar(() => this.prisma.profissoes.update({
-      where: { id, igreja_id }, data: { nome }, select: { id: true, nome: true },
-    }));
+  atualizar(igreja_id: string, id: string, { nome }: SalvarProfissaoDto, ator?: Ator) {
+    return gravarPorServico(this.prisma, ator, 'PROFISSOES_EDITAR', async tx => {
+      return this.executar(() => tx.profissoes.update({
+        where: { id, igreja_id }, data: { nome }, select: { id: true, nome: true },
+      }));
+    });
   }
 
-  excluir(igreja_id: string, id: string) {
-    return this.executar(() => this.prisma.profissoes.delete({
-      where: { id, igreja_id }, select: { id: true },
-    }));
+  excluir(igreja_id: string, id: string, ator?: Ator) {
+    return gravarPorServico(this.prisma, ator, 'PROFISSOES_EXCLUIR', async tx => {
+      return this.executar(() => tx.profissoes.delete({
+        where: { id, igreja_id }, select: { id: true },
+      }));
+    });
   }
 
   private async executar<T>(operacao: () => Promise<T>): Promise<T> {

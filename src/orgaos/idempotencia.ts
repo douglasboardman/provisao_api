@@ -59,6 +59,12 @@ export function conflitoDeTransacao(erro: unknown) {
     (erro.code === 'P2034' || (erro.code === 'P2010' && ['40001', '40P01'].includes(String(erro.meta?.code))));
 }
 
+export function conflitoDeIdempotencia(erro: unknown) {
+  if (!(erro instanceof Prisma.PrismaClientKnownRequestError) || erro.code !== 'P2002') return false;
+  const alvo = erro.meta?.target;
+  return Array.isArray(alvo) && alvo.length === 2 && alvo.includes('igreja_id') && alvo.includes('idempotencia');
+}
+
 /** Conflitos de transação desfazem toda a operação; refazê-la é seguro. */
 export async function transacaoComRetentativa<T>(prisma: PrismaService, executar: (tx: Prisma.TransactionClient) => Promise<T>, isolamento: Prisma.TransactionIsolationLevel, conflitoRepetivel?: (erro: unknown) => boolean, maxTentativas = 3): Promise<T> {
   for (let tentativa = 0; ; tentativa++) {

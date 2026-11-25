@@ -8,7 +8,35 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model origem_campo_secretaria {
+  chave String @id
+  cadastro String
+  propriedade String
+  transformacao String?
+  campos campo_secretaria[]
+}
+
+model campo_secretaria {
+  mapeamento origem_campo_secretaria @relation(fields: [origem], references: [chave], onDelete: NoAction, onUpdate: NoAction)
+  id         String @id @default(uuid())
+  igreja_id  String
+  igreja     igreja @relation(fields: [igreja_id], references: [id], onDelete: Cascade)
+  nome       String @db.VarChar(120)
+  codigo     String?
+  tipo       String
+  multiplo   Boolean
+  origem     String
+  ativo      Boolean @default(true)
+  revisao    Int @default(1)
+
+  @@unique([igreja_id, codigo])
+  @@index([igreja_id, ativo])
+}
+
 model igreja {
+  liberacoes_servico liberacao_servico[]
+  locais_reuniao local_reuniao[]
+  campos_secretaria campo_secretaria[]
   contextos_secretaria contexto_secretaria[]
   id                 String              @id @default(uuid())
   cnpj               String?             @unique(map: "igreja_cnpj_UNIQUE") @db.VarChar(14)
@@ -218,6 +246,8 @@ model logs_atividades {
 }
 
 model pessoas {
+  secretarias_assembleia mesa_assembleia[]
+  itens_pauta_propostos item_pauta_reuniao[]
   competencias_secretaria competencia_secretaria[]
   participantes_reuniao participante_reuniao[]
   arrolamentos_documento arrolado_documento[]
@@ -254,7 +284,7 @@ model pessoas {
   conjuge            pessoas?             @relation("PessoaConjuge", fields: [conjuge_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "pessoas_conjuge_fk")
   conjuge_de         pessoas[]            @relation("PessoaConjuge")
   eventos_membresia  eventos_membresia[]
-  usuario            usuarios?
+  usuarios           usuarios[]
   competencias_acesso competencia_acesso[]
   oficiais           oficial[]
   conferencias_eleicao conferencia_eleicao_oficial[]
@@ -312,6 +342,13 @@ model cat_receita {
 }
 
 model usuarios {
+  propostas_configuracao proposta_versao_orgao[]
+  conta_atuacao Boolean @default(false)
+  geracao_vinculo Int @default(0)
+  atribuicoes_servico atribuicao_servico[]
+  concessoes_assembleia acesso_assembleia[]
+  folhas_extraidas folha_presenca_assembleia[]
+  mesas_registradas mesa_assembleia[]
   referencias_ata_inst referencia_ata_institucional[]
   autorizacoes_documentais autorizacao_financeira_documental[]
   referencias_ata_oficial referencia_ata_oficial[]
@@ -333,7 +370,7 @@ model usuarios {
   senha_hash        String            @db.VarChar(255)
   auth_version      Int               @default(0)
   mfa_reinscricao_obrigatoria Boolean @default(false)
-  pessoa_id         String?           @unique
+  pessoa_id         String?
   perfil            usuarios_perfil
   ativo             Boolean           @default(true)
   created_at        DateTime          @default(now())
@@ -386,7 +423,7 @@ model usuarios {
   inscricoes_alerta_criadas inscricao_alerta_oficial[] @relation("InscricaoCriador")
 
   @@unique([id, igreja_id])
-  @@unique([pessoa_id, igreja_id])
+  @@index([pessoa_id, igreja_id])
   @@unique([igreja_id, email_login], map: "usuarios_igreja_email_UNIQUE")
   @@index([igreja_id], map: "usuarios_igreja_id")
 }
@@ -456,6 +493,7 @@ model arquivo_privado {
   anexos_documento anexo_documento[]
   artefatos_documento trabalho_renderizacao[]
   imagens_modelo imagem_modelo_documento[]
+  imagens_modelo_rascunho imagem_modelo_rascunho[]
 
   @@unique([id, igreja_id])
   id         String   @id
@@ -504,6 +542,8 @@ model token_senha {
 }
 
 model outbox_email {
+  acesso_assembleia_id String? @unique
+  acesso_assembleia acesso_assembleia? @relation(fields: [acesso_assembleia_id], references: [id], onDelete: Restrict)
   convite_assinatura_id String? @unique
   convite_assinatura convite_assinatura? @relation(fields: [convite_assinatura_id], references: [id], onDelete: Restrict, map: "outbox_email_convite_assinatura_fkey")
   id                String      @id @default(uuid())
@@ -526,6 +566,8 @@ model outbox_email {
 
 // E03: histórico institucional independente de perfis de acesso.
 enum orgao_tipo {
+  ASSEMBLEIA_GERAL
+  SOCIEDADE_INTERNA
   CONSELHO
   JUNTA
   UNIDADE_MINISTERIAL
@@ -575,6 +617,12 @@ enum orgao_constituicao {
 }
 
 model orgao_interno {
+  propostas_configuracao proposta_versao_orgao[]
+  gestao_presidencial Boolean @default(false)
+  versoes_institucionais versao_orgao[]
+  categoria String @default(dbgenerated())
+  tipo_padrao String?
+  origem String @default("CADASTRO")
   contexto_secretaria contexto_secretaria?
   id String @id @default(uuid())
   igreja_id String
@@ -583,22 +631,55 @@ model orgao_interno {
   nome String @db.VarChar(255)
   sigla String? @db.VarChar(40)
   finalidade String @db.Text
-  data_criacao DateTime @db.Date
+  data_criacao DateTime? @db.Date
   ativo Boolean @default(true)
-  criador_id String
+  criador_id String?
   instituidor_id String?
   evidencia_instituicao String? @db.Text
   criado_em DateTime @default(now())
   igreja igreja @relation(fields: [igreja_id], references: [id], onDelete: Restrict)
-  criador usuarios @relation("CriadorOrgao", fields: [criador_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  criador usuarios? @relation("CriadorOrgao", fields: [criador_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   instituidor pessoas? @relation("InstituidorOrgao", fields: [instituidor_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   cargos cargo_orgao[]
   membros membro_orgao[]
   conducoes conducao_reuniao_orgao[]
   atos ato_orgao[]
   politicas politica_unidade[]
+  @@unique([igreja_id, tipo_padrao])
   @@unique([id, igreja_id])
   @@index([igreja_id, ativo])
+}
+
+model versao_orgao {
+  propostas proposta_versao_orgao[]
+  mandatos mandato_oficial[]
+  id String @id @default(uuid())
+  igreja_id String
+  orgao_id String
+  numero Int
+  inicio DateTime @db.Date
+  fim DateTime? @db.Date
+  fonte String
+  configuracao Json
+  orgao orgao_interno @relation(fields: [orgao_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  @@unique([orgao_id, numero])
+  @@unique([id, igreja_id, orgao_id])
+}
+
+model proposta_versao_orgao {
+  id String @id @default(uuid())
+  igreja_id String
+  orgao_id String
+  base_id String
+  operador_id String
+  entrada Json
+  alteracoes Json
+  previa String @db.Char(64)
+  atualizado_em DateTime @default(now())
+  orgao orgao_interno @relation(fields: [orgao_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict, map: "proposta_versao_orgao_orgao_fk")
+  base versao_orgao @relation(fields: [base_id, igreja_id, orgao_id], references: [id, igreja_id, orgao_id], onDelete: Restrict, onUpdate: Restrict, map: "proposta_versao_orgao_base_fk")
+  operador usuarios @relation(fields: [operador_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict, map: "proposta_versao_orgao_operador_fk")
+  @@unique([igreja_id, orgao_id])
 }
 
 model cargo_orgao {
@@ -619,6 +700,7 @@ model cargo_orgao {
 }
 
 model membro_orgao {
+  categoria_participacao String? @db.VarChar(24)
   id String @id @default(uuid())
   igreja_id String
   orgao_id String
@@ -945,6 +1027,7 @@ enum lancamentos_tipo_transacao {
 }
 
 enum usuarios_perfil {
+  COMUM
   ADMINISTRADOR
   GESTOR
   TESOUREIRO
@@ -1025,6 +1108,7 @@ enum oficial_evento_tipo {
 }
 
 model oficial {
+  presidencias_assembleia mesa_assembleia[]
   id                String @id @default(uuid())
   igreja_id         String
   pessoa_id         String
@@ -1046,6 +1130,12 @@ model oficial {
 }
 
 model mandato_oficial {
+  orgao_id          String?
+  versao_orgao_id   String?
+  versao_orgao      versao_orgao? @relation(fields: [versao_orgao_id, igreja_id, orgao_id], references: [id, igreja_id, orgao_id], onDelete: Restrict, onUpdate: Restrict, map: "mandato_versao_orgao_fkey")
+  chave_registro    String?
+  hash_registro     String?
+  @@unique([igreja_id, chave_registro])
   referencias_ata referencia_ata_oficial[]
   id                String @id @default(uuid())
   igreja_id         String
@@ -1541,11 +1631,11 @@ model contexto_secretaria {
   id String @id @default(uuid())
   igreja_id String
   tipo contexto_secretaria_tipo
-  orgao_id String? @unique
+  orgao_id String @unique @default(dbgenerated())
   nome String @db.VarChar(255)
   sigla String @db.VarChar(40)
   igreja igreja @relation(fields: [igreja_id], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  orgao orgao_interno? @relation(fields: [orgao_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  orgao orgao_interno @relation(fields: [orgao_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   competencias competencia_secretaria[]
   modelos modelo_documento[]
   reunioes reuniao[]
@@ -1557,6 +1647,8 @@ model contexto_secretaria {
   @@unique([orgao_id, igreja_id])
 }
 model competencia_secretaria {
+  geracao_vinculo Int?
+  pode_instalar_mesa Boolean @default(false)
   pessoa_id String
   pessoa pessoas @relation(fields: [pessoa_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   id String @id @default(uuid())
@@ -1585,7 +1677,29 @@ model modelo_documento {
   revisao Int @default(1)
   contexto contexto_secretaria @relation(fields: [contexto_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   versoes modelo_documento_versao[]
+  rascunho modelo_documento_rascunho?
   @@unique([id, igreja_id, contexto_id])
+}
+model modelo_documento_rascunho {
+  modelo_id String @id
+  igreja_id String
+  contexto_id String
+  nome String @db.VarChar(255)
+  tipo documento_tipo
+  finalidade String @db.VarChar(100)
+  configuracao Json
+  modelo modelo_documento @relation(fields: [modelo_id, igreja_id, contexto_id], references: [id, igreja_id, contexto_id], onDelete: Restrict, onUpdate: Restrict)
+  imagens imagem_modelo_rascunho[]
+  @@unique([modelo_id, igreja_id, contexto_id])
+}
+model imagem_modelo_rascunho {
+  modelo_id String
+  igreja_id String
+  contexto_id String
+  arquivo_id String
+  rascunho modelo_documento_rascunho @relation(fields: [modelo_id, igreja_id, contexto_id], references: [modelo_id, igreja_id, contexto_id], onDelete: Cascade, onUpdate: Restrict)
+  arquivo arquivo_privado @relation(fields: [arquivo_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  @@id([modelo_id, arquivo_id])
 }
 model modelo_documento_versao {
   id String @id @default(uuid())
@@ -1612,7 +1726,38 @@ model imagem_modelo_documento {
   arquivo arquivo_privado @relation(fields: [arquivo_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict, map: "imagem_modelo_arquivo_fkey")
   @@id([versao_id, arquivo_id])
 }
+model local_reuniao {
+  id String @id @default(uuid())
+  igreja_id String
+  descritivo String @db.VarChar(255)
+  endereco_logradouro String @default("")
+  endereco_numero String @default("")
+  endereco_complemento String @default("")
+  endereco_bairro String @default("")
+  endereco_cep String @default("")
+  endereco_cidade String @default("")
+  endereco_uf String @default("")
+  extenso_personalizado String @default("")
+  declarativo_personalizado String @default("")
+  revisao Int @default(1)
+  igreja igreja @relation(fields: [igreja_id], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  reunioes reuniao[] @relation("LocalAgendado")
+  realizacoes reuniao[] @relation("LocalEfetivo")
+  @@unique([id, igreja_id])
+  @@index([igreja_id, descritivo])
+}
+
 model reuniao {
+  instalacao_formal Boolean @default(false)
+  folhas_presenca folha_presenca_assembleia[]
+  mesas_assembleia mesa_assembleia[]
+  local_efetivo_id String?
+  local_efetivo_retrato Json?
+  local_efetivo local_reuniao? @relation("LocalEfetivo", fields: [local_efetivo_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict, map: "reuniao_local_efetivo_fkey")
+  local_id String?
+  local_retrato Json?
+  local_cadastrado local_reuniao? @relation("LocalAgendado", fields: [local_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  itens_pauta item_pauta_reuniao[]
   restrito Boolean @default(false)
   id String @id @default(uuid())
   igreja_id String
@@ -1629,6 +1774,21 @@ model reuniao {
   @@unique([id, igreja_id, contexto_id])
   @@index([igreja_id, contexto_id, data])
 }
+model item_pauta_reuniao {
+  id String @id @default(dbgenerated("(gen_random_uuid())::text"))
+  reuniao_id String
+  igreja_id String
+  contexto_id String
+  ordem Int
+  descricao String @db.Text
+  proponente_id String?
+  reuniao reuniao @relation(fields: [reuniao_id, igreja_id, contexto_id], references: [id, igreja_id, contexto_id], onDelete: Cascade, onUpdate: Restrict)
+  proponente pessoas? @relation(fields: [proponente_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  resolucoes resolucao[]
+  @@unique([id, reuniao_id], map: "item_pauta_reuniao_id_reuniao_key")
+  @@unique([reuniao_id, ordem])
+}
+
 model participante_reuniao {
   id String @id @default(uuid())
   igreja_id String
@@ -1642,7 +1802,28 @@ model participante_reuniao {
   pessoa pessoas @relation(fields: [pessoa_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   @@unique([reuniao_id, pessoa_id])
 }
+model contador_ata_livro {
+  livro_id String @id
+  ultimo Int
+  livro livro_atas @relation(fields: [livro_id], references: [id], onDelete: Restrict)
+}
+model reserva_ata_livro {
+  livro_id String
+  numero Int
+  igreja_id String
+  contexto_id String
+  documento_id String
+  criado_em DateTime @default(now())
+  cancelada_em DateTime?
+  motivo String?
+  livro livro_atas @relation(fields: [livro_id, igreja_id, contexto_id], references: [id, igreja_id, contexto_id], onDelete: Restrict, onUpdate: Restrict)
+  documento documento @relation(fields: [documento_id, igreja_id, contexto_id], references: [id, igreja_id, contexto_id], onDelete: Restrict, onUpdate: Restrict)
+  @@id([livro_id, numero])
+  @@index([documento_id])
+}
 model documento {
+  identificacao_livro String?
+  reservas_ata reserva_ata_livro[]
   id String @id @default(uuid())
   igreja_id String
   contexto_id String
@@ -1664,6 +1845,7 @@ model documento {
   @@index([igreja_id, contexto_id, criado_em])
 }
 model documento_versao {
+  acessos_assembleia acesso_assembleia[]
   indicacoes_eleicao indicacao_eleicao_oficial[]
   referencias_ata_inst referencia_ata_institucional[]
   referencias_ata_oficial referencia_ata_oficial[]
@@ -1700,6 +1882,8 @@ model documento_versao {
   retificacoes documento_versao[] @relation("RetificacaoDocumento")
   arrolados arrolado_documento[]
   resolucoes resolucao[]
+  resolucoes_com_pauta resolucao[] @relation("VersaoReuniaoDaPauta")
+  @@unique([id, reuniao_id], map: "documento_versao_id_reuniao_key")
   anexos anexo_documento[]
   deliberacoes deliberacao_ata[]
   @@unique([id, igreja_id])
@@ -1777,6 +1961,11 @@ model resolucao {
   assunto String @db.VarChar(255)
   texto_proposta String?
   texto_deliberado String?
+  item_pauta_id String?
+  reuniao_pauta_id String?
+  item_pauta item_pauta_reuniao? @relation(fields: [item_pauta_id, reuniao_pauta_id], references: [id, reuniao_id], onDelete: Restrict, onUpdate: Restrict, map: "resolucao_item_reuniao_fkey")
+  versao_com_pauta documento_versao? @relation("VersaoReuniaoDaPauta", fields: [versao_id, reuniao_pauta_id], references: [id, reuniao_id], onDelete: NoAction, onUpdate: NoAction, map: "resolucao_versao_reuniao_fkey")
+  @@index([item_pauta_id])
   resultado resolucao_resultado
   eficaz Boolean @default(false)
   data_efeito DateTime? @db.Date
@@ -1826,6 +2015,11 @@ model anexo_documento {
   @@unique([versao_id, arquivo_id])
 }
 model deliberacao_ata {
+  conferencia_votacao Json?
+  acesso_assembleia_id String?
+  acesso_assembleia acesso_assembleia? @relation(fields: [acesso_assembleia_id], references: [id], onDelete: Restrict)
+  mesa_id String?
+  mesa mesa_assembleia? @relation(fields: [mesa_id, reuniao_id, igreja_id, contexto_id], references: [id, reuniao_id, igreja_id, contexto_id], onDelete: Restrict, onUpdate: Restrict)
   revisao_conteudo Int
   id String @id @default(uuid())
   igreja_id String
@@ -1911,6 +2105,8 @@ enum registro_livro_natureza {
 }
 
 model livro_atas {
+  contador_ata contador_ata_livro?
+  reservas_ata reserva_ata_livro[]
   id String @id @default(uuid())
   igreja_id String
   contexto_id String
@@ -2190,4 +2386,123 @@ model referencia_ata_institucional {
   @@unique([igreja_id, ato_orgao_id, etapa, sequencia], map: "referencia_institucional_orgao_seq_key")
   @@unique([igreja_id, autorizacao_id, etapa, sequencia], map: "referencia_institucional_financeira_seq_key")
   @@index([igreja_id, ata_documento_id])
+}
+
+model folha_presenca_assembleia {
+  id String @id @default(uuid())
+  igreja_id String
+  contexto_id String
+  reuniao_id String
+  versao Int
+  referencia DateTime @db.Date
+  extraida_em DateTime @default(now())
+  extraida_por String
+  identificacao String
+  linhas Json
+  reuniao reuniao @relation(fields: [reuniao_id, igreja_id, contexto_id], references: [id, igreja_id, contexto_id], onDelete: Restrict, onUpdate: Restrict)
+  operador usuarios @relation(fields: [extraida_por, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  @@unique([reuniao_id, versao])
+}
+
+model mesa_assembleia {
+  criterio_presidencia Json?
+  votantes_confirmados Json?
+  acessos acesso_assembleia[]
+  id String @id @default(uuid())
+  igreja_id String
+  contexto_id String
+  reuniao_id String
+  ordem Int
+  presidente_oficial_id String
+  secretario_id String
+  presidente_nome String
+  secretario_nome String
+  motivo String
+  fundamento String
+  vigente_desde DateTime @db.Timestamptz(3)
+  registrada_em DateTime @default(now())
+  registrada_por String
+  oficial oficial @relation(fields: [presidente_oficial_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  secretario pessoas @relation(fields: [secretario_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  operador usuarios @relation(fields: [registrada_por, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  reuniao reuniao @relation(fields: [reuniao_id, igreja_id, contexto_id], references: [id, igreja_id, contexto_id], onDelete: Restrict, onUpdate: Restrict)
+  deliberacoes deliberacao_ata[]
+  @@unique([id, reuniao_id, igreja_id, contexto_id])
+  @@unique([reuniao_id, ordem])
+}
+
+// A composição da mesa identifica o eleito. Cada convite autoriza uma única versão.
+model acesso_assembleia {
+  id String @id @default(uuid())
+  igreja_id String
+  contexto_id String
+  reuniao_id String
+  versao_id String
+  mesa_id String
+  solicitacao String @unique
+  conta_id String?
+  conta_versao Int?
+  concedido_por String
+  email String
+  hash String @unique
+  sessao_hash String? @unique
+  criado_em DateTime @default(now())
+  expira_em DateTime
+  consumido_em DateTime?
+  revogado_em DateTime?
+  mesa mesa_assembleia @relation(fields: [mesa_id, reuniao_id, igreja_id, contexto_id], references: [id, reuniao_id, igreja_id, contexto_id], onDelete: Restrict)
+  versao documento_versao @relation(fields: [versao_id, reuniao_id], references: [id, reuniao_id], onDelete: Restrict)
+  concedente usuarios @relation(fields: [concedido_por, igreja_id], references: [id, igreja_id], onDelete: Restrict)
+  email_fila outbox_email?
+  deliberacoes deliberacao_ata[]
+  atos ato_acesso_assembleia[]
+  @@index([versao_id, criado_em])
+}
+model ato_acesso_assembleia {
+  id String @id @default(uuid())
+  acesso_id String
+  operacao String
+  revisao Int
+  registrado_em DateTime @default(now())
+  acesso acesso_assembleia @relation(fields: [acesso_id], references: [id], onDelete: Restrict)
+  @@unique([acesso_id, operacao, revisao])
+}
+
+model liberacao_servico {
+  igreja_id String
+  acao      String
+  estado    String
+  revisao   Int
+  igreja    igreja @relation(fields: [igreja_id], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([igreja_id, acao])
+}
+
+model atribuicao_servico {
+  id String @id @default(uuid())
+  igreja_id String
+  usuario_id String
+  pessoa_id String
+  geracao_vinculo Int
+  acao String
+  inicio DateTime @db.Timestamptz(3)
+  fim DateTime? @db.Timestamptz(3)
+  revogado_em DateTime? @db.Timestamptz(3)
+  usuario usuarios @relation(fields: [usuario_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  @@index([igreja_id, usuario_id])
+}
+
+model evento_autorizacao {
+  id String @id @default(uuid())
+  igreja_id String
+  operador_id String
+  operador_pessoa_id String?
+  destinatario_id String?
+  pessoa_id String?
+  acao String
+  recurso_id String?
+  fundamento String
+  dados Json
+  instante DateTime @default(now()) @db.Timestamptz(3)
+  @@index([igreja_id, instante])
 }

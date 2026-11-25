@@ -32,23 +32,66 @@ export class MfaService {
   }
   private hash(code: string) { return createHash('sha256').update(code.toLowerCase()).digest('hex'); }
 
+  private permiteDesativacaoLocal(userId: string) {
+    return this.config.get('NODE_ENV') === 'development'
+      && this.config.get('HOST') === '127.0.0.1'
+      && this.config.get('DEV_MFA_OPT_OUT_USER_ID') === userId;
+  }
+
   async status(userId: string, churchId: string) {
     const [mfa, church] = await Promise.all([
       this.prisma.mfa_credencial.findUnique({ where: { usuario_id: userId }, select: { estado: true } }),
       this.prisma.igreja.findUnique({ where: { id: churchId }, select: { mfa_obrigatorio: true } }),
     ]);
-    return { enabled: mfa?.estado === 'ATIVO', required: church?.mfa_obrigatorio ?? false };
+    return {
+      enabled: mfa?.estado === 'ATIVO', required: church?.mfa_obrigatorio ?? false,
+      ...(church && !church.mfa_obrigatorio && this.permiteDesativacaoLocal(userId) ? { pode_desativar_no_espelho: true } : {}),
+    };
+  }
+
+  async desativarNoEspelho(userId: string, churchId: string, version: number, sessionId: string, senha: string) {
+    if (!this.permiteDesativacaoLocal(userId)) throw new ForbiddenException('Opção indisponível nesta instância.');
+    await this.prisma.$transaction(async tx => {
+      await tx.$queryRaw`SELECT id FROM igreja WHERE id = ${churchId} FOR NO KEY UPDATE`;
+      await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${userId} FOR UPDATE`;
+      const user = await tx.usuarios.findFirst({
+        where: { id: userId, igreja_id: churchId, perfil: 'ADMINISTRADOR', ativo: true, auth_version: version, mfa_reinscricao_obrigatoria: false },
+        select: { senha_hash: true, igreja: { select: { mfa_obrigatorio: true } }, mfa_credencial: { select: { estado: true } } },
+      });
+      if (!user || user.igreja.mfa_obrigatorio || user.mfa_credencial?.estado !== 'ATIVO')
+        throw new ForbiddenException('A configuração atual da conta ou da igreja impede a desativação.');
+      await tx.$queryRaw`SELECT id FROM sessoes WHERE id = ${sessionId} AND usuario_id = ${userId} FOR UPDATE`;
+      const agora = new Date();
+      const sessao = await tx.sessoes.findFirst({
+        where: {
+          id: sessionId, usuario_id: userId, auth_version: version, revogada_em: null, expira_em: { gt: agora },
+          mfa_autenticado_em: { gt: new Date(agora.getTime() - 10 * 60_000) },
+          OR: [{ mfa_metodo: 'totp' }, { mfa_metodo: 'recovery', mfa_confirmada_em: { not: null } }],
+        }, select: { id: true },
+      });
+      if (!sessao) throw new ForbiddenException('Entre novamente com um código para confirmar a desativação.');
+      if (!await bcrypt.compare(senha, user.senha_hash)) throw new UnauthorizedException('Senha incorreta.');
+      await tx.mfa_recuperacao_pendente.deleteMany({ where: { usuario_id: userId } });
+      await tx.mfa_recuperacao.deleteMany({ where: { usuario_id: userId } });
+      await tx.mfa_credencial.delete({ where: { usuario_id: userId } });
+      await tx.usuarios.update({ where: { id: userId }, data: { auth_version: { increment: 1 } } });
+      await tx.sessoes.updateMany({ where: { usuario_id: userId, revogada_em: null }, data: { revogada_em: agora } });
+      await tx.logs_atividades.create({ data: {
+        igreja_id: churchId, usuario_id: userId, registro_id: userId, tabela_afetada: 'mfa_credencial',
+        acao: 'ATUALIZACAO', dados_novos: { operacao: 'desativacao_no_espelho' },
+      } });
+    });
   }
 
   async setup(userId: string, churchId: string, password: string) {
     const user = await this.prisma.usuarios.findFirst({ where: { id: userId, igreja_id: churchId, ativo: true } });
     if (!user || !await bcrypt.compare(password, user.senha_hash)) throw new UnauthorizedException('Credenciais inválidas.');
-    if (!user.mfa_reinscricao_obrigatoria && ![usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR].includes(user.perfil as 'ADMINISTRADOR' | 'GESTOR')) throw new ForbiddenException('Configuração não disponível para este perfil.');
+    if (!user.mfa_reinscricao_obrigatoria && !(['ADMINISTRADOR', 'GESTOR', 'COMUM'] as usuarios_perfil[]).includes(user.perfil)) throw new ForbiddenException('Configuração não disponível para este perfil.');
     const secret = generateSecret();
     const encrypted = this.encrypt(secret, userId);
     await this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${userId} FOR UPDATE`;
-      const current = await tx.usuarios.findFirst({ where: { id: userId, igreja_id: churchId, ativo: true, auth_version: user.auth_version, OR: [{ perfil: { in: ['ADMINISTRADOR', 'GESTOR'] } }, { mfa_reinscricao_obrigatoria: true }] } });
+      const current = await tx.usuarios.findFirst({ where: { id: userId, igreja_id: churchId, ativo: true, auth_version: user.auth_version, OR: [{ perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'COMUM'] } }, { mfa_reinscricao_obrigatoria: true }] } });
       if (!current) throw new UnauthorizedException('Conta indisponível.');
       const existing = await tx.mfa_credencial.findUnique({ where: { usuario_id: userId } });
       if (existing?.estado === 'ATIVO') throw new BadRequestException('MFA já está ativo.');
@@ -63,7 +106,7 @@ export class MfaService {
     const codes = Array.from({ length: 10 }, () => randomBytes(12).toString('hex'));
     const result = await this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${userId} FOR UPDATE`;
-      const user = await tx.usuarios.findFirst({ where: { id: userId, igreja_id: churchId, ativo: true, auth_version: version, OR: [{ perfil: { in: ['ADMINISTRADOR', 'GESTOR'] } }, { mfa_reinscricao_obrigatoria: true }] } });
+      const user = await tx.usuarios.findFirst({ where: { id: userId, igreja_id: churchId, ativo: true, auth_version: version, OR: [{ perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'COMUM'] } }, { mfa_reinscricao_obrigatoria: true }] } });
       const mfa = await tx.mfa_credencial.findUnique({ where: { usuario_id: userId } });
       if (!user || !mfa || mfa.estado !== 'PENDENTE' || !mfa.expira_em || mfa.expira_em <= new Date() || (mfa.bloqueado_ate && mfa.bloqueado_ate > new Date())) return false;
       const verified = /^\d{6}$/.test(code) ? verifySync({ secret: this.decrypt(mfa.segredo_cifrado, userId), token: code, epochTolerance: 30 }) : { valid: false as const };

@@ -1,3 +1,4 @@
+import { ServicoDaRota } from '../autorizacao/politica';
 import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards, ParseIntPipe } from '@nestjs/common';
 import { TratamentosService } from './tratamentos.service';
 import { CreateTratamentoDto } from './dto/create-tratamento.dto';
@@ -19,11 +20,13 @@ export class TratamentosController {
     return this.tratamentosService.create(dto);
   }
 
+  @ServicoDaRota('TRATAMENTOS_CONSULTAR')
   @Get()
   findAll() {
     return this.tratamentosService.findAll();
   }
 
+  @ServicoDaRota('TRATAMENTOS_CONSULTAR')
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.tratamentosService.findOne(id);

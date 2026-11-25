@@ -1,3 +1,4 @@
+import { ServicoDaRota } from '../autorizacao/politica';
 import { Controller, Get, Post, Patch, Put, Delete, Param, Body, Request, UseGuards } from '@nestjs/common';
 import { AuthGuard } from 'src/auth/auth.guard';
 import { RolesGuard } from 'src/auth/guards/roles/roles.guard';
@@ -13,22 +14,25 @@ import { RegrasRelacaoEnumService } from './regras-relacao-enum.service';
 export class RegrasRelacaoEnumController {
   constructor(private readonly service: RegrasRelacaoEnumService) {}
 
+  @ServicoDaRota('PARAMETROS_CONSULTAR')
   @Get('enums')
   @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
   getEnums() {
     return this.service.getEnumsDisponiveis();
   }
 
+  @ServicoDaRota('PARAMETROS_CONSULTAR')
   @Get('modulo/:modulo')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO, Perfil.OPERADOR, Perfil.AUDITOR)
   getByModulo(@Request() req, @Param('modulo') modulo: string) {
     return this.service.getRegrasPorModulo(modulo, req.user.igreja_id);
   }
 
+  @ServicoDaRota('PARAMETROS_EDITAR')
   @Put('modulo/membresia/:id/valores')
   @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
   replaceValoresDaIgreja(@Request() req, @Param('id') id: string, @Body() dto: ReplaceValoresDto) {
-    return this.service.replaceValoresDaIgreja(req.user.igreja_id, id, dto.valores);
+    return this.service.replaceValoresDaIgreja(req.user.igreja_id, id, dto.valores, req.user);
   }
 
   @Get()

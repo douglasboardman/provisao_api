@@ -1,3 +1,4 @@
+import { ObservarServico, ServicoDaRota } from '../autorizacao/politica';
 import { Controller, Get, UseGuards, Request, Query } from '@nestjs/common';
 import { LogsService } from './logs.service';
 import { AuthGuard } from 'src/auth/auth.guard';
@@ -11,6 +12,8 @@ import { usuarios_perfil as Perfil } from '@prisma/client';
 export class LogsController {
   constructor(private readonly logsService: LogsService) {}
 
+  @ObservarServico('AUDITORIA_CONSULTAR')
+  @ServicoDaRota('AUDITORIA_CONSULTAR')
   @Get()
   findAll(@Request() req, @Query('page') page?: string) {
     return this.logsService.findAll(req.user.igreja_id, page ? (parseInt(page) || 1) : 1);

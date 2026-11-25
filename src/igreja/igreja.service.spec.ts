@@ -26,6 +26,8 @@ const mockIgreja = {
 describe('IgrejaService', () => {
   let service: IgrejaService;
   let prisma: {
+    $transaction: jest.Mock;
+    $executeRaw: jest.Mock;
     igreja: {
       findUnique: jest.Mock;
       findMany: jest.Mock;
@@ -37,6 +39,8 @@ describe('IgrejaService', () => {
 
   beforeEach(async () => {
     prisma = {
+      $transaction: jest.fn(fn => fn(prisma)),
+      $executeRaw: jest.fn(),
       igreja: {
         findUnique: jest.fn().mockResolvedValue(mockIgreja),
         findMany: jest.fn().mockResolvedValue([]),

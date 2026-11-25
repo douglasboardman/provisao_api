@@ -117,7 +117,7 @@ export class UsuariosService {
     try {
       return await this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${actorId} AND igreja_id = ${igreja_id} FOR UPDATE`;
-      const actor = await tx.usuarios.findFirst({ where: { id: actorId, igreja_id, ativo: true }, select: { id: true, perfil: true } });
+      const actor = await tx.usuarios.findFirst({ where: { id: actorId, igreja_id, ativo: true }, select: { id: true, perfil: true, pessoa_id: true } });
       if (!actor) throw new ForbiddenException('Ação não autorizada.');
       const isImageOnly = Object.keys(updateUsuarioDto).every(key => key === 'url_imagem_perfil');
       if (actor.perfil !== 'ADMINISTRADOR' && !(actor.id === id && isImageOnly)) throw new ForbiddenException('Ação não autorizada.');
@@ -126,12 +126,25 @@ export class UsuariosService {
       if (!atual) throw new NotFoundException(`Usuário com ID ${id} não encontrado.`);
       if (updateUsuarioDto.ativo === true && !atual.ativo) throw new BadRequestException('Use o fluxo de ativação para enviar o convite.');
       if (actor.id === id && ((updateUsuarioDto.perfil !== undefined && updateUsuarioDto.perfil !== atual.perfil) || updateUsuarioDto.ativo === false)) throw new ForbiddenException('Não é permitido alterar o próprio perfil ou desativar a própria conta.');
+      if (actor.id !== id && actor.pessoa_id && actor.pessoa_id === atual.pessoa_id &&
+          ((updateUsuarioDto.perfil && updateUsuarioDto.perfil !== atual.perfil) ||
+           (updateUsuarioDto.email_login && updateUsuarioDto.email_login !== atual.email_login) ||
+           (updateUsuarioDto.ativo !== undefined && updateUsuarioDto.ativo !== atual.ativo)))
+        throw new ForbiddenException('Outra pessoa deve alterar a segurança de uma conta vinculada a você.');
+      if (updateUsuarioDto.perfil === 'COMUM' && ['GESTOR','OPERADOR','SECRETARIO','TESOUREIRO'].includes(atual.perfil))
+        throw new BadRequestException('Converta a conta pela prévia em Atuação.');
       const dataToUpdate: Record<string, unknown> = { ...updateUsuarioDto };
       if ((updateUsuarioDto.email_login !== undefined && updateUsuarioDto.email_login !== atual.email_login) || (updateUsuarioDto.ativo !== undefined && updateUsuarioDto.ativo !== atual.ativo)) dataToUpdate.auth_version = { increment: 1 };
       if ((updateUsuarioDto.perfil !== undefined && updateUsuarioDto.perfil !== atual.perfil) || (updateUsuarioDto.ativo === false && atual.ativo)) {
         await this.revokeAccessCompetence(tx, igreja_id, id, actorId, 'perfil_ou_atividade_alterado');
       }
       const usuario = await tx.usuarios.update({ where: { id }, data: dataToUpdate });
+      if (usuario.geracao_vinculo !== atual.geracao_vinculo) {
+        await tx.evento_autorizacao.create({ data: { igreja_id, operador_id: actor.id, operador_pessoa_id: actor.pessoa_id,
+          destinatario_id: id, pessoa_id: atual.pessoa_id, acao: 'INVALIDAR_ATUACAO', recurso_id: id,
+          fundamento: 'Mudança de perfil ou situação da conta', dados: { perfil_anterior: atual.perfil, perfil: usuario.perfil,
+            ativo: usuario.ativo, conta_atuacao_anterior: atual.conta_atuacao, geracao: usuario.geracao_vinculo } } });
+      }
       const { senha_hash, auth_version, ...result } = usuario;
       return result;
       });
@@ -146,7 +159,7 @@ export class UsuariosService {
     try {
       return await this.prisma.$transaction(async tx => {
         await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${actorId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-        const actor = await tx.usuarios.findFirst({ where: { id: actorId, igreja_id: igrejaId, ativo: true, perfil: 'ADMINISTRADOR' }, select: { id: true } });
+        const actor = await tx.usuarios.findFirst({ where: { id: actorId, igreja_id: igrejaId, ativo: true, perfil: 'ADMINISTRADOR' }, select: { id: true, pessoa_id: true } });
         if (!actor) throw new ForbiddenException('Ação não autorizada.');
         await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${id} AND igreja_id = ${igrejaId} FOR UPDATE`;
         const user = await tx.usuarios.findFirst({ where: { id, igreja_id: igrejaId }, select: { id: true, pessoa_id: true } });
@@ -155,8 +168,13 @@ export class UsuariosService {
           throw new NotFoundException('Pessoa não encontrada.');
         }
         if (user.pessoa_id === pessoaId) return { pessoa_id: pessoaId };
+        if (actor.id === id || (actor.pessoa_id && (actor.pessoa_id === pessoaId || actor.pessoa_id === user.pessoa_id)))
+          throw new ForbiddenException('Outra pessoa deve conferir este vínculo.');
         await this.revokeAccessCompetence(tx, igrejaId, id, actorId, 'vinculo_pessoa_alterado');
-        await tx.usuarios.update({ where: { id }, data: { pessoa_id: pessoaId } });
+        const alterado = await tx.usuarios.update({ where: { id }, data: { pessoa_id: pessoaId } });
+        await tx.evento_autorizacao.create({ data: { igreja_id: igrejaId, operador_id: actor.id, operador_pessoa_id: actor.pessoa_id,
+          destinatario_id: id, pessoa_id: pessoaId, acao: 'ALTERAR_VINCULO', recurso_id: id, fundamento: 'Conferência do vínculo no cadastro de usuários',
+          dados: { pessoa_anterior_id: user.pessoa_id, geracao: alterado.geracao_vinculo } } });
         await tx.logs_atividades.create({ data: {
           igreja_id: igrejaId, usuario_id: actorId, acao: logs_atividades_acao.ATUALIZACAO,
           tabela_afetada: 'usuarios', registro_id: id,
@@ -165,9 +183,6 @@ export class UsuariosService {
         return { pessoa_id: pessoaId };
       });
     } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        throw new ConflictException('Pessoa já vinculada a outro usuário.');
-      }
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
         throw new ConflictException('A pessoa selecionada não está disponível para vínculo.');
       }

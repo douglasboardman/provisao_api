@@ -1,3 +1,4 @@
+import { ObservarServico, ServicoDaRota } from '../autorizacao/politica';
 import {
   Controller, Get, Post, Body, Patch, Param, Delete, UseGuards,
   UseInterceptors, UploadedFile, BadRequestException, Request,
@@ -30,16 +31,20 @@ export class PessoasController {
    * Acesso restrito aos perfis ADMIN e GESTOR.
    * Rota: POST /pessoas
    */
+  @ObservarServico('PESSOAS_CADASTRAR')
+  @ServicoDaRota('PESSOAS_CADASTRAR')
   @Post()
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
   create(@Request() req, @Body() createPessoaDto: CreatePessoaDto) {
-    return this.pessoasService.create(req.user.igreja_id, createPessoaDto);
+    return this.pessoasService.create(req.user.igreja_id, createPessoaDto, req.user);
   }
 
   /**
    * Lista todas as pessoas da mesma igreja do solicitante.
    * Rota: GET /pessoas
    */
+  @ObservarServico('PESSOAS_CONSULTAR')
+  @ServicoDaRota('PESSOAS_CONSULTAR')
   @Get()
   findAll(@Request() req) {
     return this.pessoasService.findAll(req.user.igreja_id);
@@ -49,6 +54,7 @@ export class PessoasController {
    * Retorna uma pessoa pelo ID, dentro da mesma igreja.
    * Rota: GET /pessoas/:id
    */
+  @ServicoDaRota('PESSOAS_CONSULTAR')
   @Get(':id')
   findOne(@Request() req, @Param('id') id: string) {
     return this.pessoasService.findOne(id, req.user.igreja_id);
@@ -58,26 +64,29 @@ export class PessoasController {
    * Atualiza uma pessoa da mesma igreja. Restrito a ADMIN e GESTOR.
    * Rota: PATCH /pessoas/:id
    */
+  @ServicoDaRota('PESSOAS_EDITAR')
   @Patch(':id')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
   update(@Request() req, @Param('id') id: string, @Body() updatePessoaDto: UpdatePessoaDto) {
-    return this.pessoasService.update(id, req.user.igreja_id, updatePessoaDto);
+    return this.pessoasService.update(id, req.user.igreja_id, updatePessoaDto, req.user);
   }
 
   /**
    * Remove uma pessoa da mesma igreja. Restrito ao ADMIN.
    * Rota: DELETE /pessoas/:id
    */
+  @ServicoDaRota('PESSOAS_EXCLUIR')
   @Delete(':id')
   @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
   remove(@Request() req, @Param('id') id: string) {
-    return this.pessoasService.remove(id, req.user.igreja_id);
+    return this.pessoasService.remove(id, req.user.igreja_id, req.user);
   }
 
   /**
    * Faz upload e associa uma foto a uma pessoa da mesma igreja.
    * Rota: PATCH /pessoas/atrib-foto-pessoa/:id
    */
+  @ServicoDaRota('PESSOAS_EDITAR')
   @Patch('atrib-foto-pessoa/:id')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
   @UseInterceptors(FileInterceptor('file'))
@@ -90,14 +99,16 @@ export class PessoasController {
       throw new BadRequestException('Nenhum ficheiro foi enviado');
     }
 
+    await this.pessoasService.findOne(id, req.user.igreja_id);
     const fotoUrl = await this.storageService.uploadFile(file, 'fotos-pessoas');
-    return this.pessoasService.update(id, req.user.igreja_id, { url_foto: fotoUrl });
+    return this.pessoasService.update(id, req.user.igreja_id, { url_foto: fotoUrl }, req.user);
   }
 
   /**
    * Associa uma pessoa a um grupo familiar, ambos da mesma igreja.
    * Rota: PATCH /pessoas/atrib-grupo-familiar/:idPessoa/:idFamilia
    */
+  @ServicoDaRota('PESSOAS_EDITAR')
   @Patch('atrib-grupo-familiar/:idPessoa/:idFamilia')
   @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
   setFamilia(
@@ -106,6 +117,6 @@ export class PessoasController {
     @Param('idFamilia') idGrupoFamiliar: string,
   ) {
     const idFamilia = idGrupoFamiliar !== 'null' ? idGrupoFamiliar : null;
-    return this.pessoasService.setFamilia(idPessoa, idFamilia, req.user.igreja_id);
+    return this.pessoasService.setFamilia(idPessoa, idFamilia, req.user.igreja_id, req.user);
   }
 }

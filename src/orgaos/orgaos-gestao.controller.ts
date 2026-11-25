@@ -1,3 +1,4 @@
+import { ServicoDaRota } from '../autorizacao/politica';
 import { ManutencaoOrgaoService } from './manutencao-orgao.service';
 import { BadRequestException, Body, ConflictException, Controller, Get, Header, Param, ParseUUIDPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { Prisma, usuarios_perfil as Perfil } from '@prisma/client';
@@ -221,9 +222,24 @@ export class OrgaosGestaoController {
     return this.executar(() => this.designacoes.substituir(req.user.igreja_id, req.user.sub, id, cargo, dados));
   }
 
+  @Get(':id/atas-cargos')
+  @ServicoDaRota('CARGOS_REGISTRAR')
+  @Header('Cache-Control', 'private, no-store')
+  atasCargos(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Query() filtros: Record<string, string>) {
+    return this.eleitos.atas(req.user, id, filtros);
+  }
+
+  @Get(':id/cargos/:cargo/candidatos')
+  @ServicoDaRota('CARGOS_REGISTRAR')
+  @Header('Cache-Control', 'private, no-store')
+  candidatosCargo(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Param('cargo', ParseUUIDPipe) cargo: string, @Query() filtros: Record<string, string>) {
+    return this.eleitos.candidatos(req.user, id, cargo, filtros);
+  }
+
   @Post(':id/cargos/:cargo/eleicao-oficial')
+  @ServicoDaRota('CARGOS_REGISTRAR')
   eleicaoOficial(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Param('cargo', ParseUUIDPipe) cargo: string, @Body() dados: Parameters<CargosEleitosService['registrar']>[4]) {
-    return this.executar(() => this.eleitos.registrar(req.user.igreja_id, req.user.sub, id, cargo, dados));
+    return this.executar(() => this.eleitos.registrar(req.user.igreja_id, req.user.sub, id, cargo, dados, req.user));
   }
 
   @Post(':id/cargos/:cargo/eleicao-unidade') @Roles(Perfil.GESTOR)
@@ -232,8 +248,9 @@ export class OrgaosGestaoController {
   }
 
   @Patch(':id/ocupacoes/:ocupacao/encerrar-oficial')
+  @ServicoDaRota('CARGOS_REGISTRAR')
   encerrarOficial(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Param('ocupacao', ParseUUIDPipe) ocupacao: string, @Body() dados: Parameters<CargosEleitosService['encerrar']>[4]) {
-    return this.executar(() => this.eleitos.encerrar(req.user.igreja_id, req.user.sub, id, ocupacao, dados));
+    return this.executar(() => this.eleitos.encerrar(req.user.igreja_id, req.user.sub, id, ocupacao, dados, req.user));
   }
 
   @Patch(':id/ocupacoes/:ocupacao/encerrar-unidade') @Roles(Perfil.GESTOR)

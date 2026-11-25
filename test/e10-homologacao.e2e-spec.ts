@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { NavegadorSecretaria } from './secretaria-navegador';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
@@ -77,18 +78,26 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
   let logs = '';
   const apiRequest = (metodo: 'post' | 'get' | 'patch', caminho: string, cookie = cookieGestor) =>
     http[metodo](caminho).set('Cookie', cookie).set('Origin', origem).set('X-Provisao-Request', '1');
-  const post = (caminho: string, dados: object, cookie = cookieGestor) =>
-    apiRequest('post', caminho, cookie)
-      .send(dados)
-      .expect((r) => {
-        if (r.status !== 201)
-          throw new Error(`POST ${caminho}: HTTP ${r.status} ${JSON.stringify(r.body.message ?? '')}`);
-      });
+  let repeticoesPorConcorrencia = 0;
+  async function post(caminho: string, dados: object, cookie = cookieGestor) {
+    const enviar = () => apiRequest('post', caminho, cookie).send(dados);
+    let resposta = await enviar();
+    for (let tentativa = 1; tentativa <= 2 && resposta.status === 409 && 'idempotencia' in dados &&
+      resposta.body.message === 'A Secretaria está processando operações concorrentes. Tente novamente.'; tentativa++) {
+      await pausa(250 * tentativa);
+      repeticoesPorConcorrencia++;
+      resposta = await enviar();
+    }
+    if (resposta.status !== 201)
+      throw new Error(`POST ${caminho}: HTTP ${resposta.status} ${JSON.stringify(resposta.body.message ?? '')}`);
+    return resposta;
+  }
   const get = (caminho: string, cookie = cookieGestor) => apiRequest('get', caminho, cookie).expect(200);
   const patch = (caminho: string, dados: object, cookie = cookieAdmin) =>
     apiRequest('patch', caminho, cookie).send(dados).expect(200);
 
-  function iniciar(entrada: string, smtpPort = '51025') {
+  let contextosEditor = '*';
+  function iniciar(entrada: string, smtpPort = process.env.E2E_SMTP_PORT ?? '51025') {
     const filho = spawn(process.execPath, [entrada], {
       env: {
         PATH: process.env.PATH,
@@ -107,12 +116,13 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
         SMTP_HOST: '127.0.0.1',
         SMTP_PORT: smtpPort,
         SMTP_FROM: 'provisao@example.invalid',
-        SMTP_USER: '',
-        SMTP_PASS: '',
+        SMTP_USER: process.env.E2E_SMTP_USER ?? '',
+        SMTP_PASS: process.env.E2E_SMTP_PASS ?? '',
         FEATURE_GOVERNANCA: 'true',
         FEATURE_ORGAOS: 'true',
         FEATURE_ORGAOS_GESTAO: 'true',
         FEATURE_SECRETARIA: 'true',
+        SECRETARIA_EDITOR_PAGINA_CONTEXTOS: contextosEditor,
         FEATURE_SECRETARIA_LIVROS: 'true',
         FEATURE_SECRETARIA_ASSINATURAS: 'true',
       },
@@ -125,6 +135,13 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
     return filho;
   }
 
+  async function iniciarApi() {
+    api = iniciar('dist/src/main.js');
+    await aguardar('API em loopback', async () =>
+      (await fetch(base + '/version').catch(() => null))?.ok ? true : undefined,
+    );
+  }
+
   async function login(igrejaId: string, email: string) {
     const resposta = await apiRequest('post', '/auth/login', '')
       .send({ igreja_id: igrejaId, login: email, senha })
@@ -135,7 +152,7 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
 
   async function tokenEmail(caminho: string) {
     return aguardar('e-mail entregue à caixa de homologação', async () => {
-      const mailpit = 'http://127.0.0.1:58025/api/v1';
+      const mailpit = `http://127.0.0.1:${Number(process.env.E2E_MAILPIT_PORT ?? 58025)}/api/v1`;
       const pesquisa = await fetch(`${mailpit}/search?query=${encodeURIComponent('to:' + emailPastor)}`);
       if (!pesquisa.ok) throw new Error('Caixa de homologação indisponível.');
       const lista: { messages: { ID: string }[] } = await pesquisa.json();
@@ -179,10 +196,7 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
     const externoEmail = await ator(outra, 'ADMINISTRADOR');
     const perfisOperacionais = ['SECRETARIO', 'TESOUREIRO', 'OPERADOR'] as const;
     const emailsOperacionais = await Promise.all(perfisOperacionais.map((perfil) => ator(igreja, perfil)));
-    api = iniciar('dist/src/main.js');
-    await aguardar('API em loopback', async () =>
-      (await fetch(base + '/version').catch(() => null))?.ok ? true : undefined,
-    );
+    await iniciarApi();
     ({ id: usuarioAdmin, cookie: cookieAdmin } = await login(igreja, adminEmail));
     ({ cookie: cookieAuditor } = await login(igreja, auditorEmail));
     ({ cookie: cookieExterno } = await login(outra, externoEmail));
@@ -309,11 +323,11 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
         cookieAdmin,
       )
     ).body.id;
-    await post(
+    const presidencia = (await post(
       '/orgaos/gestao/presidencias',
       { oficial_id: oficial, inicio: '2020-01-12', evidencia: evidencia.evidencia, idempotencia: randomUUID() },
       cookieAdmin,
-    );
+    )).body.id;
     const entradaUnidade = {
       nome: 'Unidade de ação social',
       sigla: 'UAS',
@@ -385,29 +399,35 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
       },
       cookieAdmin,
     );
+    const cargoSecretario = await prisma.cargo_orgao.findFirstOrThrow({ where: { orgao_id: conselho, codigo: 'SECRETARIO' } });
+    // O ensaio parte de uma posse histórica comprovada na fixture. O ato de eleição exige ata e outro operador.
+    await prisma.ocupacao_cargo.create({ data: { igreja_id: igreja, orgao_id: conselho, cargo_id: cargoSecretario.id,
+      pessoa_id: pastor, inicio: new Date('2020-01-12') } });
+    await prisma.usuarios.update({ where: { id: usuarioGestor }, data: { conta_atuacao: true } });
+    await prisma.evento_autorizacao.create({ data: { igreja_id: igreja, operador_id: usuarioAdmin, pessoa_id: pastor,
+      acao: 'PRESIDENCIA_CONFERIDA', recurso_id: presidencia, fundamento: evidencia.evidencia, dados: {} } });
     const modelos = await seedSecretaria(prisma, igreja, contexto, usuarioAdmin);
     expect(await seedSecretaria(prisma, igreja, contexto, usuarioAdmin)).toEqual(modelos);
     expect(await prisma.modelo_documento.count({ where: { contexto_id: contexto } })).toBe(4);
     await expect(seedSecretaria(prisma, outra, contexto, usuarioAdmin)).rejects.toThrow();
     const mesa = { pessoa_id: pastor, presente: true, papeis: ['PRESIDENTE', 'SECRETARIO'] };
+    const local = await prisma.local_reuniao.create({
+      data: { igreja_id: igreja, descritivo: 'Templo de homologação' },
+    });
+    const agendamento = {
+      restrito: true,
+      modalidade: 'REGULAR',
+      situacao: 'AGENDADA',
+      data: hoje,
+      horario_previsto: '10:00',
+      itens_pauta: [{ descricao: 'Admissão de membros', proponente_id: null }],
+    };
     const reuniao = (
       await post(s + '/reunioes', {
         contexto_id: contexto,
+        local_id: local.id,
         idempotencia: randomUUID(),
-        dados: {
-          restrito: true,
-          modalidade: 'ORDINARIA',
-          data,
-          local: 'Uruguaiana',
-          pauta: 'Admissão e deliberação',
-          competencia: 'Conselho',
-          universo_informado: 1,
-          quorum_minimo: 1,
-          quorum_conferido: true,
-          fundamento_quorum: 'Mesa conferiu',
-          resultado: 'Apreciada',
-          participantes: [mesa],
-        },
+        dados: agendamento,
       })
     ).body.id;
     const livro = (
@@ -458,28 +478,30 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
       assunto: string,
       teor: string,
       tipo: 'FISICA' | 'ELETRONICA',
-      emLivro: boolean,
-      ata = false,
+      vinculos: { emLivro?: boolean; reuniao?: 'edital' | 'ata'; antecedente?: string } = {},
     ) {
+      const ata = vinculos.reuniao === 'ata';
+      const emLivro = !!vinculos.emLivro;
       const id = (
         await post(s + '/documentos', {
           contexto_id: contexto,
-          restrito: emLivro,
+          restrito: emLivro || !!vinculos.reuniao,
           idempotencia: randomUUID(),
           versao: {
             modelo_versao_id: modelo,
             livro_id: emLivro ? livro : null,
-            reuniao_id: ata ? reuniao : null,
+            reuniao_id: vinculos.reuniao ? reuniao : null,
+            motivador_id: vinculos.antecedente ?? null,
             assunto,
-            data_documento: data,
-            conteudo: { teor, campos: {}, anexos: [], arrolados },
+            data_documento: hoje,
+            conteudo: { teor, campos: {}, anexos: [], arrolados, ...(ata && { redator_ata: { pessoa_id: pastor } }) },
             ...(ata ? { resolucoes } : {}),
           },
         })
       ).body.id;
       const url = s + '/documentos/' + id;
       await post(url + '/encaminhar', comando(1));
-      if (ata) await post(url + '/deliberar', { ...comando(2), reuniao_id: reuniao, resultado: 'APROVADA', data });
+      if (ata) await post(url + '/deliberar', { ...comando(2), reuniao_id: reuniao, resultado: 'APROVADA', data: hoje });
       const revisao = ata ? 3 : 2;
       let paginas: number | undefined;
       if (emLivro) {
@@ -544,7 +566,7 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
             idempotencia: randomUUID(),
             via_sha256: sha(via),
             evidencia: 'Original sintético conferido',
-            assinaturas: [{ arrolado_id: d.arroladoId, data, evidencia: 'Rubrica conferida' }],
+            assinaturas: [{ arrolado_id: d.arroladoId, data: hoje, evidencia: 'Rubrica conferida' }],
           }),
         )
         .attach('file', bytes, 'scan.pdf')
@@ -557,13 +579,115 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
       'Termo de Abertura',
       'Abre-se o livro para registro das atas do Conselho.',
       'FISICA',
-      true,
+      { emLivro: true },
     );
     expect((await livroDetalhe()).estado).toBe('EM_PREPARACAO');
     const scan = await coletaFisica(abertura, '01-abertura-via-fisica');
     await expedir(abertura, '02-abertura');
     expect((await get(arquivo(abertura, 'scan'))).body).toEqual(scan);
     expect((await livroDetalhe()).estado).toBe('ABERTO');
+
+    const campos = (await get(s + '/campos')).body as { id: string; codigo: string; origem: string }[];
+    const campo = (codigo: string) => campos.find((c) => c.codigo === codigo)!.id;
+    const espaco = { superior: 0, inferior: 0 };
+    const pagina = {
+      papel: 'A4',
+      orientacao: 'retrato',
+      fonte: 'Noto Serif',
+      tamanho_pt: 12,
+      margens_cm: { superior: 2, inferior: 2, esquerda: 2, direita: 2 },
+      espacamento_cm: { cabecalho: espaco, corpo: espaco, rodape: espaco },
+    };
+    const paragrafo = (texto: string) => ({
+      tipo: 'paragrafo',
+      alinhamento: 'esquerda',
+      trechos: [{ tipo: 'texto', texto }],
+    });
+    const valor = (id: string, apresentacao = 'em_linha') => ({
+      tipo: 'paragrafo',
+      alinhamento: 'esquerda',
+      trechos: [{ tipo: 'campo', campo_id: id, apresentacao }],
+    });
+    const compor = (corpo: object[]) => ({ versao_formato: 1, pagina, corpo, cabecalho: [], rodape: [], notas: {} });
+    const modelo = (nome: string, tipo: string, finalidade: string, config: object) =>
+      post(s + '/modelos', {
+        nome,
+        tipo,
+        finalidade,
+        publicar: true,
+        idempotencia: randomUUID(),
+        contexto_id: contexto,
+        configuracao: {
+          contexto: 'ORGAO',
+          tipos_orgao: ['CONSELHO'],
+          constituicoes: ['OFICIAL'],
+          perfil: 'ATA_PADRAO',
+          motivador: 'OPCIONAL',
+          resolucoes: 'OPCIONAL',
+          cargos_obrigatorios: [],
+          campos_obrigatorios: [],
+          papeis_obrigatorios: [],
+          ...config,
+        },
+      });
+    const editalModelo = (
+      await modelo('Edital do Conselho', 'OUTRO', 'CONVOCACAO', {
+        atuacao: { criar: ['PRESIDENCIA_CONSELHO'], preparar: [], assinar: [] },
+        vinculo_reuniao: 'OBRIGATORIO',
+        composicao_padrao: compor([paragrafo('Convocação do Conselho'), valor(campo('PAUTA_REUNIAO'))]),
+      })
+    ).body;
+    const edital = await aprovar(editalModelo.versao_id, 'Convocação do Conselho', '', 'FISICA', { reuniao: 'edital' });
+    await coletaFisica(edital);
+    await expedir(edital, 'edital-conselho');
+    const fichaReuniao = (await get(s + '/reunioes/' + reuniao)).body;
+    const item = fichaReuniao.itens_pauta[0];
+    await patch(
+      s + '/reunioes/' + reuniao,
+      {
+        revisao: fichaReuniao.revisao,
+        idempotencia: randomUUID(),
+        local_id: local.id,
+        dados: {
+          ...agendamento,
+          situacao: 'ENCERRADA',
+          inicio: hoje + 'T10:00:00-03:00',
+          fim: hoje + 'T11:00:00-03:00',
+          itens_pauta: [{ id: item.id, descricao: item.descricao, proponente_id: null }],
+          competencia: 'Conselho',
+          universo_informado: 1,
+          quorum_minimo: 1,
+          quorum_conferido: true,
+          fundamento_quorum: 'Mesa conferiu',
+          resultado: 'Apreciada',
+          participantes: [mesa],
+        },
+      },
+      cookieGestor,
+    );
+    const recebida = campo('PAUTA');
+    const decisao = campos.find((c) => c.origem === 'deliberacoes_reuniao')!.id;
+    const ataModelo = (
+      await modelo('Ata encadeada do Conselho', 'ATA', 'ATA_REUNIAO', {
+        atuacao: { criar: [cargoSecretario.id], preparar: [], assinar: [] },
+        registro_em_livro: 'OBRIGATORIO',
+        antecedentes: [{ modelo_id: editalModelo.id, campos: { [recebida]: campo('PAUTA_REUNIAO') } }],
+        composicao_padrao: compor([
+          valor(campo('LOCAL_REUNIAO'), 'individual'),
+          valor(recebida),
+          ...Array.from({ length: 36 }, (_, i) =>
+            paragrafo(
+              i +
+                1 +
+                '. A comissão apresentou a prestação de contas e as ações de assistência. Após discussão, a presidência determinou o registro integral da deliberação e da verificação em reunião.',
+            ),
+          ),
+          paragrafo('Decisões da sessão'),
+          valor(decisao),
+          paragrafo('Encerramento da sessão'),
+        ]),
+      })
+    ).body;
 
     const inicioLote = Date.now();
     const latencias: number[] = [];
@@ -581,16 +705,7 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
     try {
       [ata] = await Promise.all([
         aprovar(
-          modelos.ATA_REUNIAO,
-          'Ata de reunião ordinária',
-          Array.from(
-            { length: 36 },
-            (_, i) =>
-              `${i + 1}. A comissão apresentou a prestação de contas e as ações de assistência. Após discussão, a presidência determinou o registro integral da deliberação e da verificação em reunião.`,
-          ).join('\n'),
-          'ELETRONICA',
-          true,
-          true,
+          ataModelo.versao_id, 'Ata de reunião ordinária', '', 'ELETRONICA', { emLivro: true, reuniao: 'ata', antecedente: edital.versaoId },
         ),
         ...Array.from({ length: 5 }, (_, i) =>
           aprovar(
@@ -598,7 +713,6 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
             `Correspondência ${i + 1}`,
             'À Comissão de Ação Social. Encaminhamos a comunicação de homologação à sua apreciação.',
             'FISICA',
-            false,
           ).then(async (d) => {
             await coletaFisica(d);
             return expedir(d, `correspondencia-${i + 1}`);
@@ -625,6 +739,16 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
       idempotencia: randomUUID(),
     });
     const convite = await tokenEmail('/assinaturas/convite#');
+    // Pausa do editor para novas criações. A sessão e o convite já emitido atravessam o reinício.
+    await parar(api);
+    contextosEditor = '';
+    await iniciarApi();
+    const bloqueada = await apiRequest('post', s + '/documentos').send({
+      contexto_id: contexto, restrito: true, idempotencia: randomUUID(),
+      versao: { modelo_versao_id: ataModelo.versao_id, livro_id: livro, reuniao_id: reuniao, motivador_id: edital.versaoId,
+        data_documento: hoje, assunto: 'Nova minuta durante a pausa', conteudo: { teor: '', arrolados, campos: {}, anexos: [] } },
+    }).expect(409);
+    expect(bloqueada.body.message).toContain('pausado');
     await apiRequest('get', '/assinaturas/convite/decisao', '').expect(404);
     const aceite = (await post('/assinaturas/convite/consulta', { token: convite })).body;
     const escopo = { token: convite, versao_id: ata.versaoId, manifesto_sha256: aceite.manifesto_sha256 };
@@ -652,7 +776,36 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
       data: { executar_apos: new Date() },
     });
     worker = iniciar('dist/src/worker.js');
-    await expedir(ata, '04-ata-expedida');
+    const finalAta = await expedir(ata, '04-ata-expedida');
+    const documentoExpedido = (await get(ata.url)).body;
+    expect(documentoExpedido).toMatchObject({ numero: 1, identificacao_livro: expect.stringContaining('Livro nº 10') });
+    const expedida = documentoExpedido.versoes[0];
+    expect(expedida.conteudo.valores[recebida]).toMatchObject({
+      valor: [item.descricao],
+      origem: { tipo: 'documento_anterior', versao_id: edital.versaoId },
+    });
+    const textoAta = execFileSync('pdftotext', ['-layout', '-', '-'], { input: finalAta, encoding: 'utf8' });
+    expect(textoAta).toMatch(
+      /Admissão de membros[\s\S]+Decisões da sessão[\s\S]+Aprovada a admissão registrada[\s\S]+Encerramento da sessão/,
+    );
+    expect(textoAta.match(/Aprovada a admissão registrada/g)).toHaveLength(1);
+    await prisma.local_reuniao.update({ where: { id: local.id }, data: { descritivo: 'Novo nome após a sessão' } });
+    expect((await get(ata.url)).body.versoes[0].conteudo.valores[recebida]).toEqual(
+      expedida.conteudo.valores[recebida],
+    );
+    const campoLocal = (await get(ata.url)).body.versoes[0].conteudo.valores[campo('LOCAL_REUNIAO')];
+    expect(campoLocal.valor).toBe(local.descritivo);
+    expect(campoLocal).toEqual(expedida.conteudo.valores[campo('LOCAL_REUNIAO')]);
+    expect(textoAta).toContain(local.descritivo);
+    const revisaoFinal = (await get(ata.url)).body.revisao;
+    const pedidoVia = { versao_id: ata.versaoId, revisao: revisaoFinal, idempotencia: randomUUID() };
+    await post(ata.assinatura + '/via', pedidoVia);
+    await post(ata.assinatura + '/via', pedidoVia);
+    expect((await get(arquivo(ata,'via'))).body).not.toEqual(finalAta);
+    expect((await get(arquivo(ata,'final'))).body).toEqual(finalAta);
+    const registrosAta = await prisma.registro_livro.findMany({ where: { versao_id: ata.versaoId } });
+    expect(registrosAta).toHaveLength(1);
+    expect(registrosAta[0].estado).toBe('EFETIVADO');
     expect(await prisma.assinatura_documento.count({ where: { versao_id: ata.versaoId } })).toBe(1);
     await apiRequest('post', '/assinaturas/convite/decisao')
       .send({ ...escopo, decisao: 'ASSINAR', consentimento: true })
@@ -682,6 +835,9 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
       revisao_esperada: null,
     });
     expect((await get(`${s}/referencias-ata/MEMBRESIA/${historico.id}/ATO`)).body.situacao).toBe('EXTERNA_CONFERIDA');
+    await parar(api);
+    contextosEditor = '*';
+    await iniciarApi();
     await post(livroUrl + '/acoes/preparar-encerramento', {
       ...comando((await livroDetalhe()).revisao),
       motivo: 'Homologação concluída',
@@ -691,7 +847,7 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
       'Termo de Encerramento',
       'Encerram-se os registros deste livro.',
       'FISICA',
-      true,
+      { emLivro: true },
     );
     await coletaFisica(encerramento);
     await expedir(encerramento, '05-encerramento');
@@ -701,6 +857,15 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
     expect(sha(Buffer.from(manifesto.text))).toBe(volume.manifesto_sha256);
     const compilacao = (await get(livroUrl + '/arquivos/compilacao')).body as Buffer;
     await writeFile(join(raiz, '06-livro-compilado.pdf'), compilacao);
+    if (process.env.E10_NAVEGADOR === '1') {
+      const navegador = await NavegadorSecretaria.abrir();
+      try {
+        const registro = JSON.parse(manifesto.text).registros.find((r: { arquivo_id: string }) => r.arquivo_id === registrosAta[0].arquivo_id);
+        await navegador.conferirAcervo(contexto, cookieGestor, finalAta, registro.sha256, Buffer.from(manifesto.text), compilacao);
+      } finally {
+        await navegador.fechar();
+      }
+    }
     const conta = await prisma.contas.create({
       data: { igreja_id: igreja, descricao: 'Caixa de teste', tipo_conta: 'CAIXA', saldo_inicial: 100 },
     });
@@ -741,6 +906,7 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
           paginasCompilacao: (await PDFDocument.load(compilacao)).getPageCount(),
           correspondencias: 5,
           loteMs,
+          repeticoesPorConcorrencia,
           leiturasHttp: latencias.length,
           p95HttpMs: latencias[Math.ceil(latencias.length * 0.95) - 1],
           maxHttpMs: Math.max(...latencias),
