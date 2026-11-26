@@ -55,7 +55,7 @@ ensaio('Ficha e mandato por ata', () => {
   it('registra ordenação e posse sem indicação, reaproveita o ofício e apura exercício por data', async () => {
     const path = '/orgaos/' + conselho + '/mandatos', original = await novo(candidato, '2015-01-01', '2015-02-01');
     await http('post', path + '/previa').send(original).expect(400);
-    const dados = { ...original, ordenacao: { data: '2015-02-01', autoridade: 'Conselho', evidencia: 'Livro I, folha 9' } };
+    const dados = { ...original, ordenacao: { data: '2015-02-01', autoridade: 'Conselho' } };
     await http('post', path + '/previa').send({ ...dados, data_posse: '2015-02-02' }).expect(400)
       .expect(r => expect(r.body.message).toMatch(/data da posse deve ser a da ata/));
     await http('post', path + '/previa').send({ ...dados, ata_posse: await ata(con, '2014-12-31') }).expect(400)
@@ -188,5 +188,37 @@ ensaio('Ficha e mandato por ata', () => {
     const { body: mandato } = await http('post', path, admin.cookie).send({ ...dados, previa: previa.previa }).expect(201);
     expect(await db.evento_autorizacao.findFirstOrThrow({ where: { igreja_id: igreja, recurso_id: mandato.id, acao: 'MANDATO_REGISTRADO' } }))
       .toMatchObject({ operador_id: adminId, pessoa_id: admin.pessoa_id, dados: { atribuicao_id: null, origem_autorizacao: 'PERFIL_ADMINISTRADOR' } });
+  });
+
+  it.each([false, true])('reutiliza uma única ordenação histórica em mandatos sucessivos (detalhes informados: %s)', async informado => {
+    const admin = await usuario(randomUUID(), igreja, 'ADMINISTRADOR');
+    const eleito = await pessoa(igreja, 'Presbítero de outra igreja');
+    const oficial = await db.oficial.create({ data: { igreja_id: igreja, pessoa_id: eleito, tipo: 'PRESBITERO_REGENTE' } });
+    const path = '/orgaos/' + conselho + '/mandatos';
+    const entrada = await novo(eleito, '2016-01-01', '2016-02-01');
+    const ordenacao = informado
+      ? { historica: true, data: '1997-02-09', autoridade: 'Conselho da igreja de origem', evidencia: 'Livro I' }
+      : { historica: true };
+    const conferir = (dados: object) => http('post', path + '/previa', admin.cookie).send(dados);
+    const { body: previa } = await conferir({ ...entrada, ordenacao }).expect(201);
+    expect(previa.ordenacao_historica).toBe(true);
+    expect(await db.registro_historico_oficial.count({ where: { oficial_id: oficial.id } })).toBe(0);
+    const confirmar = () => http('post', path, admin.cookie).send({ ...entrada, ordenacao, previa: previa.previa }).expect(201);
+    const { body: mandato } = await confirmar();
+    await confirmar().expect(201, mandato);
+    const registro = await db.registro_historico_oficial.findFirstOrThrow({ where: { oficial_id: oficial.id } });
+    expect(registro).toMatchObject({ tipo: 'ORDENACAO', situacao_documental: 'PENDENTE',
+      data_evento: informado ? datas('1997-02-09') : null, autoridade: ordenacao.autoridade ?? null, referencia_externa: ordenacao.evidencia ?? null });
+    expect(await db.evento_autorizacao.findFirstOrThrow({ where: { recurso_id: mandato.id, acao: 'MANDATO_REGISTRADO' } }))
+      .toMatchObject({ dados: { ordenacao_historica_id: registro.id } });
+    expect(await membros(conselho, '2016-01-31')).not.toContain(eleito);
+    expect(await membros(conselho, '2016-02-01')).toContain(eleito);
+    const renovacao = await novo(eleito, '2021-01-01', '2021-02-01');
+    await conferir({ ...renovacao, ordenacao }).expect(400);
+    const { body: segundaPrevia } = await conferir(renovacao).expect(201);
+    expect(segundaPrevia.reeleicao).toBe(true);
+    await http('post', path, admin.cookie).send({ ...renovacao, previa: segundaPrevia.previa }).expect(201);
+    expect(await db.evento_oficial.count({ where: { oficial_id: oficial.id, tipo: 'ORDENACAO' } })).toBe(1);
+    expect(await db.registro_historico_oficial.count({ where: { oficial_id: oficial.id } })).toBe(1);
   });
 });

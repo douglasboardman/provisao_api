@@ -1,5 +1,6 @@
 import type { Ator, Tx } from '../autorizacao/politica';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { permissaoMandato } from './permissao-mandato';
 import { avaliarEleicaoOficial } from '../elegibilidade/eleicao-oficial';
@@ -20,7 +21,11 @@ const entrada = z.strictObject({
   // Clientes antigos ainda podem reenviar os campos de um registro já confirmado.
   trecho_eleicao: texto.optional(), trecho_posse: texto.optional(), data_posse: z.iso.date().optional(),
   indicacao_id: z.uuid().optional(),
-  ordenacao: z.strictObject({ data: z.iso.date(), autoridade: texto, evidencia: texto }).optional(),
+  ordenacao: z.union([
+    z.strictObject({ historica: z.literal(true), data: z.iso.date().optional(),
+      autoridade: texto.max(255).optional(), evidencia: texto.optional() }),
+    z.strictObject({ data: z.iso.date(), autoridade: texto, evidencia: texto.optional() }),
+  ]).optional(),
   idempotencia: z.uuid(), previa: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 const civil = (v: Date) => v.toISOString().slice(0, 10);
@@ -117,43 +122,65 @@ export class MandatoDiretoService {
         select: { oficial_id: true, data_posse: true, termino_previsto: true, termino_efetivo: true } });
       if (periodos.some(m => m.data_posse <= termino && (m.termino_efetivo ?? m.termino_previsto) >= posse)) throw new ConflictException('A pessoa já possui mandato neste intervalo.');
       const oficial = await tx.oficial.findFirst({ where: { igreja_id, pessoa_id: v.pessoa_id, tipo: oficio }, include: { eventos: true } });
-      const fatos = [...(oficial?.eventos ?? [])];
+      const fatos = oficial?.eventos ?? [];
       const ordenado = fatos.find(e => e.tipo === 'ORDENACAO' && e.data_efeito <= posse);
+      const declaracao = v.ordenacao && 'historica' in v.ordenacao ? v.ordenacao : undefined;
+      const dataDeclarada = declaracao?.data ? dataCivil(declaracao.data) : null;
+      let novoEvento: { data_efeito: Date; ordem: number; autoridade: string; evidencia: string; observacoes: string | null } | undefined;
       if (v.ordenacao) {
-        const data = dataCivil(v.ordenacao.data);
-        if (data > posse || data > acesso.hoje || fatos.length || periodos.some(m => m.oficial_id === oficial?.id))
+        if (fatos.some(e => e.tipo === 'ORDENACAO'))
+          throw new BadRequestException('Já existe uma ordenação registrada para este ofício. Confira o prontuário.');
+        const data = v.ordenacao.data ? dataCivil(v.ordenacao.data) : posse;
+        if (!(data >= pessoa.data_nascimento && data <= posse && data <= acesso.hoje))
+          throw new BadRequestException('A data da ordenação deve estar entre o nascimento e a posse.');
+        if (!declaracao && (fatos.length || periodos.some(m => m.oficial_id === oficial?.id)))
           throw new BadRequestException('Confira a ordenação existente ou use a revisão do prontuário para inserção retroativa.');
-        fatos.push({ id: 'previa', oficial_id: '', igreja_id, criado_em: acesso.hoje, observacoes: null, tipo: 'ORDENACAO', ordem: 1,
-          data_efeito: data, evento_restaurado_id: null, autoridade: v.ordenacao.autoridade, evidencia: v.ordenacao.evidencia });
+        const ordem = fatos.reduce((ultima, evento) => +evento.data_efeito === +data ? Math.max(evento.ordem, ultima) : ultima, 0) + 1;
+        novoEvento = { data_efeito: data, ordem, autoridade: v.ordenacao.autoridade ?? 'Não informada',
+          evidencia: declaracao ? 'Ordenação histórica declarada sem documento apresentado.' : v.ordenacao.evidencia ?? 'Referência documental não informada.',
+          observacoes: declaracao && !dataDeclarada ? 'Data da ordenação desconhecida. Reconhecimento a partir da posse.' : null };
       }
-      if (!ordenado && !v.ordenacao) throw new BadRequestException('Informe a comprovação da ordenação para a primeira investidura.');
-      if (!avaliarExercicio({ data_posse: posse, termino_previsto: termino, termino_efetivo: null }, fatos, posse).em_exercicio)
+      if (!ordenado && !novoEvento)
+        throw new BadRequestException('Selecione como registrar a ordenação. Para uma ordenação antiga sem documento disponível, use Registro de ordenação histórico não documentado.');
+      const eventosPosse = novoEvento
+        ? [...fatos, { id: 'previa', tipo: 'ORDENACAO' as const, evento_restaurado_id: null, ...novoEvento }]
+        : fatos;
+      if (!avaliarExercicio({ data_posse: posse, termino_previsto: termino, termino_efetivo: null }, eventosPosse, posse).em_exercicio)
         throw new BadRequestException('O exercício do ofício não está comprovado na posse. Consulte o prontuário.');
       const resultado = { nome: pessoa.nome_completo, oficio, data_eleicao: civil(assembleia.data), data_posse: civil(posse),
         termino_previsto: civil(termino), reeleicao: periodos.some(m => m.oficial_id === oficial?.id && m.data_posse < posse),
         versao_orgao_id: versao.id, versao: versao.numero, transcricao_historica: historico,
+        ...(declaracao && { ordenacao_historica: true }),
         ...(indicacao && { indicacao_id: indicacao.id, assunto_indicacao: indicacao.ata_conselho.assunto }) };
       const revisao = hashAto({ hash, ...resultado, ordenacao: ordenado?.id, rol_eleicao: eleicao.evento.id,
-        rol_posse: naPosse.evento.id, politica: politica?.id, avaliacao });
+        rol_posse: naPosse.evento.id, politica: politica?.id, avaliacao, ...(declaracao && { ordem_ordenacao: novoEvento!.ordem }) });
       if (!confirmar) return { ...resultado, previa: revisao };
       if (previa !== revisao) throw new ConflictException('Os dados mudaram. Confira uma nova prévia.');
       const outroAtivo = await tx.oficial.findFirst({ where: { igreja_id, pessoa_id: v.pessoa_id, ativo: true } });
       const titular = oficial ?? await tx.oficial.create({ data: { igreja_id, pessoa_id: v.pessoa_id, tipo: oficio, ativo: !outroAtivo } });
+      const registroHistorico = declaracao && await tx.registro_historico_oficial.create({
+        data: { igreja_id, oficial_id: titular.id, tipo: 'ORDENACAO', data_evento: dataDeclarada,
+          autoridade: declaracao.autoridade, referencia_externa: declaracao.evidencia, situacao_documental: 'PENDENTE',
+          idempotencia: randomUUID(), criado_por_id: ator.sub },
+        select: { id: true },
+      });
       const ordenacao = ordenado ?? await tx.evento_oficial.create({ data: { igreja_id, oficial_id: titular.id, tipo: 'ORDENACAO',
-        ordem: 1, data_efeito: dataCivil(v.ordenacao!.data), autoridade: v.ordenacao!.autoridade, evidencia: v.ordenacao!.evidencia } });
+        ...novoEvento! } });
+      const vinculoHistorico = registroHistorico ? { ordenacao_historica_id: registroHistorico.id } : {};
       const mandato = await tx.mandato_oficial.create({ data: { igreja_id, orgao_id, oficial_id: titular.id,
         versao_orgao_id: versao.id, chave_registro: v.idempotencia, hash_registro: hash, data_eleicao: assembleia.data,
         indicacao_id: indicacao?.id,
         data_posse: posse, termino_previsto: termino, autoridade: 'Assembleia Geral', evidencia: 'Referências versionadas da eleição e da posse.',
         avaliacao_eleicao: { ...resultado, avaliacao, ata_eleicao: assembleia.versao_id, ata_posse: instalacao.versao_id, operador_id: ator.sub, atribuicao_id: permissao.atribuicao, origem_autorizacao: permissao.origem, ordenacao_id: ordenacao.id,
-          rol_eleicao_evento_id: eleicao.evento.id, rol_posse_evento_id: naPosse.evento.id } } });
+          rol_eleicao_evento_id: eleicao.evento.id, rol_posse_evento_id: naPosse.evento.id, ...vinculoHistorico } } });
       await tx.referencia_ata_oficial.createMany({ data: [
         { ato: 'ELEICAO', ata_documento_id: assembleia.documento_id, versao_id: assembleia.versao_id, justificativa: referenciaEleicao },
         { ato: 'POSSE', ata_documento_id: instalacao.documento_id, versao_id: instalacao.versao_id, justificativa: referenciaPosse },
       ].map(r => ({ ...r, igreja_id, mandato_id: mandato.id, sequencia: 1, registrado_por_id: ator.sub })) });
       await tx.evento_autorizacao.create({ data: { igreja_id, operador_id: ator.sub, operador_pessoa_id: permissao.pessoa, pessoa_id: v.pessoa_id,
         acao: 'MANDATO_REGISTRADO', recurso_id: mandato.id, fundamento: 'Eleição e posse documentadas',
-        dados: { orgao_id, atribuicao_id: permissao.atribuicao, origem_autorizacao: permissao.origem, ordenacao_id: ordenacao.id, indicacao_id: indicacao?.id ?? null } } });
+        dados: { orgao_id, atribuicao_id: permissao.atribuicao, origem_autorizacao: permissao.origem, ordenacao_id: ordenacao.id,
+          indicacao_id: indicacao?.id ?? null, ...vinculoHistorico } } });
       return { id: mandato.id, oficial_id: titular.id };
     });
   }
