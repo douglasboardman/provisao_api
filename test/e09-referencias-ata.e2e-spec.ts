@@ -477,13 +477,14 @@ integracao('E09 – referências documentais', () => {
     await http('post', ref('MANDATO', mandato, 'ENCERRAMENTO'))
       .send(pendente)
       .expect(404);
+    const ataEncerramento = await documento(conselho, 'ATA');
+    await prisma.documento.update({ where: { id: ataEncerramento.documento }, data: { estado: 'APROVADO' } });
     const encerramento = await http('patch', `/oficiais/mandatos/${mandato}/encerrar`)
-      .send({ data_efeito: '2026-01-11', motivo: 'Renúncia', autoridade: 'Conselho', evidencia: 'Renúncia registrada' })
+      .send({ data_efeito: '2026-01-11', motivo: 'Renúncia', ata_encerramento: ataEncerramento.versao })
       .expect(200);
     expect(encerramento.body.termino_efetivo).toContain('2026-01-11');
-    await http('post', ref('MANDATO', mandato, 'ENCERRAMENTO'))
-      .send(pendente)
-      .expect(201);
+    await http('get', ref('MANDATO', mandato, 'ENCERRAMENTO')).expect(200)
+      .expect(r => expect(r.body.itens[0].versao_id).toBe(ataEncerramento.versao));
     await http('post', ref('PASTORAL', pastoral, 'INICIO'))
       .send({ ...pendente, referencia_externa: externo })
       .expect(201);

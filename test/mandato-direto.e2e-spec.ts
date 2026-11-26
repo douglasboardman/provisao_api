@@ -90,7 +90,14 @@ ensaio('Ficha e mandato por ata', () => {
     const segundo = (await http('post', path).send({ ...renovacao, previa: previa2.previa }).expect(201)).body;
     expect(segundo.oficial_id).toBe(a.body.oficial_id);
     expect(await membros(conselho,'2020-02-01')).toEqual([candidato]);
-    await http('patch', '/oficiais/mandatos/' + segundo.id + '/encerrar').send({ data_efeito: '2021-05-10', autoridade: 'Conselho', evidencia: 'Ata', motivo: 'Encerramento' }).expect(200);
+    const rotaFim = '/oficiais/mandatos/' + segundo.id + '/encerrar';
+    const fim = { data_efeito: '2021-05-10', motivo: 'Encerramento' };
+    await http('patch', rotaFim).send({ ...fim, autoridade: 'Conselho', evidencia: 'Ata' }).expect(400);
+    await http('patch', rotaFim).send({ ...fim, ata_encerramento: renovacao.ata_eleicao }).expect(404);
+    const ataEncerramento = await ata(con, '2021-05-15');
+    await http('patch', rotaFim).send({ ...fim, ata_encerramento: ataEncerramento }).expect(200);
+    const { body: referencias } = await http('get', '/secretaria/referencias-ata/MANDATO/' + segundo.id + '/ENCERRAMENTO').expect(200);
+    expect(referencias.itens[0].ata.versao_id).toBe(ataEncerramento);
     expect(await membros(conselho,'2021-05-10')).toEqual([candidato]);
     expect(await membros(conselho,'2021-05-11')).toEqual([]);
   });

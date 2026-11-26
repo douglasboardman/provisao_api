@@ -9,12 +9,21 @@ import { avaliarEleicaoOficial } from '../elegibilidade/eleicao-oficial';
 import { camposEventoRecepcao, recepcaoDaMembresia } from '../elegibilidade/recepcao-membresia';
 import { eventoVigente } from '../eventos-membresia/estado-temporal';
 import { avaliarExercicio } from './exercicio';
+import { recursoDaIgreja } from '../feature-flags/feature-flags';
+import { hojeDaIgreja } from '../orgaos/relogio-igreja';
+import { tabelasDocumentais } from '../secretaria/selecao-documental';
+import { contextosDasAtasRestritas } from '../secretaria/visibilidade-documentos';
 
 const dia = z.iso.date().refine(s => { const d = new Date(`${s}T00:00:00.000Z`); return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === s; });
 const schema = z.object({ conferencia_id: z.string().uuid(), data_posse: dia, autoridade: z.string().trim().min(1).max(1000), evidencia: z.string().trim().min(1).max(1000), evidencia_capacidade_posse: z.string().trim().min(1).max(1000) }).strict();
 const excecaoSchema = z.object({ oficialTransferido: z.boolean(), autoridade: z.string().trim().min(1), evidencia: z.string().trim().min(1) }).strict();
 const recepcaoRegistradaSchema = z.object({ evento_recepcao_id: z.string() });
-const encerramentoSchema = z.object({ data_efeito: dia, motivo: z.string().trim().min(1).max(1000), autoridade: z.string().trim().min(1).max(1000), evidencia: z.string().trim().min(1).max(1000) }).strict();
+const fimMandato = z.object({ data_efeito: dia, motivo: z.string().trim().min(1).max(1000) });
+const encerramentoSchema = z.union([
+  fimMandato.extend({ ata_encerramento: z.uuid() }).strict(),
+  fimMandato.extend({ autoridade: z.string().trim().min(1).max(1000), evidencia: z.string().trim().min(1).max(1000) }).strict(),
+]);
+type AtaEncerramento = { documento_id: string; versao_id: string; autoridade: string };
 type Entrada = z.infer<typeof schema>;
 type Encerramento = z.infer<typeof encerramentoSchema>;
 const data = (s: string) => new Date(`${s}T00:00:00.000Z`);
@@ -49,16 +58,48 @@ export class MandatoService {
         SELECT m.id, m.orgao_id, o.pessoa_id, m.data_posse, m.termino_previsto, m.termino_efetivo FROM mandato_oficial m JOIN oficial o ON o.id=m.oficial_id AND o.igreja_id=m.igreja_id WHERE m.id = ${mandatoId} AND m.igreja_id = ${igrejaId} FOR UPDATE OF m`;
       const atual = mandatos[0];
       if (!atual) throw new NotFoundException('Mandato não encontrado nesta igreja.');
+      let poder: Awaited<ReturnType<typeof permissaoMandato>> = null;
       if (atual.orgao_id || estado === 'ATRIBUICAO' || operador.perfil === usuarios_perfil.COMUM) {
-        const poder = ator && ator.igreja_id === igrejaId && ator.sub === usuarioId ? await permissaoMandato(tx, ator) : null;
+        poder = ator && ator.igreja_id === igrejaId && ator.sub === usuarioId ? await permissaoMandato(tx, ator) : null;
         if (!poder || poder.pessoa === atual.pessoa_id) throw new ForbiddenException('O encerramento exige serviço vigente e operador distinto do titular.');
-        await tx.evento_autorizacao.create({ data: { igreja_id: igrejaId, operador_id: usuarioId, operador_pessoa_id: poder.pessoa,
-          pessoa_id: atual.pessoa_id, acao: 'MANDATO_ENCERRADO', recurso_id: mandatoId, fundamento: v.autoridade, dados: { orgao_id: atual.orgao_id, atribuicao_id: poder.atribuicao, origem_autorizacao: poder.origem, data_efeito: v.data_efeito } } });
       }
-      if (atual.termino_efetivo || efeito < atual.data_posse || efeito > atual.termino_previsto) throw new BadRequestException('Mandato já encerrado ou data de encerramento inválida.');
+      if (atual.termino_efetivo || efeito < atual.data_posse || efeito > atual.termino_previsto)
+        throw new BadRequestException('Mandato já encerrado ou data de encerramento inválida.');
+
+      const secretariaAtiva = recursoDaIgreja('secretaria', igrejaId);
+      let ata: AtaEncerramento | undefined;
+      let autoridade: string, evidencia: string;
+      if ('ata_encerramento' in v) {
+        if (!secretariaAtiva) throw new NotFoundException('Secretaria indisponível.');
+        const restritos = await contextosDasAtasRestritas(tx, igrejaId, usuarioId);
+        const hoje = await hojeDaIgreja(tx, igrejaId);
+        [ata] = await tx.$queryRaw<AtaEncerramento[]>`
+          SELECT d.id AS documento_id, v.id AS versao_id, o.nome AS autoridade
+          ${tabelasDocumentais}
+          JOIN orgao_interno o ON o.id = c.orgao_id AND o.igreja_id = c.igreja_id
+          WHERE d.igreja_id = ${igrejaId} AND v.id = ${v.ata_encerramento} AND o.tipo = 'CONSELHO'
+            AND d.tipo = 'ATA' AND v.numero = d.versao_atual AND d.estado IN ('APROVADO','EXPEDIDO','LEGADA_CONFERIDA')
+            AND v.data_documento <= ${data(hoje)}::date
+            AND (NOT d.restrito ${restritos.length ? Prisma.sql`OR d.contexto_id IN (${Prisma.join(restritos)})` : Prisma.empty})
+          FOR SHARE OF d, v
+        `;
+        if (!ata) throw new NotFoundException('Ata de encerramento indisponível.');
+        autoridade = ata.autoridade;
+        evidencia = 'Ata de registro do encerramento';
+      } else {
+        if (secretariaAtiva) throw new BadRequestException('Selecione a ata que registra o encerramento.');
+        ({ autoridade, evidencia } = v);
+      }
+
+      const referencia = ata ? { ata_versao_id: ata.versao_id } : {};
+      if (poder) await tx.evento_autorizacao.create({ data: { igreja_id: igrejaId, operador_id: usuarioId, operador_pessoa_id: poder.pessoa,
+        pessoa_id: atual.pessoa_id, acao: 'MANDATO_ENCERRADO', recurso_id: mandatoId, fundamento: autoridade,
+        dados: { orgao_id: atual.orgao_id, atribuicao_id: poder.atribuicao, origem_autorizacao: poder.origem, data_efeito: v.data_efeito, ...referencia } } });
       const encerrado = await tx.mandato_oficial.update({ where: { id: mandatoId }, data: { termino_efetivo: efeito, motivo_encerramento: v.motivo } });
+      if (ata) await tx.referencia_ata_oficial.create({ data: { igreja_id: igrejaId, mandato_id: mandatoId, ato: 'ENCERRAMENTO',
+        ata_documento_id: ata.documento_id, versao_id: ata.versao_id, justificativa: evidencia, sequencia: 1, registrado_por_id: usuarioId } });
       await tx.logs_atividades.create({ data: { igreja_id: igrejaId, usuario_id: usuarioId, acao: logs_atividades_acao.ATUALIZACAO, tabela_afetada: 'mandato_oficial', registro_id: mandatoId,
-        dados_antigos: { termino_efetivo: null, motivo_encerramento: null }, dados_novos: { termino_efetivo: v.data_efeito, motivo: v.motivo, autoridade: v.autoridade, evidencia: v.evidencia } } });
+        dados_antigos: { termino_efetivo: null, motivo_encerramento: null }, dados_novos: { termino_efetivo: v.data_efeito, motivo_encerramento: v.motivo, autoridade, evidencia, ...referencia } } });
       return encerrado;
     });
   }
