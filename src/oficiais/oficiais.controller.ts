@@ -366,6 +366,8 @@ export class OficiaisController {
   }
 
   @Get('indicacoes/selecao-atas')
+  @ContaComum()
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   selecionarAtas(@Request() req, @Query() consulta: Record<string, string>) {
     const { tipo, ...filtros } = consulta;
@@ -379,6 +381,8 @@ export class OficiaisController {
   }
 
   @Get('indicacoes/candidatos')
+  @ContaComum()
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   candidatosDeEleicao(@Request() req, @Query('ata') ata: string, @Query('busca') busca?: string, @Query('tipo') tipo?: string) {
     return this.indicacoes.candidatos(req.user, ata, busca, tipo);

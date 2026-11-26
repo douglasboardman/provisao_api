@@ -8,6 +8,7 @@ import { eventoVigente } from '../eventos-membresia/estado-temporal';
 import { recursoDaIgreja } from '../feature-flags/feature-flags';
 import { transacaoSerializavel } from '../orgaos/idempotencia';
 import { hojeDaIgreja } from '../orgaos/relogio-igreja';
+import { permissaoMandato } from '../orgaos/permissao-mandato';
 import { PrismaService } from '../prisma/prisma.service';
 import { SecretariaBaseService, dataCivil, type AtorSecretaria, type Tx } from '../secretaria/secretaria-base.service';
 import { terminoCincoAnos } from './mandato.service';
@@ -49,6 +50,15 @@ export class IndicacoesEleicaoService {
     if (usuario.perfil === 'AUDITOR') throw new ForbiddenException('Operador não autorizado.');
     const hoje = dataCivil(await hojeDaIgreja(tx, ator.igreja_id));
     return { hoje, restritos: await contextosDasAtasRestritas(tx, ator.igreja_id, ator.sub) };
+  }
+
+  private async acessoParaSelecaoEleitoral(tx: Tx, ator: AtorSecretaria) {
+    if (ator.perfil === 'COMUM') {
+      const { sessao_id, auth_version } = ator;
+      if (!sessao_id || auth_version === undefined || !await permissaoMandato(tx, { ...ator, sessao_id, auth_version }))
+        throw new ForbiddenException('A seleção exige permissão para registrar mandatos.');
+    }
+    return this.acesso(tx, ator);
   }
 
   private escopoAtas(igreja: string, restritos: string[], tipo: TipoAta, hoje: Date, historica = false) {
@@ -112,7 +122,7 @@ export class IndicacoesEleicaoService {
   selecionarAtas(ator: AtorSecretaria, tipo: string, filtros: unknown) {
     const contexto = validar(tipoAta, tipo);
     return this.prisma.$transaction(async tx => {
-      const acesso = await this.acesso(tx, ator);
+      const acesso = await this.acessoParaSelecaoEleitoral(tx, ator);
       const reunioes = (await this.secretaria.concessoes(tx, ator)).filter(c => c.pode_consultar_restritos).map(c => c.contexto_id);
       return selecionarDocumentos(tx, this.escopoAtas(ator.igreja_id, acesso.restritos, contexto, acesso.hoje), filtros, false, reunioes);
     }, { isolationLevel: 'RepeatableRead' });
@@ -129,7 +139,7 @@ export class IndicacoesEleicaoService {
   candidatos(ator: AtorSecretaria, versao: string, busca?: string, tipo: string = 'CONSELHO') {
     const id = validar(uuid, versao), nome = validar(z.string().trim().max(100).optional(), busca);
     return this.prisma.$transaction(async tx => {
-      const acesso = await this.acesso(tx, ator);
+      const acesso = await this.acessoParaSelecaoEleitoral(tx, ator);
       const contexto = validar(tipoAta, tipo);
       const ata = await this.ata(tx, ator, acesso, contexto, id);
       const pessoas = await tx.pessoas.findMany({

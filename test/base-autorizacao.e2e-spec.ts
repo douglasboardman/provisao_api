@@ -182,7 +182,7 @@ integration('Base de autorização por conta e por igreja', () => {
       new Set(['pessoas-membresia', 'financeiro', 'institucional', 'administracao']),
     );
     const entrada = { nome: ' Perfil   Secretário ', requisito: { tipo: 'cargo', id: cargo.id },
-      acoes: ['AUDITORIA_CONSULTAR', 'PESSOAS_CONSULTAR'], fundamento };
+      acoes: ['AUDITORIA_CONSULTAR', 'PESSOAS_CONSULTAR', 'MANDATOS_REGISTRAR'], fundamento };
     await http(presidente, 'get', modelos).expect(403);
     await db.evento_autorizacao.create({ data: { igreja_id: igreja, operador_id: revisor, pessoa_id: pessoaPastor,
       acao: 'PRESIDENCIA_CONFERIDA', recurso_id: presidenteRegistro.id, fundamento, dados: {} } });
@@ -203,10 +203,25 @@ integration('Base de autorização por conta e por igreja', () => {
     await previa(presidente, semCargo).expect(400);
     expect((await http(presidente, 'get', rota).expect(200)).body.contas.map(c => c.id)).toEqual([conta]);
     await http(conta, 'get', '/pessoas').expect(403);
+    const selecao = '/oficiais/indicacoes/selecao-atas';
+    const candidatos = '/oficiais/indicacoes/candidatos';
+    const contextoAssembleia = await db.contexto_secretaria.findFirstOrThrow({ where: { igreja_id: igreja, tipo: 'ASSEMBLEIA_GERAL' } });
+    const modeloAta = await db.modelo_documento.create({ data: { igreja_id: igreja, contexto_id: contextoAssembleia.id, nome: 'Ata de eleição' } });
+    const baseAta = { igreja_id: igreja, contexto_id: contextoAssembleia.id };
+    const versaoModelo = await db.modelo_documento_versao.create({ data: { ...baseAta, modelo_id: modeloAta.id,
+      numero: 1, tipo: 'ATA', finalidade: 'TESTE', configuracao: {} } });
+    const documento = await db.documento.create({ data: { ...baseAta, tipo: 'ATA', estado: 'APROVADO', perfil: 'TESTE' } });
+    const ata = await db.documento_versao.create({ data: { ...baseAta, documento_id: documento.id, numero: 1,
+      modelo_versao_id: versaoModelo.id, data_documento: hoje, assunto: 'Eleição de ensaio', conteudo: {} } });
+    const buscarAtas = () => http(conta, 'get', selecao).query({ tipo: 'ASSEMBLEIA' });
+    const buscarCandidatos = () => http(conta, 'get', candidatos).query({ tipo: 'ASSEMBLEIA', ata: ata.id });
+    await buscarAtas().expect(403);
+    await buscarCandidatos().expect(403);
     await conceder(conta, 'AUDITORIA_CONSULTAR').expect(201);
     const { body: proposta } = await previa(presidente, conta).expect(201);
     expect(proposta.itens).toEqual([
       expect.objectContaining({ acao: 'AUDITORIA_CONSULTAR', sobreposta: true }),
+      expect.objectContaining({ acao: 'MANDATOS_REGISTRAR', sobreposta: false }),
       expect.objectContaining({ acao: 'PESSOAS_CONSULTAR', sobreposta: false }),
     ]);
     const aplicar = (operador: string, previa: string) => http(operador, 'post', rota).send({ usuario_id: conta, previa, fundamento });
@@ -214,9 +229,13 @@ integration('Base de autorização por conta e por igreja', () => {
     await aplicar(admin, proposta.previa).expect(409);
     await http(conta, 'get', '/pessoas').expect(200);
     expect((await http(conta, 'get', '/autorizacao/navegacao').expect(200)).body.perfis_atuacao).toEqual(['Perfil Secretário']);
+    const listagemMandatos = '/orgaos/' + cargo.orgao_id + '/mandatos';
+    expect((await http(conta, 'get', listagemMandatos).expect(200)).body.pode_registrar).toBe(true);
+    await buscarAtas().expect(200).expect(r => expect(r.body.itens).toContainEqual(expect.objectContaining({ versao_id: ata.id })));
+    await buscarCandidatos().expect(200);
     const ato = await db.evento_autorizacao.findFirstOrThrow({ where: { recurso_id: concessao, acao: 'ATRIBUIR_MODELO_ATUACAO' } });
     expect(ato.operador_id).toBe(presidente);
-    expect(ato.dados).toMatchObject({ qualificacao_id: ocupacao.id, acoes: ['PESSOAS_CONSULTAR'] });
+    expect(ato.dados).toMatchObject({ qualificacao_id: ocupacao.id, acoes: ['MANDATOS_REGISTRAR', 'PESSOAS_CONSULTAR'] });
 
     const { body: atribuicoes } = await http(admin, 'get', '/autorizacao/contas/' + conta).expect(200);
     const vinculada = atribuicoes.atribuicoes.find(a => a.concessao_modelo_id === concessao);
@@ -224,6 +243,8 @@ integration('Base de autorização por conta e por igreja', () => {
     const revogar = '/autorizacao/concessoes-modelo/' + concessao + '/revogar';
     await http(presidente, 'post', revogar).send({ fundamento }).expect(201);
     await http(conta, 'get', '/pessoas').expect(403);
+    await buscarAtas().expect(403);
+    await buscarCandidatos().expect(403);
     expect((await http(conta, 'get', '/autorizacao/navegacao').expect(200)).body.perfis_atuacao).toEqual([]);
     expect((await me(conta)).servicos_propostos).toContainEqual(expect.objectContaining({ acao: 'AUDITORIA_CONSULTAR', permite: true }));
 
