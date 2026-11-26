@@ -32,9 +32,8 @@ ensaio('Ficha e mandato por ata', () => {
     .set('Cookie', c).set('Origin','http://localhost:3001').set('X-Provisao-Request','1');
   const membros = async (id: string, dia: string) => ((await http('get', '/orgaos/' + id).query({ data: dia }).expect(200)).body.composicao?.membros ?? []).map(m => m.pessoa_id);
   const novo = async (p: string, eleicao: string, posse: string) => ({
-    pessoa_id: p, ata_eleicao: await ata(ag, eleicao), trecho_eleicao: 'Item 2, eleição nominal e capacidade.',
-    ata_posse: await ata(con, eleicao), trecho_posse: 'Item 4, instalação nominal com a data da posse.',
-    data_posse: posse, idempotencia: randomUUID(),
+    pessoa_id: p, ata_eleicao: await ata(ag, eleicao), ata_posse: await ata(con, posse),
+    idempotencia: randomUUID(),
   });
   beforeAll(async () => {
     if (process.env.DATABASE_URL !== 'postgresql://provisao_test:provisao_test@127.0.0.1:55439/provisao_test?schema=public') throw new Error('Exige o banco descartável de ensaio.');
@@ -57,14 +56,23 @@ ensaio('Ficha e mandato por ata', () => {
     const path = '/orgaos/' + conselho + '/mandatos', original = await novo(candidato, '2015-01-01', '2015-02-01');
     await http('post', path + '/previa').send(original).expect(400);
     const dados = { ...original, ordenacao: { data: '2015-02-01', autoridade: 'Conselho', evidencia: 'Livro I, folha 9' } };
+    await http('post', path + '/previa').send({ ...dados, data_posse: '2015-02-02' }).expect(400)
+      .expect(r => expect(r.body.message).toMatch(/data da posse deve ser a da ata/));
+    await http('post', path + '/previa').send({ ...dados, ata_posse: await ata(con, '2014-12-31') }).expect(400)
+      .expect(r => expect(r.body.message).toMatch(/ata da posse antecede a eleição/));
     const previa = (await http('post', path + '/previa').send(dados).expect(201)).body;
-    expect(previa).toMatchObject({ reeleicao: false, termino_previsto: '2020-01-31', transcricao_historica: true });
+    expect(previa).toMatchObject({ reeleicao: false, data_eleicao: '2015-01-01', data_posse: '2015-02-01',
+      termino_previsto: '2020-01-31', transcricao_historica: true });
     expect(await db.oficial.count({ where: { pessoa_id: candidato } })).toBe(0);
     const confirmar = () => http('post', path).send({ ...dados, previa: previa.previa }).expect(201);
     const [a,b] = await Promise.all([confirmar(), confirmar()]);
     expect(a.body).toEqual(b.body);
     expect(await db.mandato_oficial.findUnique({ where: { id: a.body.id }, include: { referencias_ata: true } })).toMatchObject({
-      indicacao_id: null, orgao_id: conselho, referencias_ata: expect.arrayContaining([{ ato: 'ELEICAO', versao_id: dados.ata_eleicao }, { ato: 'POSSE', versao_id: dados.ata_posse }].map(r => expect.objectContaining(r))) });
+      indicacao_id: null, orgao_id: conselho, data_eleicao: datas('2015-01-01'), data_posse: datas('2015-02-01'),
+      referencias_ata: expect.arrayContaining([
+        expect.objectContaining({ ato: 'ELEICAO', versao_id: dados.ata_eleicao, justificativa: 'Ata da eleição' }),
+        expect.objectContaining({ ato: 'POSSE', versao_id: dados.ata_posse, justificativa: 'Ata da posse' }),
+      ]) });
     expect(await membros(conselho,'2015-01-31')).not.toContain(candidato);
     expect(await membros(conselho,'2015-02-01')).toEqual([candidato]);
     const suspenso = await db.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: a.body.oficial_id, tipo: 'SUSPENSAO', data_efeito: datas('2017-01-01'), ordem: 1, autoridade: 'Teste', evidencia: 'Reservada' } });
@@ -132,9 +140,9 @@ ensaio('Ficha e mandato por ata', () => {
     await http('get', rota + '/indicacoes').query(filtros).expect(200, []);
   });
 
-  it('aplica contexto, sigilo, escopo da igreja e revogação até no reenvio; admite posse futura na Junta', async () => {
+  it('aplica contexto, sigilo, escopo da igreja e revogação até no reenvio e usa a data bissexta da ata de posse na Junta', async () => {
     const p = await pessoa(igreja, 'Diácono'), path = '/orgaos/' + junta + '/mandatos';
-    const dados = { ...await novo(p,'2020-02-01','2032-02-29'), ordenacao: { data: '2020-02-01', autoridade: 'Conselho', evidencia: 'Ato documentado' } };
+    const dados = { ...await novo(p,'2020-02-01','2024-02-29'), ordenacao: { data: '2020-02-01', autoridade: 'Conselho', evidencia: 'Ato documentado' } };
     await http('post', path + '/previa').send({ ...dados, ata_posse: dados.ata_eleicao }).expect(404);
     await http('get', path, estrangeiro).expect(404);
     await http('post', path + '/previa', estrangeiro).send(dados).expect(403);
@@ -143,11 +151,11 @@ ensaio('Ficha e mandato por ata', () => {
     await http('post', path + '/previa').send(dados).expect(404);
     await db.documento.update({ where: { id: doc.documento_id }, data: { restrito: false } });
     const previa = (await http('post', path + '/previa').send(dados).expect(201)).body;
-    expect(previa.termino_previsto).toBe('2037-02-27');
+    expect(previa).toMatchObject({ data_posse: '2024-02-29', termino_previsto: '2029-02-27' });
     const confirmar = { ...dados, previa: previa.previa };
     await http('post', path).send(confirmar).expect(201);
-    expect(await membros(junta,'2032-02-28')).toEqual([]);
-    expect(await membros(junta,'2032-02-29')).toEqual([p]);
+    expect(await membros(junta,'2024-02-28')).toEqual([]);
+    expect(await membros(junta,'2024-02-29')).toContain(p);
     await db.atribuicao_servico.update({ where: { id: concessao }, data: { revogado_em: new Date() } });
     await http('post', path).send(confirmar).expect(403);
     expect((await http('get', path).expect(200)).body.pode_registrar).toBe(false);

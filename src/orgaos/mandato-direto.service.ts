@@ -16,9 +16,11 @@ const texto = z.string().trim().min(1).max(1000);
 const contexto = z.enum(['ASSEMBLEIA_GERAL', 'CONSELHO']);
 const regra = z.object({ mandato_anos: z.literal(5), atos: z.object({ eleicao_integrante: contexto, posse_integrante: contexto }) });
 const entrada = z.strictObject({
-  pessoa_id: z.uuid(), ata_eleicao: z.uuid(), trecho_eleicao: texto, ata_posse: z.uuid(), trecho_posse: texto,
+  pessoa_id: z.uuid(), ata_eleicao: z.uuid(), ata_posse: z.uuid(),
+  // Clientes antigos ainda podem reenviar os campos de um registro já confirmado.
+  trecho_eleicao: texto.optional(), trecho_posse: texto.optional(), data_posse: z.iso.date().optional(),
   indicacao_id: z.uuid().optional(),
-  data_posse: z.iso.date(), ordenacao: z.strictObject({ data: z.iso.date(), autoridade: texto, evidencia: texto }).optional(),
+  ordenacao: z.strictObject({ data: z.iso.date(), autoridade: texto, evidencia: texto }).optional(),
   idempotencia: z.uuid(), previa: z.string().regex(/^[0-9a-f]{64}$/).optional(),
 });
 const civil = (v: Date) => v.toISOString().slice(0, 10);
@@ -56,8 +58,6 @@ export class MandatoDiretoService {
       const acesso = await this.atas.acesso(tx, ator);
       const { orgao, oficio } = await this.orgao(tx, igreja_id, orgao_id);
       const assembleia = await this.atas.ata(tx, ator, acesso, 'ASSEMBLEIA', v.ata_eleicao);
-      const posse = dataCivil(v.data_posse);
-      if (posse < assembleia.data || (orgao.data_criacao && posse < orgao.data_criacao)) throw new BadRequestException('A posse deve respeitar a eleição e a instituição do órgão.');
       const versoes = await tx.versao_orgao.findMany({ where: { igreja_id, orgao_id }, orderBy: { inicio: 'asc' } });
       // Para transcrição anterior ao catálogo, identifica a primeira configuração usada para conferir o acervo.
       const historico = !!versoes[0] && assembleia.data < versoes[0].inicio;
@@ -66,6 +66,7 @@ export class MandatoDiretoService {
       if (!versao || !regras.success || regras.data.atos.eleicao_integrante !== 'ASSEMBLEIA_GERAL') throw new ConflictException('Configuração eleitoral indisponível para esta data.');
       const tipoPosse = regras.data.atos.posse_integrante === 'CONSELHO' ? 'CONSELHO' : 'ASSEMBLEIA';
       const instalacao = await this.atas.ata(tx, ator, acesso, tipoPosse, v.ata_posse);
+      const posse = instalacao.data;
       const evidenciaValida = async (versaoId: string, padrao: string) => tx.documento_versao.findFirst({
         where: { id: versaoId, igreja_id, documento: { contexto: { orgao: { tipo_padrao: padrao } } } }, select: { id: true } });
       if (!await evidenciaValida(assembleia.versao_id, 'ASSEMBLEIA_GERAL') || !await evidenciaValida(instalacao.versao_id, regras.data.atos.posse_integrante))
@@ -79,6 +80,12 @@ export class MandatoDiretoService {
         if (!confirmar) throw new ConflictException('Este mandato já foi registrado. Consulte os períodos da ficha.');
         return { id: anterior.id, oficial_id: anterior.oficial_id };
       }
+      if (orgao.data_criacao && posse < orgao.data_criacao)
+        throw new BadRequestException('A data da ata da posse antecede a instituição do órgão.');
+      if (v.data_posse && v.data_posse !== civil(posse))
+        throw new BadRequestException('A data da posse deve ser a da ata selecionada. Reabra o formulário para usar a data da ata.');
+      const referenciaEleicao = v.trecho_eleicao ?? 'Ata da eleição';
+      const referenciaPosse = v.trecho_posse ?? 'Ata da posse';
       const indicacao = v.indicacao_id
         ? await this.atas.antecedenteDoMandato(tx, ator, acesso, v.indicacao_id, v.pessoa_id, oficio, assembleia.data)
         : undefined;
@@ -99,7 +106,7 @@ export class MandatoDiretoService {
       const bissexto = politica?.aniversario_bissexto ?? 'DIA_28_FEVEREIRO';
       const termino = terminoCincoAnos(posse, bissexto);
       const avaliacao = avaliarEleicaoOficial({ dataEleicao: civil(assembleia.data), dataNascimento: civil(pessoa.data_nascimento),
-        dataRecepcao: civil(recepcao.data_evento), evidenciaRecepcao: recepcao.id, capacidadeConfirmada: true, evidenciaCapacidade: v.trecho_eleicao },
+        dataRecepcao: civil(recepcao.data_evento), evidenciaRecepcao: recepcao.id, capacidadeConfirmada: true, evidenciaCapacidade: referenciaEleicao },
         { idadeMinima: politica?.idade_minima ?? 18, fonte: politica?.fonte ?? versao.fonte, versao: politica?.versao ?? String(versao.numero),
           vigenteDesde: politica ? civil(politica.vigente_desde) : civil(assembleia.data), aniversarioBissexto: bissexto === 'DIA_01_MARCO' ? '01_MARCO' : '28_FEVEREIRO' });
       if (!avaliacao.requisitosAtendidos) throw new BadRequestException(avaliacao.requisitos.filter(r => !r.atendido).map(r => r.motivo));
@@ -122,7 +129,7 @@ export class MandatoDiretoService {
       if (!ordenado && !v.ordenacao) throw new BadRequestException('Informe a comprovação da ordenação para a primeira investidura.');
       if (!avaliarExercicio({ data_posse: posse, termino_previsto: termino, termino_efetivo: null }, fatos, posse).em_exercicio)
         throw new BadRequestException('O exercício do ofício não está comprovado na posse. Consulte o prontuário.');
-      const resultado = { nome: pessoa.nome_completo, oficio, data_eleicao: civil(assembleia.data), data_posse: v.data_posse,
+      const resultado = { nome: pessoa.nome_completo, oficio, data_eleicao: civil(assembleia.data), data_posse: civil(posse),
         termino_previsto: civil(termino), reeleicao: periodos.some(m => m.oficial_id === oficial?.id && m.data_posse < posse),
         versao_orgao_id: versao.id, versao: versao.numero, transcricao_historica: historico,
         ...(indicacao && { indicacao_id: indicacao.id, assunto_indicacao: indicacao.ata_conselho.assunto }) };
@@ -141,8 +148,8 @@ export class MandatoDiretoService {
         avaliacao_eleicao: { ...resultado, avaliacao, ata_eleicao: assembleia.versao_id, ata_posse: instalacao.versao_id, operador_id: ator.sub, atribuicao_id: permissao.atribuicao, origem_autorizacao: permissao.origem, ordenacao_id: ordenacao.id,
           rol_eleicao_evento_id: eleicao.evento.id, rol_posse_evento_id: naPosse.evento.id } } });
       await tx.referencia_ata_oficial.createMany({ data: [
-        { ato: 'ELEICAO', ata_documento_id: assembleia.documento_id, versao_id: assembleia.versao_id, justificativa: v.trecho_eleicao },
-        { ato: 'POSSE', ata_documento_id: instalacao.documento_id, versao_id: instalacao.versao_id, justificativa: v.trecho_posse },
+        { ato: 'ELEICAO', ata_documento_id: assembleia.documento_id, versao_id: assembleia.versao_id, justificativa: referenciaEleicao },
+        { ato: 'POSSE', ata_documento_id: instalacao.documento_id, versao_id: instalacao.versao_id, justificativa: referenciaPosse },
       ].map(r => ({ ...r, igreja_id, mandato_id: mandato.id, sequencia: 1, registrado_por_id: ator.sub })) });
       await tx.evento_autorizacao.create({ data: { igreja_id, operador_id: ator.sub, operador_pessoa_id: permissao.pessoa, pessoa_id: v.pessoa_id,
         acao: 'MANDATO_REGISTRADO', recurso_id: mandato.id, fundamento: 'Eleição e posse documentadas',
