@@ -1,3 +1,4 @@
+import { verificarSigiloDosAnexos } from './sigilo-anexos';
 import { mesaVigente } from './mesa-assembleia';
 import { ForbiddenException } from '@nestjs/common';
 import { identificacaoDocumento } from './numeracao-ata-livro';
@@ -183,7 +184,7 @@ export class RascunhosService {
 
   async listar(a: AtorSecretaria, documento: string) {
     return this.base.prisma.$transaction(async tx => {
-      await this.base.operador(tx, a);
+      await this.base.operador(tx, a, true);
       const d = await this.base.documento(tx, a, documento);
       const jobs = await tx.trabalho_renderizacao.findMany({
         where: {
@@ -199,7 +200,7 @@ export class RascunhosService {
   }
 
   private async autorizado(tx: Tx, a: AtorSecretaria, documento: string, id: string) {
-    await this.base.operador(tx, a);
+    await this.base.operador(tx, a, true);
     const d = await this.base.documento(tx, a, documento);
     const job = await tx.trabalho_renderizacao.findFirst({ where: { id, igreja_id: a.igreja_id, versao: { documento_id: d.id } }, include: { arquivo: true } });
     if (!job) throw new NotFoundException('Artefato não encontrado.');
@@ -214,11 +215,15 @@ export class RascunhosService {
   }
 
   async baixar(a: AtorSecretaria, documento: string, id: string) {
-    const { job, visivel } = await this.base.prisma.$transaction(tx => this.autorizado(tx, a, documento, id),
-      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
-    if (!visivel || !job.arquivo) throw new NotFoundException('Artefato não disponível.');
-    const bytes = await this.storage.readAuthorized(a, job.arquivo, 'anexo_documento_consulta');
-    return { bytes, nome: job.finalidade === 'MATRIZ_APROVADA' ? 'matriz-aprovada.pdf' : 'rascunho.pdf' };
+    const artefato = await this.base.prisma.$transaction(async tx => {
+      const { job, visivel } = await this.autorizado(tx, a, documento, id);
+      if (!visivel || !job.arquivo) throw new NotFoundException('Artefato não disponível.');
+      const fonte = job.fonte as unknown as FonteTrabalho;
+      await verificarSigiloDosAnexos(tx, a.igreja_id, a.sub, fonte.arquivos.map(i => i.id));
+      return { arquivo: job.arquivo, finalidade: job.finalidade };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    const bytes = await this.storage.readAuthorized(a, artefato.arquivo, 'anexo_documento_consulta');
+    return { bytes, nome: artefato.finalidade === 'MATRIZ_APROVADA' ? 'matriz-aprovada.pdf' : 'rascunho.pdf' };
   }
 
   limparTemporarios() { return this.storage.clearRenderTemps(); }

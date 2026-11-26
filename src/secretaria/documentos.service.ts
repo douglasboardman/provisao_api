@@ -1,3 +1,6 @@
+import { contextosDasAtasRestritas, visibilidadeDocumentosSql } from './visibilidade-documentos';
+import { permissoesAtasDaConta } from './sigilo-ata';
+import { verificarSigiloDosAnexos } from './sigilo-anexos';
 import { orgaosJuvenisRestritos } from '../orgaos/acesso-sociedades';
 import { ForbiddenException } from '@nestjs/common';
 import { aplicarMesa, conferirApuracoes, conferirVotacao, mesaVigente } from './mesa-assembleia';
@@ -51,6 +54,10 @@ export class DocumentosService {
     }
     if ((novoDocumento || anterior?.modelo_versao_id !== m.id) && m.modelo.versoes[0]?.id !== m.id)
       throw new ConflictException('Selecione a versão vigente do modelo.');
+    if (novoDocumento && restrito) {
+      if (m.tipo === 'ATA') await this.exigirClassificacaoAta(tx, a, contexto);
+      else await this.base.competente(tx, a, contexto, 'pode_consultar_restritos');
+    }
     const config = dto.validar(dto.configuracaoSchema, m.configuracao);
     const vinculo = await this.livros.validarVinculo(tx, a, contexto, restrito, m, config, v, atualId);
     dto.validarCampos(config, v.conteudo.campos);
@@ -84,7 +91,7 @@ export class DocumentosService {
       if (await mesaVigente(tx, origem)) throw new ForbiddenException('A mesa assume a redação da sessão instalada.');
     }
     if (reuniao) {
-      if (reuniao.contexto_id !== contexto || (m.tipo === 'ATA' && reuniao.data > dataCivil(v.data_documento)) || (reuniao.restrito && !restrito))
+      if (reuniao.contexto_id !== contexto || (m.tipo === 'ATA' && reuniao.data > dataCivil(v.data_documento)) || (reuniao.restrito && !restrito && (m.tipo !== 'ATA' || anterior?.reuniao_id !== reuniao.id)))
         throw new BadRequestException('Reunião/contexto, data ou sigilo incompatíveis.');
       dadosReuniao = dto.validar(dto.reuniaoDadosSchema, reuniao.dados);
       if (edital && anterior?.reuniao_id !== reuniao.id && dadosReuniao.situacao && dadosReuniao.situacao !== 'AGENDADA')
@@ -105,7 +112,8 @@ export class DocumentosService {
     // Referência a acervo restrito não pode ser publicada em documento aberto.
     if (v.motivador_id) {
       const motivador = await tx.documento_versao.findUniqueOrThrow({ where: { id: v.motivador_id }, include: { documento: true } });
-      if (motivador.documento.restrito && !restrito) throw new BadRequestException('Documento motivado deve preservar o sigilo da fonte.');
+      if (motivador.documento.restrito && (!restrito ||
+        (motivador.documento.tipo === 'ATA' && (m.tipo !== 'ATA' || motivador.contexto_id !== contexto)))) throw new BadRequestException('Documento motivado deve preservar o sigilo da fonte.');
     }
     const preparador = !anterior ? (await this.base.operador(tx, a)).pessoa_id : (anterior.conteudo as dto.VersaoInput['conteudo']).autores_origem?.preparador;
     const abertura = vinculo?.natureza === 'ABERTURA' ? await this.livros.responsaveisAbertura(tx, c, vinculo.livro, v.data_documento, config, preparador) : null;
@@ -161,7 +169,12 @@ export class DocumentosService {
     const carga = {bytes:0, pixels:0};
     for (const id of arquivos) {
       // Novos anexos só podem usar upload próprio. Um anexo já vinculado pode ser mantido nas versões seguintes.
-      const f = await tx.arquivo_privado.findFirst({ where: { id, igreja_id: a.igreja_id, artefatos_documento: { none: {} }, livros_historicos: { none: {} }, registros_livro: { none: {} }, ...arquivoSemVinculoDeExpedicao } });
+      const f = await tx.arquivo_privado.findFirst({ where: { id, igreja_id: a.igreja_id,
+        ...(!imagensModelo.has(id) && { anexos_documento: { none: { versao: { documento: { tipo: 'ATA', restrito: true,
+          ...(documento && { id: { not: documento } }),
+          ...(m.tipo === 'ATA' && restrito && { contexto_id: { not: contexto } }),
+        } } } } }),
+        artefatos_documento: { none: {} }, livros_historicos: { none: {} }, registros_livro: { none: {} }, ...arquivoSemVinculoDeExpedicao } });
       if (!f || (f.usuario_id !== a.sub && !imagensModelo.has(id) && !(documento && await tx.anexo_documento.findFirst({ where: { arquivo_id: id, igreja_id: a.igreja_id, versao: { documento_id: documento } } })))) throw new BadRequestException('Anexo privado indisponível para vinculação.');
       const usos = imagens.filter(b => b.arquivo_id === id).length;
       if (!usos) continue;
@@ -223,11 +236,34 @@ export class DocumentosService {
     }, { isolationLevel: 'RepeatableRead' });
   }
 
+  async exigirClassificacaoAta(tx: Tx, a: AtorSecretaria, contexto: string) {
+    if (!(await permissoesAtasDaConta(tx, a.igreja_id, a.sub)).get(contexto)?.classificar)
+      throw new ForbiddenException('A classificação da ata exige cargo ou mandato vigente neste contexto.');
+  }
+
+  alterarSigiloAta(a: AtorSecretaria, id: string, dados: unknown) {
+    const v = dto.validar(z.strictObject({ ...dto.chave, ...dto.revisao, restrito: z.boolean() }), dados);
+    return this.base.comando(a, 'SIGILO_ATA', id, v, async tx => {
+      const ata = await tx.documento.findFirstOrThrow({ where: { id, igreja_id: a.igreja_id, tipo: 'ATA' }, select: { revisao: true, restrito: true } });
+      this.base.conferirRevisao(ata.revisao, v.revisao);
+      if (ata.restrito === v.restrito) return { id, revisao: ata.revisao };
+      return tx.documento.update({ where: { id, igreja_id: a.igreja_id, revisao: v.revisao },
+        data: { restrito: v.restrito, revisao: { increment: 1 } }, select: { id: true, revisao: true } });
+    }, async tx => {
+      const ata = await tx.documento.findFirst({ where: { id, igreja_id: a.igreja_id, tipo: 'ATA' }, select: { contexto_id: true } });
+      if (!ata) throw new NotFoundException('Ata não encontrada nesta igreja.');
+      await this.exigirClassificacaoAta(tx, a, ata.contexto_id);
+    });
+  }
+
+  async conferirAcessoAnexo(a: AtorSecretaria, arquivo: string) {
+    await this.base.prisma.$transaction(tx => verificarSigiloDosAnexos(tx, a.igreja_id, a.sub, [arquivo]));
+  }
+
   criar(a: AtorSecretaria, dados: unknown) {
     const v = dto.validar(dto.documentoSchema, dados);
     return this.base.comando(a, 'CRIAR_DOCUMENTO', v.contexto_id, v, async tx => {
       await this.base.preparar(tx, a, v.contexto_id);
-      if (v.restrito) await this.base.competente(tx, a, v.contexto_id, 'pode_consultar_restritos');
       const entrada = structuredClone(v.versao);
       if (v.agendamento) {
         if (a.perfil === 'COMUM') throw new ForbiddenException('Agendamento exige autorização própria.');
@@ -531,7 +567,12 @@ export class DocumentosService {
     const m = await tx.modelo_documento_versao.findFirst({ where: { id, igreja_id: a.igreja_id }, select: { contexto_id: true, configuracao: true, tipo: true } });
     if (!m) throw new BadRequestException('Modelo de destino indisponível.');
     await this.base.autorizarModelo(tx, a, m.contexto_id, m.configuracao, 'editar', true);
-    if (restrito) await this.base.competente(tx, a, m.contexto_id, 'pode_consultar_restritos');
+    if (restrito) {
+      if (m.tipo === 'ATA') {
+        if (!(await permissoesAtasDaConta(tx, a.igreja_id, a.sub)).get(m.contexto_id)?.ler)
+          throw new ForbiddenException('Ata restrita indisponível neste contexto.');
+      } else await this.base.competente(tx, a, m.contexto_id, 'pode_consultar_restritos');
+    }
     return { contexto: m.contexto_id, tipo: m.tipo, config: dto.validar(dto.configuracaoSchema, m.configuracao) };
   }
 
@@ -559,6 +600,7 @@ export class DocumentosService {
       const contextos = conta.perfil === 'COMUM' ? await tx.contexto_secretaria.findMany({ where: { igreja_id: a.igreja_id }, include: { orgao: true } }) : null;
       const visiveis = contextos && (await Promise.all(contextos.map(async c => ({ id: c.id, pode: await this.base.contextoVisivel(tx, c, conta) }))))
         .filter(c => c.pode).map(c => c.id);
+      const autorizados = restrito === 'true' ? (await this.base.concessoes(tx, a)).filter(c => c.pode_consultar_restritos).map(c => c.contexto_id) : [];
       let encadeamento = Prisma.empty;
       let convocatorias = false;
       if (modelo_destino) {
@@ -567,16 +609,16 @@ export class DocumentosService {
         encadeamento = ids.length ? Prisma.sql`AND d.contexto_id = ${contexto} AND d.estado = 'EXPEDIDO' AND v.modelo_versao_id IN (${Prisma.join(ids)})` : Prisma.sql`AND false`;
         convocatorias = tipo === 'ATA';
         if (convocatorias) encadeamento = reuniao_id ? Prisma.sql`${encadeamento} AND v.reuniao_id = ${reuniao_id}
-          AND EXISTS (SELECT 1 FROM reuniao r WHERE r.id = v.reuniao_id AND r.igreja_id = d.igreja_id AND r.contexto_id = d.contexto_id AND (NOT r.restrito OR ${restrito === 'true'}))
+          AND EXISTS (SELECT 1 FROM reuniao r WHERE r.id = v.reuniao_id AND r.igreja_id = d.igreja_id AND r.contexto_id = d.contexto_id AND (NOT r.restrito OR ${autorizados.includes(contexto)}))
           AND EXISTS (SELECT 1 FROM modelo_documento_versao mv WHERE mv.id = v.modelo_versao_id AND mv.finalidade = 'CONVOCACAO')` : Prisma.sql`AND false`;
       }
-      const autorizados = restrito === 'true' ? (await this.base.concessoes(tx, a)).filter(c => c.pode_consultar_restritos).map(c => c.contexto_id) : [];
+      const atasRestritas = restrito === 'true' ? await contextosDasAtasRestritas(tx, a.igreja_id, a.sub) : [];
       return selecionarDocumentos(tx, Prisma.sql`${tabelasDocumentais}
         WHERE d.igreja_id = ${a.igreja_id} AND v.numero = d.versao_atual ${encadeamento}
         ${juvenisRestritos.length ? Prisma.sql`AND c.orgao_id NOT IN (${Prisma.join(juvenisRestritos)})` : Prisma.empty}
         ${visiveis ? visiveis.length ? Prisma.sql`AND c.id IN (${Prisma.join(visiveis)})` : Prisma.sql`AND false` : Prisma.empty}
-        AND (NOT d.restrito ${autorizados.length ? Prisma.sql`OR c.id IN (${Prisma.join(autorizados)})` : Prisma.empty})
-        ${excluir ? Prisma.sql`AND d.id <> ${excluir}` : Prisma.empty}`, filtros, convocatorias);
+        AND ${visibilidadeDocumentosSql(autorizados, atasRestritas)}
+        ${excluir ? Prisma.sql`AND d.id <> ${excluir}` : Prisma.empty}`, filtros, convocatorias, autorizados);
     }, { isolationLevel: 'RepeatableRead' });
   }
 
@@ -587,7 +629,9 @@ export class DocumentosService {
   consultar(a: AtorSecretaria, parametros: unknown) {
     const { contexto, pagina, visao, modelo, estado, busca, de, ate } = dto.validar(dto.consultaDocumentosSchema, parametros);
     return this.base.prisma.$transaction(async tx => {
-      await this.base.operador(tx, a); await this.base.contexto(tx, a, contexto);
+      await this.base.operador(tx, a, true);
+      const { somenteAtas } = await this.base.contextoDeAtas(tx, a, contexto);
+      const atasRestritas = await contextosDasAtasRestritas(tx, a.igreja_id, a.sub);
       const restritos = (await this.base.concessoes(tx, a, contexto)).some(g => g.pode_consultar_restritos);
       const linhas = await tx.$queryRaw<LinhaDocumento[]>`
         SELECT d.id, d.estado, d.revisao, d.versao_atual, d.tipo, d.numero, d.ano, d.sigla, d.identificacao_livro, d.criado_em,
@@ -606,7 +650,8 @@ export class DocumentosService {
           ${modelo ? Prisma.sql`AND m.id = ${modelo}` : Prisma.empty}
           ${de ? Prisma.sql`AND v.data_documento >= ${de}::date` : Prisma.empty}
           ${ate ? Prisma.sql`AND v.data_documento <= ${ate}::date` : Prisma.empty}
-          ${restritos ? Prisma.empty : Prisma.sql`AND NOT d.restrito`}
+          ${somenteAtas ? Prisma.sql`AND d.tipo = 'ATA'` : Prisma.empty}
+          AND ${visibilidadeDocumentosSql(restritos ? [contexto] : [], atasRestritas)}
         ORDER BY v.data_documento DESC NULLS LAST, d.id ASC
         LIMIT 31 OFFSET ${pagina * 30}
       `;
@@ -620,7 +665,7 @@ export class DocumentosService {
 
   async historico(a: AtorSecretaria, id: string, pagina: number) {
     return this.base.prisma.$transaction(async tx => {
-      await this.base.operador(tx, a);
+      await this.base.operador(tx, a, true);
       await this.base.documento(tx, a, id);
       const comandos = await tx.comando_secretaria.findMany({ where: { igreja_id: a.igreja_id, OR: [{ alvo_id: id }, { resultado: { path: ['id'], equals: id } }] }, select: { id: true, operacao: true, criado_em: true, dados: true, usuario: { select: { nome_usuario: true } } }, orderBy: [{ criado_em: 'desc' }, { id: 'asc' }], take: 30, skip: pagina * 30 });
       return comandos.map(c => {
@@ -632,15 +677,16 @@ export class DocumentosService {
 
   async detalhe(a: AtorSecretaria, id: string) {
     return this.base.prisma.$transaction(async tx => {
-      await this.base.operador(tx, a);
+      await this.base.operador(tx, a, true);
       const d = await this.base.documento(tx, a, id);
+      const { somenteAtas } = await this.base.contextoDeAtas(tx, a, d.contexto_id);
       await tx.logs_atividades.create({ data: { igreja_id: a.igreja_id, usuario_id: a.sub, acao: 'CONSULTA', tabela_afetada: 'documento', registro_id: id } });
       const atual = d.versoes.find(v => v.numero === d.versao_atual);
       const pendencias: PendenciaTramitacao[] = [];
       let atuacao: { criar: boolean; preparar: boolean } | undefined = a.perfil === 'COMUM' ? { criar: false, preparar: false } : undefined;
       let sugestoes_arrolados: dto.VersaoInput['conteudo']['arrolados'] | undefined;
       let dataFutura = false;
-      if (d.estado === 'EM_EDICAO' && atual?.modelo) {
+      if (!somenteAtas && d.estado === 'EM_EDICAO' && atual?.modelo) {
         dataFutura = atual.data_documento.toISOString().slice(0, 10) > await hojeDaIgreja(tx, a.igreja_id);
         const config = dto.configuracaoSchema.safeParse(atual.modelo.configuracao);
         const conteudo = dto.conteudoSchema.safeParse(atual.conteudo);

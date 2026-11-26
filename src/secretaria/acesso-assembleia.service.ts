@@ -1,3 +1,4 @@
+import { permissoesAtas } from './sigilo-ata';
 import { contaDaSessao } from '../autorizacao/politica';
 import { mesaVigente } from './mesa-assembleia';
 import { hojeDaIgreja } from '../orgaos/relogio-igreja';
@@ -62,7 +63,13 @@ export class AcessoAssembleiaService {
     const dados = await tx.mesa_assembleia.findUniqueOrThrow({ where: { id: mesa.id }, include: composicao });
     const r = reuniaoDadosSchema.parse(reuniao.dados);
     if (!['EM_ANDAMENTO', 'ENCERRADA'].includes(r.situacao ?? '')) throw indisponivel();
-    return { ...dados, restritos };
+    return dados;
+  }
+
+  private async mesaPodeLerAtaRestrita(tx: Tx, mesa: { igreja_id: string; contexto_id: string; oficial: { pessoa_id: string }; secretario_id: string }) {
+    const presidente = await permissoesAtas(tx, mesa.igreja_id, mesa.oficial.pessoa_id);
+    if (!presidente.get(mesa.contexto_id)?.ler) return false;
+    return (await permissoesAtas(tx, mesa.igreja_id, mesa.secretario_id)).get(mesa.contexto_id)?.ler === true;
   }
 
   opcoes(a: AtorSecretaria, id: string) {
@@ -74,14 +81,14 @@ export class AcessoAssembleiaService {
             igreja_id: a.igreja_id,
             reuniao_id: id,
             congelado_em: null,
-            documento: { tipo: 'ATA', estado: 'EM_EDICAO', ...(!mesa.restritos && { restrito: false }) },
+            documento: { tipo: 'ATA', estado: 'EM_EDICAO' },
           },
           select: {
             id: true,
             numero: true,
             assunto: true,
             modelo: { select: { configuracao: true } },
-            documento: { select: { versao_atual: true, revisao: true, encaminhado_em: true } },
+            documento: { select: { versao_atual: true, revisao: true, encaminhado_em: true, restrito: true } },
             acessos_assembleia: {
               where: { revogado_em: null, mesa_id: mesa.id },
               select: { id: true, expira_em: true, consumido_em: true },
@@ -89,11 +96,12 @@ export class AcessoAssembleiaService {
             },
           },
         });
+        const podeLerRestritas = versoes.some(v => v.documento.restrito) && await this.mesaPodeLerAtaRestrita(tx, mesa);
         return {
           mesa_id: mesa.id,
           secretario: mesa.secretario_nome,
           atas: versoes
-            .filter((v) => v.numero === v.documento.versao_atual && this.permite(v.modelo?.configuracao))
+            .filter((v) => v.numero === v.documento.versao_atual && (!v.documento.restrito || podeLerRestritas) && this.permite(v.modelo?.configuracao))
             .map((v) => ({
               id: v.id,
               assunto: v.assunto,
@@ -140,11 +148,12 @@ export class AcessoAssembleiaService {
             reuniao_id: id,
             igreja_id: a.igreja_id,
             congelado_em: null,
-            documento: { estado: 'EM_EDICAO', tipo: 'ATA', ...(!m.restritos && { restrito: false }) },
+            documento: { estado: 'EM_EDICAO', tipo: 'ATA' },
           },
           include: { documento: true, modelo: true },
         });
-        if (!versao || versao.numero !== versao.documento.versao_atual || !this.permite(versao.modelo?.configuracao))
+        if (!versao || versao.numero !== versao.documento.versao_atual || !this.permite(versao.modelo?.configuracao) ||
+            (versao.documento.restrito && !await this.mesaPodeLerAtaRestrita(tx, m)))
           throw new BadRequestException('Escolha uma minuta desta sessão cujo modelo autorize o secretário da mesa.');
         const email = normalizarEmail(m.secretario.email);
         const contaInvalida = () => new BadRequestException('Confira o e-mail individual e a situação da conta do secretário eleito.');
@@ -256,6 +265,8 @@ export class AcessoAssembleiaService {
       g.versao.documento.versao_atual !== g.versao.numero ||
       g.versao.congelado_em
     )
+      throw indisponivel();
+    if (g.versao.documento.restrito && !(await permissoesAtas(tx, g.igreja_id, g.mesa.secretario_id)).get(g.contexto_id)?.ler)
       throw indisponivel();
     const sessaoDaAta = g.versao.reuniao;
     if (!sessaoDaAta || sessaoDaAta.id !== g.reuniao_id || sessaoDaAta.igreja_id !== g.igreja_id ||

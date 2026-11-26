@@ -1,3 +1,4 @@
+import { contextosDasAtasRestritas } from '../secretaria/visibilidade-documentos';
 import { estadoDaLiberacao, exigirRotaLegada } from '../autorizacao/liberacao-servico';
 import { selecionarDocumentos, tabelasDocumentais } from '../secretaria/selecao-documental';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
@@ -47,8 +48,7 @@ export class IndicacoesEleicaoService {
     const usuario = await this.secretaria.operador(tx, ator);
     if (usuario.perfil === 'AUDITOR') throw new ForbiddenException('Operador não autorizado.');
     const hoje = dataCivil(await hojeDaIgreja(tx, ator.igreja_id));
-    const concessoes = await this.secretaria.concessoes(tx, ator);
-    return { hoje, restritos: concessoes.filter(c => c.pode_consultar_restritos).map(c => c.contexto_id) };
+    return { hoje, restritos: await contextosDasAtasRestritas(tx, ator.igreja_id, ator.sub) };
   }
 
   private escopoAtas(igreja: string, restritos: string[], tipo: TipoAta, hoje: Date, historica = false) {
@@ -113,7 +113,8 @@ export class IndicacoesEleicaoService {
     const contexto = validar(tipoAta, tipo);
     return this.prisma.$transaction(async tx => {
       const acesso = await this.acesso(tx, ator);
-      return selecionarDocumentos(tx, this.escopoAtas(ator.igreja_id, acesso.restritos, contexto, acesso.hoje), filtros);
+      const reunioes = (await this.secretaria.concessoes(tx, ator)).filter(c => c.pode_consultar_restritos).map(c => c.contexto_id);
+      return selecionarDocumentos(tx, this.escopoAtas(ator.igreja_id, acesso.restritos, contexto, acesso.hoje), filtros, false, reunioes);
     }, { isolationLevel: 'RepeatableRead' });
   }
 

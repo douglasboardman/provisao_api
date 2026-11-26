@@ -92,7 +92,7 @@ export class AtasLegadasService {
     return { teor };
   }
 
-  private async validarDados(tx: Tx, a: AtorSecretaria, contextoId: string, restrito: boolean, v: DadosAta) {
+  private async validarDados(tx: Tx, a: AtorSecretaria, contextoId: string, restrito: boolean, v: DadosAta, reuniaoAnterior?: string | null) {
     const contexto = await this.base.contexto(tx, a, contextoId);
     if (v.data_documento > (await hojeDaIgreja(tx, a.igreja_id)))
       throw new BadRequestException('A data da ata legada não pode ser futura.');
@@ -102,7 +102,7 @@ export class AtasLegadasService {
     if (
       reuniao &&
       (reuniao.contexto_id !== contextoId ||
-        (reuniao.restrito && !restrito) ||
+        (reuniao.restrito && !restrito && reuniao.id !== reuniaoAnterior) ||
         (dataReuniao && dataReuniao > v.data_documento) ||
         (v.reuniao.data && dataReuniao !== v.reuniao.data) ||
         (v.reuniao.modalidade && reuniao.modalidade !== v.reuniao.modalidade) ||
@@ -159,7 +159,7 @@ export class AtasLegadasService {
     return this.base
       .comando(a, 'CRIAR_DOCUMENTO_LEGADO', v.contexto_id, v, async (tx) => {
         const operador = await this.base.competente(tx, a, v.contexto_id, 'pode_aprovar');
-        if (v.restrito) await this.base.competente(tx, a, v.contexto_id, 'pode_consultar_restritos');
+        if (v.restrito) await this.documentos.exigirClassificacaoAta(tx, a, v.contexto_id);
         const { contexto, reuniao, dadosReuniao, dataReuniao } = await this.validarDados(tx, a, v.contexto_id, v.restrito, v);
         const { arquivo, bytes } = await this.pdf(tx, a, v.pdf.arquivo_id);
         const pdf = await PDFDocument.load(bytes).catch(() => {
@@ -242,7 +242,7 @@ export class AtasLegadasService {
 
       if (v.reuniao_id && v.reuniao_id === atual.reuniao_id)
         await this.corrigirReuniaoVinculada(tx, a, id, v.reuniao_id, fonte.legado.reuniao, v.reuniao);
-      const { reuniao, dataReuniao, dadosReuniao } = await this.validarDados(tx, a, d.contexto_id, d.restrito, v);
+      const { reuniao, dataReuniao, dadosReuniao } = await this.validarDados(tx, a, d.contexto_id, d.restrito, v, atual.reuniao_id);
       const escopo = { igreja_id: a.igreja_id, contexto_id: d.contexto_id };
       await this.conferirIdentificacao(tx, escopo, v, original.arquivo.sha256, id);
       const anexos = atual.anexos.map(({ arquivo_id, nome }) => ({ arquivo_id, nome }));

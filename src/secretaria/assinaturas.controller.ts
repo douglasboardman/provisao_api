@@ -26,7 +26,7 @@ import { AssinaturasService } from './assinaturas.service';
 import { exigirAssinaturas } from './expedicao-estado';
 import { ExpedicaoWorkerService } from './expedicao-worker.service';
 import type { AtorSecretaria } from './secretaria-base.service';
-import { SecretariaGuard } from './secretaria.guard';
+import { ConsultaContextualAtas, SecretariaGuard } from './secretaria.guard';
 import { validar } from './secretaria.dto';
 
 type RequestSecretaria = { user: AtorSecretaria };
@@ -50,6 +50,7 @@ const arquivos = (res: Response, arquivo: { bytes: Buffer; nome: string }) => {
 export class AssinaturasController {
   constructor(private readonly servico: AssinaturasService) {}
 
+  @ConsultaContextualAtas()
   @Get()
   @Header('Cache-Control', 'private, no-store')
   listar(@Req() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string) {
@@ -98,6 +99,7 @@ export class AssinaturasController {
     return this.servico.conferir(req.user, id, valor, file?.buffer);
   }
 
+  @ConsultaContextualAtas()
   @Get(':versao/arquivos/:tipo')
   async baixar(
     @Req() req: RequestSecretaria,

@@ -1,3 +1,4 @@
+import { contextosDasAtasRestritas } from '../secretaria/visibilidade-documentos';
 import { contaDaSessao, decidirServico, type Ator, type Tx } from '../autorizacao/politica';
 import { recursoDaIgreja } from '../feature-flags/feature-flags';
 import { SecretariaBaseService, type AtorSecretaria } from '../secretaria/secretaria-base.service';
@@ -36,7 +37,7 @@ export class CargosEleitosService {
   }
 
   private async escopoAtas(tx: Tx, ator: AtorSecretaria, orgao: string, hoje: string) {
-    const restritos = (await this.secretaria!.concessoes(tx, ator)).filter(c => c.pode_consultar_restritos).map(c => c.contexto_id);
+    const restritos = await contextosDasAtasRestritas(tx, ator.igreja_id, ator.sub);
     return Prisma.sql`
       ${tabelasDocumentais} WHERE d.igreja_id = ${ator.igreja_id} AND c.orgao_id = ${orgao}
       AND d.tipo = 'ATA' AND v.numero = d.versao_atual AND d.estado IN ('APROVADO','EXPEDIDO','LEGADA_CONFERIDA')
@@ -47,7 +48,8 @@ export class CargosEleitosService {
   atas(ator: AtorSecretaria & Ator, orgao: string, filtros: unknown) {
     return this.prisma.$transaction(async tx => {
       await this.poder(tx, ator.igreja_id, ator.sub, ator);
-      return selecionarDocumentos(tx, await this.escopoAtas(tx, ator, orgao, await hojeDaIgreja(tx, ator.igreja_id)), filtros);
+      const reunioes = (await this.secretaria!.concessoes(tx, ator)).filter(c => c.pode_consultar_restritos).map(c => c.contexto_id);
+      return selecionarDocumentos(tx, await this.escopoAtas(tx, ator, orgao, await hojeDaIgreja(tx, ator.igreja_id)), filtros, false, reunioes);
     }, { isolationLevel: 'RepeatableRead' });
   }
 

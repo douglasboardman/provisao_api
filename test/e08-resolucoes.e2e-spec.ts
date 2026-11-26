@@ -24,6 +24,7 @@ integration('E08: resoluções, integridade e consulta de atuação', () => {
   let storage: string;
   const igreja = randomUUID(),
     outraIgreja = randomUUID();
+  const conselheiro = randomUUID();
   const lider = randomUUID(),
     coautora = randomUUID(),
     observador = randomUUID(),
@@ -177,8 +178,16 @@ integration('E08: resoluções, integridade e consulta de atuação', () => {
         { id: externo, nome_completo: 'Pessoa da outra igreja', igreja_id: outraIgreja },
       ].map((p) => ({ ...p, sexo: 'FEMININO', data_nascimento: new Date('1991-01-01') })),
     });
+    await prisma.pessoas.create({ data: { id: conselheiro, igreja_id: igreja, nome_completo: 'Presbítero do ensaio de sigilo', sexo: 'MASCULINO', data_nascimento: new Date('1980-01-01') } });
+    const inicio = new Date('2020-01-01');
+    const oficial = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: conselheiro, tipo: 'PRESBITERO_DOCENTE' } });
+    await prisma.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: oficial.id, tipo: 'ORDENACAO', data_efeito: inicio,
+      ordem: 1, autoridade: 'Presbitério', evidencia: 'Registro de ordenação' } });
+    await prisma.vinculo_pastoral.create({ data: { igreja_id: igreja, oficial_id: oficial.id, data_inicio: inicio, exercicio_institucional: true,
+      modalidade: 'Pastor', concilio: 'Presbitério', ato: 'Posse', evidencia: 'Registro de posse' } });
     for (const [chave, perfil, igreja_id, pessoa_id] of [
       ['gestor', 'GESTOR', igreja, lider],
+      ['conselheiro', 'GESTOR', igreja, conselheiro],
       ['auditor', 'AUDITOR', igreja, null],
       ['outra', 'AUDITOR', outraIgreja, null],
     ] as const) {
@@ -390,8 +399,12 @@ integration('E08: resoluções, integridade e consulta de atuação', () => {
   }, 120_000);
 
   it('preserva o retrato histórico e aplica o mesmo recorte de sigilo a busca, indicadores e CSV', async () => {
-    const restrito = (await criar(versao([{ ...resolucao(), assunto: assuntoRestrito }]), true).expect(201)).body.id;
-    await aprovar(restrito);
+    const entrada = versao([{ ...resolucao(), assunto: assuntoRestrito }]);
+    await criar(entrada, true).expect(403);
+    const restrito = (await criar(entrada).expect(201)).body.id;
+    const aprovada = await aprovar(restrito);
+    await http('post', `documentos/${restrito}/sigilo`, 'conselheiro')
+      .send({ revisao: aprovada.revisao, restrito: true, idempotencia: randomUUID() }).expect(201);
     await prisma.pessoas.update({ where: { id: lider }, data: { nome_completo: 'Nome atual diferente' } });
     await prisma.contexto_secretaria.update({ where: { id: contexto }, data: { nome: 'Assembleia atual' } });
     const resposta = (await http('get', 'atuacao', 'auditor').expect(200)).body;
@@ -419,7 +432,8 @@ integration('E08: resoluções, integridade e consulta de atuação', () => {
     await http('get', `documentos/${restrito}`, 'auditor').expect(404);
     const exportar = (ator: string) => http('post', 'atuacao/exportar', ator).send({ tipo: 'resolucoes' }).expect(200);
     const aberto = await exportar('auditor');
-    const autorizado = await exportar('gestor');
+    expect((await exportar('gestor')).text).not.toContain(assuntoRestrito);
+    const autorizado = await exportar('conselheiro');
     expect(aberto.headers['cache-control']).toBe('private, no-store');
     expect(aberto.text).toContain('Sem proponente informado');
     expect(aberto.text).toContain("'=Assunto rejeitado");

@@ -5,6 +5,7 @@ import { randomUUID, createHash } from 'crypto';
 import { constants } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { verificarSigiloDosAnexos } from '../secretaria/sigilo-anexos';
 import { PrismaService } from 'src/prisma/prisma.service';
 
 interface Actor { sub: string; igreja_id: string }
@@ -70,8 +71,17 @@ export class PrivateStorageService {
   async read(actor: Actor, id: string): Promise<Buffer> {
     if (!uuid.test(id)) throw new NotFoundException('Arquivo não encontrado.');
     // A política inicial só permite ao responsável, na própria igreja. Nenhuma permissão é herdada do perfil técnico.
-    const file = await this.prisma.arquivo_privado.findFirst({ where: { id, igreja_id: actor.igreja_id, usuario_id: actor.sub, artefatos_documento: { none: {} }, livros_historicos: { none: {} }, registros_livro: { none: {} }, ...arquivoSemVinculoDeExpedicao } });
-    if (!file) throw new NotFoundException('Arquivo não encontrado.');
+    const file = await this.prisma.$transaction(async tx => {
+      const arquivo = await tx.arquivo_privado.findFirst({
+        where: {
+          id, igreja_id: actor.igreja_id, usuario_id: actor.sub, artefatos_documento: { none: {} },
+          livros_historicos: { none: {} }, registros_livro: { none: {} }, ...arquivoSemVinculoDeExpedicao,
+        },
+      });
+      if (!arquivo) throw new NotFoundException('Arquivo não encontrado.');
+      await verificarSigiloDosAnexos(tx, actor.igreja_id, actor.sub, [id]);
+      return arquivo;
+    }, { isolationLevel: 'RepeatableRead' });
     return this.readAuthorized(actor, file);
   }
 

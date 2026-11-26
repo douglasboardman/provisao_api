@@ -1,3 +1,4 @@
+import { verificarSigiloDosAnexosDaPessoa } from './sigilo-anexos';
 import { conferirApuracoes, conferirVotacao } from './mesa-assembleia';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
@@ -214,6 +215,7 @@ export class MinhaAssembleiaService {
         include: { arquivo: true },
       });
       if (!anexo) throw new NotFoundException('Anexo indisponível nesta ata.');
+      await verificarSigiloDosAnexosDaPessoa(tx, g.igreja_id, g.mesa.secretario_id, [anexo.arquivo_id]);
       return { bytes: await this.arquivos.readVerified(anexo.arquivo), nome: anexo.nome };
     });
   }

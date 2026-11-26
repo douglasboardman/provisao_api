@@ -658,7 +658,7 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     await previa(sigiloso.id).expect(404);
     await previa(sigiloso.id,'gestor',false).expect(400);
     await previa(sigiloso.id,'secretario',true).expect(403);
-    await previa(sigiloso.id,'gestor',true).expect(200);
+    await previa(sigiloso.id,'gestor',true).expect(403);
     await previa(primeiro.id,'outra').expect(400);
     await previa(outroModelo.id).expect(400);
     const externa = await p.documento_versao.findFirstOrThrow({ where: { igreja_id: outra } });
@@ -727,7 +727,10 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     const upload = await request(app.getHttpServer()).post('/arquivos-privados').set('Cookie', cookies.gestor).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').attach('file', Buffer.from('anexo sintético'), 'anexo.txt').expect(201);
     const v = versao(); v.conteudo.anexos = [{ arquivo_id: upload.body.id, nome: 'evidencia.txt' }];
     await post('documentos').send({ contexto_id: contexto, restrito: false, versao: v, idempotencia: randomUUID() }).expect(400);
-    const entradaRestrita = { contexto_id: contexto, restrito: true, versao: v, idempotencia: randomUUID() };
+    await post('documentos', 'gestor').send({ contexto_id: contexto, restrito: true, versao: v, idempotencia: randomUUID() }).expect(403);
+    const carta = (await post('modelos').send({ contexto_id: contexto, nome: 'Correspondência reservada', tipo: 'OUTRO', finalidade: 'CARTA',
+      configuracao: { ...config, perfil: 'CORRESPONDENCIA', registro_livro: false }, publicar: true, idempotencia: randomUUID() }).expect(201)).body;
+    const entradaRestrita = { contexto_id: contexto, restrito: true, versao: { ...v, modelo_versao_id: carta.versao_id, reuniao_id: null }, idempotencia: randomUUID() };
     const id = (await post('documentos', 'gestor').send(entradaRestrita).expect(201)).body.id;
     const d = (await get(`documentos/${id}`, 'gestor').expect(200)).body;
     for (const user of ['secretario', 'admin', 'auditor', 'outra']) {
@@ -756,6 +759,18 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     await get(`documentos/${id}`, 'gestor').expect(404);
     await post('documentos', 'gestor').send(entradaRestrita).expect(404);
     await post(`documentos/${d.id}/cancelar`, 'gestor').send(cmd(1)).expect(404);
+  });
+  it('preserva as demais colunas de uma ata finalizada ao alterar o sigilo', async () => {
+    const dados = { igreja_id: igreja, contexto_id: contexto, estado: 'CANCELADO' as const, perfil: 'HISTORICO' };
+    const ata = await p.documento.create({ data: { ...dados, tipo: 'ATA' } });
+    const carta = await p.documento.create({ data: { ...dados, tipo: 'OUTRO' } });
+    const classificar = { restrito: true, revisao: { increment: 1 } };
+    await expect(p.documento.update({ where: { id: ata.id }, data: { ...classificar, versao_atual: 2 } })).rejects.toThrow();
+    await expect(p.documento.update({ where: { id: ata.id }, data: { restrito: true } })).rejects.toThrow();
+    await expect(p.documento.update({ where: { id: carta.id }, data: classificar })).rejects.toThrow();
+    const mesmaAta = await p.documento.update({ where: { id: ata.id }, data: classificar });
+    expect(mesmaAta).toEqual({ ...ata, restrito: true, revisao: 2 });
+    await p.documento.update({ where: { id: ata.id }, data: { restrito: false, revisao: { increment: 1 } } });
   });
   it('conta somente o acervo visível e limita o perfil à pessoa da sessão', async () => {
     await get(`contextos/${contexto}/resumo`, 'outra').expect(404);

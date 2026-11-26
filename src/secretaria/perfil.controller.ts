@@ -1,3 +1,4 @@
+import { contextosDasAtasRestritas, filtroVisibilidadeDocumentos } from './visibilidade-documentos';
 import { Controller, Get, Header, Request, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { recursosDaSessao } from '../feature-flags/feature-flags';
@@ -46,6 +47,8 @@ export class PerfilController {
             { contexto_id: { in: concessoes.filter((c) => c.pode_consultar_restritos).map((c) => c.contexto_id) } },
           ],
         };
+        const documentosVisiveis = secretaria ? filtroVisibilidadeDocumentos(concessoes.filter(c => c.pode_consultar_restritos).map(c => c.contexto_id),
+          await contextosDasAtasRestritas(tx, igreja_id, ator.sub)) : {};
         const [familia, eventos, contribuicoes, mandatos, reunioes, proposicoes] = await Promise.all([
           pessoa.grupo_familiar_id
             ? tx.grupos_familiares.findFirst({
@@ -98,7 +101,7 @@ export class PerfilController {
                 where: {
                   igreja_id,
                   proponentes: { some: { arrolado: { pessoa_id, igreja_id } } },
-                  versao: { congelado_em: { not: null }, legada_superada: false, documento: visibilidade },
+                  versao: { congelado_em: { not: null }, legada_superada: false, documento: documentosVisiveis },
                 },
                 select: {
                   id: true,

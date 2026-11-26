@@ -1,3 +1,5 @@
+import { verificarImagensDasMatrizes } from './sigilo-anexos';
+import { permissoesAtasDaConta } from './sigilo-ata';
 import { selecionarDocumentos, tabelasDocumentais } from './selecao-documental';
 import { cancelarExpedicao } from './expedicao-estado';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
@@ -97,6 +99,10 @@ export class LivrosService {
     }
     await this.base.contexto(tx, a, livro.contexto_id);
     return livro;
+  }
+
+  private async podeLerAtasRestritas(tx: Tx, a: AtorSecretaria, contextoId: string) {
+    return (await permissoesAtasDaConta(tx, a.igreja_id, a.sub)).get(contextoId)?.ler === true;
   }
 
   private registros(tx: Tx, id: string) {
@@ -291,17 +297,19 @@ export class LivrosService {
       async (tx) => {
         await this.base.operador(tx, a);
         const livro = await this.autorizado(tx, a, id);
+        const podeLerAtasRestritas = await this.podeLerAtasRestritas(tx, a, livro.contexto_id);
+        const sigilo: Prisma.documentoWhereInput = podeLerAtasRestritas ? {} : { NOT: { tipo: 'ATA', restrito: true } };
         const registros = await tx.registro_livro.findMany({
           where: { livro_id: id },
           orderBy: { ordem: 'asc' },
           include: {
-            versao: { select: { documento_id: true, numero: true, assunto: true } },
+            versao: { select: { documento_id: true, numero: true, assunto: true, documento: { select: { restrito: true, tipo: true } } } },
             arquivo: { select: { sha256: true } },
           },
         });
         const [termos, eventos, complementos, atasLegadas] = await Promise.all([
           tx.documento_versao.findMany({
-            where: { livro_id: id, modelo: { finalidade: { in: ['TERMO_ABERTURA', 'TERMO_ENCERRAMENTO'] } } },
+            where: { livro_id: id, documento: sigilo, modelo: { finalidade: { in: ['TERMO_ABERTURA', 'TERMO_ENCERRAMENTO'] } } },
             select: {
               id: true,
               assunto: true,
@@ -326,7 +334,7 @@ export class LivrosService {
             take: 100,
           }),
           tx.complemento_livro.findMany({
-            where: { livro_id: id },
+            where: { livro_id: id, versao: { documento: sigilo } },
             include: {
               versao: {
                 select: { documento_id: true, numero: true, assunto: true, documento: { select: { estado: true } } },
@@ -336,7 +344,7 @@ export class LivrosService {
           }),
           tx.documento_versao.findMany({
             where: { livro_id: id, igreja_id: a.igreja_id, contexto_id: livro.contexto_id,
-              legada_superada: false, documento: { estado: 'LEGADA_CONFERIDA', restrito: livro.restrito } },
+              legada_superada: false, documento: { estado: 'LEGADA_CONFERIDA', ...sigilo } },
             select: { documento_id: true, numero_original: true, assunto: true, data_documento: true, folhas_legadas: true },
             orderBy: [{ data_documento: 'asc' }, { numero_original: 'asc' }, { id: 'asc' }],
           }),
@@ -353,14 +361,14 @@ export class LivrosService {
         const { manifesto: _, ...resumo } = livro;
         return {
           ...resumo,
-          atas_pendentes: await atasPendentesLivro(tx, livro),
+          atas_pendentes: await atasPendentesLivro(tx, livro, podeLerAtasRestritas),
           numeros_cancelados: await tx.reserva_ata_livro.findMany({
-            where: { livro_id: id, igreja_id: a.igreja_id, contexto_id: livro.contexto_id, cancelada_em: { not: null } },
+            where: { livro_id: id, igreja_id: a.igreja_id, contexto_id: livro.contexto_id, cancelada_em: { not: null }, documento: sigilo },
             select: { numero: true, cancelada_em: true, motivo: true }, orderBy: { numero: 'asc' },
           }),
           capacidade_faces: capacidadeEmFaces(livro),
           totais: livro.arquivo_historico_id ? null : totaisLivro(livro, registros),
-          registros: registros.map((r) => ({
+          registros: registros.filter(r => podeLerAtasRestritas || r.versao.documento.tipo !== 'ATA' || !r.versao.documento.restrito).map((r) => ({
             ...r,
             inicio: faceDoLivro(livro, r.posicao_inicio),
             fim: faceDoLivro(livro, r.posicao_fim),
@@ -454,9 +462,11 @@ export class LivrosService {
     }
     if (!termo && politica === 'NAO_PERMITE') throw new BadRequestException('O modelo não permite registro em livro.');
     const livro = await this.autorizado(tx, a, entrada.livro_id);
+    const conservaLivroDaAta = modelo.tipo === 'ATA' && atualId && livro.restrito !== restrito &&
+      await tx.documento_versao.findFirst({ where: { id: atualId, igreja_id: a.igreja_id, contexto_id: contexto, livro_id: livro.id }, select: { id: true } });
     if (
       livro.contexto_id !== contexto ||
-      livro.restrito !== restrito ||
+      (livro.restrito !== restrito && !conservaLivroDaAta) ||
       (modelo.tipo === 'ATA' && livro.serie !== config.perfil)
     ) {
       throw new BadRequestException('Titular, série ou classificação de acesso incompatível com o livro.');
@@ -629,15 +639,17 @@ export class LivrosService {
         await this.base.competente(tx, a, livro.contexto_id, 'pode_aprovar');
         if (livro.estado !== 'ENCERRADO')
           throw new BadRequestException('Atos complementares são vinculados ao acervo encerrado.');
+        const podeLerAtasRestritas = livro.restrito && await this.podeLerAtasRestritas(tx, a, livro.contexto_id);
         const escopo = Prisma.sql`${tabelasDocumentais}
           JOIN modelo_documento_versao m ON m.id = v.modelo_versao_id
         WHERE v.igreja_id = ${livro.igreja_id} AND v.contexto_id = ${livro.contexto_id} AND d.restrito = ${livro.restrito}
+          AND (NOT d.restrito OR d.tipo <> 'ATA' OR ${podeLerAtasRestritas})
           AND d.estado IN ('APROVADO','EXPEDIDO') AND v.numero = d.versao_atual AND v.congelado_em IS NOT NULL AND v.livro_id IS NULL
           AND ((v.retifica_versao_id IS NULL AND m.finalidade IN ('TERMO_EXAME','RETIFICACAO')) OR EXISTS (
             SELECT 1 FROM registro_livro r WHERE r.livro_id = ${id} AND r.versao_id = v.retifica_versao_id AND r.estado = 'EFETIVADO'))
           AND NOT EXISTS (SELECT 1 FROM complemento_livro c WHERE c.livro_id = ${id} AND c.versao_id = v.id)
         `;
-        if (filtros) return selecionarDocumentos(tx, escopo, filtros);
+        if (filtros) return selecionarDocumentos(tx, escopo, filtros, false, livro.restrito ? [livro.contexto_id] : []);
         const candidatos = await tx.$queryRaw<{ id: string; assunto: string; numero: number }[]>`
         SELECT v.id, v.assunto, v.numero ${escopo}
         ORDER BY d.criado_em DESC, v.id ASC
@@ -665,6 +677,7 @@ export class LivrosService {
         !['APROVADO', 'EXPEDIDO'].includes(versao.documento.estado) ||
         versao.numero !== versao.documento.versao_atual ||
         versao.documento.restrito !== livro.restrito ||
+        (versao.documento.tipo === 'ATA' && versao.documento.restrito && !await this.podeLerAtasRestritas(tx, a, livro.contexto_id)) ||
         versao.livro_id ||
         !versao.modelo ||
         (versao.modelo.finalidade !== 'TERMO_EXAME' &&
@@ -807,10 +820,15 @@ export class LivrosService {
       async (tx) => {
         await this.base.operador(tx, a);
         const livro = await this.autorizado(tx, a, id);
-        return tx.registro_livro.findFirst({
+        const registro = await tx.registro_livro.findFirst({
           where: { id: registroId, livro_id: livro.id, igreja_id: livro.igreja_id, estado: 'EFETIVADO' },
-          include: { arquivo: true },
+          include: { arquivo: true, versao: { select: { documento: { select: { restrito: true, tipo: true } } } } },
         });
+        const doc = registro?.versao.documento;
+        if (doc?.tipo === 'ATA' && doc.restrito && !await this.podeLerAtasRestritas(tx, a, livro.contexto_id))
+          throw new NotFoundException('Original indisponível.');
+        if (registro) await verificarImagensDasMatrizes(tx, a.igreja_id, a.sub, [registro.versao_id]);
+        return registro;
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
@@ -823,14 +841,25 @@ export class LivrosService {
     const livro = await this.base.prisma.$transaction(
       async (tx) => {
         await this.base.operador(tx, a);
-        await this.autorizado(tx, a, id);
-        return tx.livro_atas.findUniqueOrThrow({
+        const livro = await this.autorizado(tx, a, id);
+        // O PDF histórico é indivisível. Na compilação bastam os registros efetivados que ela contém.
+        const vinculo: Prisma.documento_versaoWhereInput = tipo === 'historico' ? { livro_id: id } : { registro_livro: { livro_id: id, estado: 'EFETIVADO' } };
+        const restrita = await tx.documento_versao.findFirst({
+          where: { ...vinculo, igreja_id: a.igreja_id, contexto_id: livro.contexto_id, documento: { tipo: 'ATA', restrito: true } },
+          select: { id: true },
+        });
+        if (restrita && !await this.podeLerAtasRestritas(tx, a, livro.contexto_id))
+          throw new NotFoundException('Arquivo indisponível no acervo.');
+        const volume = await tx.livro_atas.findUniqueOrThrow({
           where: { id },
           include: {
             arquivo_historico: true,
             registros: { where: { estado: 'EFETIVADO' }, orderBy: { ordem: 'asc' }, include: { arquivo: true } },
           },
         });
+        if (tipo === 'compilacao')
+          await verificarImagensDasMatrizes(tx, a.igreja_id, a.sub, volume.registros.map(r => r.versao_id));
+        return volume;
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );

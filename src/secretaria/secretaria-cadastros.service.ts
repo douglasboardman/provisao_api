@@ -1,3 +1,5 @@
+import { permissoesAtas } from './sigilo-ata';
+import { contextosDasAtasRestritas, filtroVisibilidadeDocumentos } from './visibilidade-documentos';
 import { periodoOrgao } from '../orgaos/acesso-sociedades';
 import { comparar, decidirAcaoModelo, papeisDaConta } from '../autorizacao/politica';
 import { contextoPorExtenso } from './contexto-por-extenso';
@@ -69,13 +71,13 @@ export class SecretariaCadastrosService {
 
   resumoContexto(a: AtorSecretaria, contexto_id: string) {
     return this.base.prisma.$transaction(async tx => {
-      await this.base.operador(tx, a);
-      await this.base.contexto(tx, a, contexto_id);
+      const { somenteAtas } = await this.base.contextoDeAtas(tx, a, contexto_id);
       const restritos = (await this.base.concessoes(tx, a, contexto_id)).some(c => c.pode_consultar_restritos);
-      const where = { igreja_id: a.igreja_id, contexto_id, ...(restritos ? {} : { restrito: false }) };
+      const recorte = { igreja_id: a.igreja_id, contexto_id };
+      const where = { ...recorte, ...(somenteAtas && { tipo: 'ATA' as const }), ...filtroVisibilidadeDocumentos(restritos, await contextosDasAtasRestritas(tx,a.igreja_id,a.sub)) };
       const [documentos, atas, em_edicao, reunioes] = await Promise.all([
         tx.documento.count({ where }), tx.documento.count({ where: { ...where, tipo: 'ATA' } }),
-        tx.documento.count({ where: { ...where, estado: 'EM_EDICAO' } }), tx.reuniao.count({ where }),
+        tx.documento.count({ where: { ...where, estado: 'EM_EDICAO' } }), somenteAtas ? 0 : tx.reuniao.count({ where: { ...recorte, ...(!restritos && { restrito: false }) } }),
       ]);
       return { documentos, atas, em_edicao, reunioes };
     }, { isolationLevel: 'RepeatableRead' });
@@ -121,14 +123,15 @@ export class SecretariaCadastrosService {
 
   async listarContextos(a: AtorSecretaria) {
     return this.base.prisma.$transaction(async tx => {
-      const u = await this.base.operador(tx, a);
+      const u = await this.base.operador(tx, a, true);
+      const acessoAtas = await permissoesAtas(tx, a.igreja_id, u.pessoa_id);
       const concessoes = await this.base.concessoes(tx, a);
       const contextos = await tx.contexto_secretaria.findMany({ where: { igreja_id: a.igreja_id }, include: { igreja: { select: { nome: true } }, orgao: { select: { nome: true, sigla: true, tipo: true, constituicao: true, ativo: true, tipo_padrao: true, gestao_presidencial: true } } }, orderBy: { orgao: { nome: 'asc' } } });
-      const visiveis = (await Promise.all(contextos.map(async c => ({ c, visivel: await this.base.contextoVisivel(tx, c, u) })))).filter(x => x.visivel).map(x => x.c);
-      return Promise.all(visiveis.map(async ({ igreja, ...c }) => {
-        const grants = concessoes.filter(g => g.contexto_id === c.id);
-        const podePreparar = c.orgao.ativo && (['GESTOR','SECRETARIO'].includes(u.perfil) || (u.perfil === 'COMUM' && (await this.base.papeisContextuais(tx, c, u)).size > 0) || (u.perfil !== 'AUDITOR' && grants.some(g => g.pode_aprovar || g.pode_deliberar)));
-        return { ...c, ...(u.perfil === 'COMUM' && { registro_livro: false }), nome: c.orgao.nome, sigla: c.orgao.sigla ?? c.sigla, por_extenso: contextoPorExtenso(c.orgao.nome, igreja.nome), editor_pagina: editorPaginaHabilitado(c.id), pode_preparar: podePreparar,
+      const visiveis = (await Promise.all(contextos.map(async c => ({ c, visivel: await this.base.contextoVisivel(tx, c, u) })))).filter(x => x.visivel || acessoAtas.get(x.c.id)?.ler);
+      return Promise.all(visiveis.map(async ({ c: { igreja, ...c }, visivel }) => {
+        const grants = visivel ? concessoes.filter(g => g.contexto_id === c.id) : [];
+        const podePreparar = visivel && c.orgao.ativo && (['GESTOR','SECRETARIO'].includes(u.perfil) || (u.perfil === 'COMUM' && (await this.base.papeisContextuais(tx, c, u)).size > 0) || (u.perfil !== 'AUDITOR' && grants.some(g => g.pode_aprovar || g.pode_deliberar)));
+        return { ...c, somente_atas: !visivel, pode_classificar_ata: !!acessoAtas.get(c.id)?.classificar, ...((!visivel || u.perfil === 'COMUM') && { registro_livro: false }), nome: c.orgao.nome, sigla: c.orgao.sigla ?? c.sigla, por_extenso: contextoPorExtenso(c.orgao.nome, igreja.nome), editor_pagina: editorPaginaHabilitado(c.id), pode_preparar: podePreparar,
           pode_instalar_mesa: c.orgao.ativo && c.tipo === 'ASSEMBLEIA_GERAL' && u.perfil !== 'AUDITOR' && grants.some(g => g.pode_instalar_mesa),
           pode_agendar: u.perfil !== 'COMUM' && podePreparar && await this.base.atuacao.podeAgendar(tx, c, u.pessoa_id),
           pode_aprovar: c.orgao.ativo && u.perfil !== 'AUDITOR' && !!u.pessoa_id && grants.some(g => g.pode_aprovar),
@@ -260,7 +263,7 @@ export class SecretariaCadastrosService {
       where: {
         id: { in: ids }, igreja_id: a.igreja_id, artefatos_documento: { none: {} }, livros_historicos: { none: {} }, registros_livro: { none: {} },
           ...arquivoSemVinculoDeExpedicao,
-        OR: [{ usuario_id: a.sub }, { imagens_modelo_rascunho: { some: { modelo_id: modelo } } }, ...(versaoAnterior ? [{ imagens_modelo: { some: { versao_id: versaoAnterior } } }] : [])],
+        OR: [{ usuario_id: a.sub, anexos_documento: { none: { versao: { documento: { tipo: 'ATA', restrito: true } } } } }, { imagens_modelo_rascunho: { some: { modelo_id: modelo } } }, ...(versaoAnterior ? [{ imagens_modelo: { some: { versao_id: versaoAnterior } } }] : [])],
       },
     });
     const tamanho = arquivos.reduce((total, f) => total + f.tamanho * blocos.filter(b => b.arquivo_id === f.id).length, 0);

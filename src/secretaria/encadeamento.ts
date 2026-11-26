@@ -1,3 +1,4 @@
+import { permissoesAtasDaConta } from './sigilo-ata';
 import { identificacaoDocumento } from './numeracao-ata-livro';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { valoresPaginaSchema, type ValoresPagina } from './composicao-pagina';
@@ -53,13 +54,20 @@ export async function copiarOrigem(tx: Tx, base: SecretariaBaseService, a: AtorS
   config: ConfiguracaoModelo, origemId: string, historica: boolean, reuniaoAta?: string) {
   const fonte = await tx.documento_versao.findFirst({ where: { id: origemId, igreja_id: a.igreja_id, contexto_id: contexto },
     select: { id: true, numero: true, assunto: true, data_documento: true, numero_original: true, conteudo: true, reuniao_id: true, modelo: { select: { modelo_id: true, finalidade: true, configuracao: true } },
-      documento: { select: { restrito: true, estado: true, versao_atual: true, numero: true, identificacao_livro: true, sigla: true, ano: true } } } });
+      documento: { select: { tipo: true, restrito: true, estado: true, versao_atual: true, numero: true, identificacao_livro: true, sigla: true, ano: true } } } });
   const regra = config.antecedentes?.find(r => r.modelo_id === fonte?.modelo?.modelo_id);
   if (!fonte?.modelo || !regra || (reuniaoAta && (fonte.reuniao_id !== reuniaoAta || fonte.modelo.finalidade !== 'CONVOCACAO')) || (fonte.documento.restrito && !restrito) ||
     (!historica && (fonte.documento.estado !== 'EXPEDIDO' || fonte.numero !== fonte.documento.versao_atual))) {
     throw new BadRequestException('Documento anterior indisponível para este modelo e contexto.');
   }
-  if (fonte.documento.restrito) await base.competente(tx, a, contexto, 'pode_consultar_restritos');
+  if (fonte.documento.restrito) {
+    if (fonte.documento.tipo === 'ATA') {
+      if (!(await permissoesAtasDaConta(tx, a.igreja_id, a.sub)).get(contexto)?.ler)
+        throw new BadRequestException('Documento anterior indisponível para este modelo e contexto.');
+    } else {
+      await base.competente(tx, a, contexto, 'pode_consultar_restritos');
+    }
+  }
   if (!compativel(regra, config, validar(configuracaoSchema, fonte.modelo.configuracao))) throw new BadRequestException('Campos incompatíveis com a versão do documento anterior.');
   const valores = validar(valoresPaginaSchema, (fonte.conteudo as VersaoInput['conteudo']).valores ?? {});
   const copiados = validar(valoresPaginaSchema, Object.fromEntries(Object.entries(regra.campos).map(([id, campo_id]) => {

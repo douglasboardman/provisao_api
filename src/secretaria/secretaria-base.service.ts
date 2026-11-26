@@ -1,3 +1,4 @@
+import { permissoesAtas, permissoesAtasDaConta } from './sigilo-ata';
 import type { Conta } from '../autorizacao/politica';
 import { orgaosDeAtuacao, presidenciaSociedades } from '../orgaos/acesso-sociedades';
 import { sociedadeJuvenil } from '../orgaos/sociedades-regras';
@@ -21,14 +22,14 @@ export const dataCivil = (v: string) => new Date(`${v}T00:00:00.000Z`);
 export class SecretariaBaseService {
   constructor(readonly prisma: PrismaService, readonly atuacao: AtuacaoModeloService) {}
 
-  async operador(tx: Tx, ator: AtorSecretaria) {
+  async operador(tx: Tx, ator: AtorSecretaria, consultarAtas = false) {
     if (ator.perfil === 'COMUM') {
       if (!ator.sessao_id || ator.auth_version === undefined) throw new ForbiddenException('Sessão institucional indisponível.');
       const conta = await contaDaSessao(tx, { ...ator, sessao_id: ator.sessao_id, auth_version: ator.auth_version });
       if (conta.perfil !== 'COMUM') throw new ForbiddenException('Perfil da conta alterado.');
     }
     const u = await tx.usuarios.findFirst({ where: { id: ator.sub, igreja_id: ator.igreja_id, ativo: true } });
-    if (!u || !['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', 'AUDITOR', 'COMUM'].includes(u.perfil)) throw new ForbiddenException('Operador não autorizado.');
+    if (!u || (!consultarAtas && !['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', 'AUDITOR', 'COMUM'].includes(u.perfil))) throw new ForbiddenException('Operador não autorizado.');
     return u;
   }
 
@@ -40,8 +41,8 @@ export class SecretariaBaseService {
         (operacao === 'ASSEMBLEIA_FOLHA' && colunas.includes('reuniao_id') && colunas.includes('versao')));
     };
     return transacaoComRetentativa(this.prisma, async tx => {
-      const operador = await this.operador(tx, ator);
-      if (operador.perfil === 'AUDITOR') throw new ForbiddenException('Perfil de consulta não pode executar comandos.');
+      const operador = await this.operador(tx, ator, operacao === 'SIGILO_ATA');
+      if (operador.perfil === 'AUDITOR' && operacao !== 'SIGILO_ATA') throw new ForbiddenException('Perfil de consulta não pode executar comandos.');
       if (operacao.startsWith('CAMPO_') && !['SECRETARIO', 'ADMINISTRADOR'].includes(operador.perfil)) throw new ForbiddenException('Cadastro de campos reservado à Secretaria.');
       await autorizar?.(tx);
       const chave = dados.idempotencia.toLowerCase(), hash = hashAto({ operacao, alvo, dados });
@@ -99,9 +100,20 @@ export class SecretariaBaseService {
     return { ...c, nome: c.orgao.nome, sigla: c.orgao.sigla ?? c.sigla };
   }
 
+  async contextoDeAtas(tx: Tx, ator: AtorSecretaria, id: string) {
+    const conta = await this.operador(tx, ator, true);
+    const c = await tx.contexto_secretaria.findFirst({ where: { id, igreja_id: ator.igreja_id }, include: { orgao: true } });
+    if (!c) throw new NotFoundException('Contexto indisponível.');
+    const somenteAtas = !await this.contextoVisivel(tx, c, conta);
+    if (somenteAtas && !(await permissoesAtas(tx, ator.igreja_id, conta.pessoa_id)).get(id)?.ler)
+      throw new NotFoundException('Contexto indisponível.');
+    return { contexto: c, somenteAtas };
+  }
+
   async contextoVisivel(tx: Tx, contexto: Parameters<AtuacaoModeloService['papeis']>[1] & {
     orgao: { tipo: string; ativo: boolean; tipo_padrao: string | null; gestao_presidencial: boolean };
   }, conta: Conta) {
+    if (conta.perfil === 'OPERADOR' || conta.perfil === 'TESOUREIRO') return false;
     const juvenil = sociedadeJuvenil(contexto.orgao.tipo_padrao);
     if (conta.perfil !== 'COMUM' && !juvenil) return true;
     const dia = await hojeDaIgreja(tx, contexto.igreja_id);
@@ -194,8 +206,17 @@ export class SecretariaBaseService {
   async documento(tx: Tx, ator: AtorSecretaria, id: string) {
     const d = await tx.documento.findFirst({ where: { id, igreja_id: ator.igreja_id }, include: { versoes: { orderBy: { numero: 'asc' }, include: { livro: { select: { perfil: true } }, modelo: true, arrolados: true, resolucoes: incluirResolucoes, anexos: { include: { arquivo: { select: { sha256: true, tamanho: true } } } }, deliberacoes: { orderBy: { criado_em: 'asc' }, include: { mesa: { select: { ordem: true, presidente_nome: true, secretario_nome: true } } } } } } } });
     if (!d) throw new NotFoundException('Documento não encontrado nesta igreja.');
-    await this.contexto(tx, ator, d.contexto_id);
-    if (d.restrito && !(await this.concessoes(tx, ator, d.contexto_id)).some(c => c.pode_consultar_restritos)) throw new NotFoundException('Documento não encontrado nesta igreja.');
+    if (d.tipo === 'ATA') {
+      if (d.restrito) {
+        if (!(await permissoesAtasDaConta(tx, ator.igreja_id, ator.sub)).get(d.contexto_id)?.ler)
+          throw new NotFoundException('Documento não encontrado nesta igreja.');
+      } else await this.contextoDeAtas(tx, ator, d.contexto_id);
+    } else {
+      await this.operador(tx, ator);
+      await this.contexto(tx, ator, d.contexto_id);
+      if (d.restrito && !(await this.concessoes(tx, ator, d.contexto_id)).some(c => c.pode_consultar_restritos))
+        throw new NotFoundException('Documento não encontrado nesta igreja.');
+    }
     return d;
   }
 

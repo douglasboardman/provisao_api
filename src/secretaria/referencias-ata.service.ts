@@ -1,3 +1,4 @@
+import { contextosDasAtasRestritas } from './visibilidade-documentos';
 import { exigirServicoNaTransacao } from '../autorizacao/escrita-servico';
 import { estadoDaLiberacao } from '../autorizacao/liberacao-servico';
 import { camposConta, decidirServico } from '../autorizacao/politica';
@@ -97,7 +98,7 @@ export class ReferenciasAtaService {
       ...((financeiro || registraFinanceiro) ? ['FINANCEIRO'] : []),
     ];
     if (!grupos.length) throw new ForbiddenException('Operador não autorizado.');
-    const concessoes = u.perfil === 'TESOUREIRO' ? [] : await this.base.concessoes(tx, ator);
+    const restritos = await contextosDasAtasRestritas(tx, ator.igreja_id, ator.sub);
     const sensivel =
       u.perfil === 'TESOUREIRO'
         ? null
@@ -111,10 +112,10 @@ export class ReferenciasAtaService {
     return {
       igreja: ator.igreja_id,
       orgaosOmitidos,
-      contextosOmitidos: contextosOmitidos.map(c => c.id),
+      contextosOmitidos: contextosOmitidos.map(c => c.id).filter(id => !restritos.includes(id)),
       perfil: u.perfil,
       grupos,
-      restritos: concessoes.filter((c) => c.pode_consultar_restritos).map((c) => c.contexto_id),
+      restritos,
       sensivel: Boolean(sensivel?.pode_consultar),
       registraSensivel: Boolean(sensivel?.pode_registrar),
       registraVinculo,
@@ -178,7 +179,9 @@ export class ReferenciasAtaService {
       async (tx) => {
         const acesso = await this.acesso(tx, ator);
         const alvo = await this.alvo(tx, acesso, chave);
-        return selecionarDocumentos(tx, this.atasCompativeis(acesso, alvo), filtros);
+        const reunioes = acesso.perfil === 'TESOUREIRO' ? [] :
+          (await this.base.concessoes(tx, ator)).filter(c => c.pode_consultar_restritos).map(c => c.contexto_id);
+        return selecionarDocumentos(tx, this.atasCompativeis(acesso, alvo), filtros, false, reunioes);
       },
       { isolationLevel: 'RepeatableRead' },
     );

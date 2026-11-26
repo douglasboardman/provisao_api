@@ -1,3 +1,4 @@
+import { contextosDasAtasRestritas, visibilidadeDocumentosSql } from './visibilidade-documentos';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
@@ -44,15 +45,14 @@ export class AtuacaoService {
     const restritos = (await this.base.concessoes(tx, ator, f.contexto))
       .filter((c) => c.pode_consultar_restritos)
       .map((c) => c.contexto_id);
+    const atas = await contextosDasAtasRestritas(tx, ator.igreja_id, ator.sub);
     const pessoa = f.pessoa ?? null;
     const resolucoes = f.tipo === 'resolucoes';
     const assunto = f.assunto ? '%' + f.assunto.replace(/[\\%_]/g, '\\$&') + '%' : null;
     const recorte = [
       Prisma.sql`v.igreja_id = ${ator.igreja_id}`,
       Prisma.sql`v.congelado_em IS NOT NULL`,
-      restritos.length
-        ? Prisma.sql`(NOT d.restrito OR d.contexto_id IN (${Prisma.join(restritos)}))`
-        : Prisma.sql`NOT d.restrito`,
+      visibilidadeDocumentosSql(restritos, atas),
     ];
     if (f.contexto) recorte.push(Prisma.sql`v.contexto_id = ${f.contexto}`);
     if (f.de) recorte.push(Prisma.sql`v.data_documento >= ${dataCivil(f.de)}::date`);

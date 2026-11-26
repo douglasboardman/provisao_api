@@ -8,7 +8,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { RolesGuard } from '../auth/guards/roles/roles.guard';
 import type { AtorSecretaria } from './secretaria-base.service';
-import { OperacaoContextual, SecretariaGuard } from './secretaria.guard';
+import { ConsultaContextualAtas, OperacaoContextual, SecretariaGuard } from './secretaria.guard';
 import { SecretariaCadastrosService } from './secretaria-cadastros.service';
 import { DocumentosService } from './documentos.service';
 import { PrivateStorageService } from '../private-storage/private-storage.service';
@@ -89,9 +89,9 @@ export class SecretariaController {
   }
 
   @Header('Cache-Control', 'private, no-store')
-  @OperacaoContextual()
+  @ConsultaContextualAtas()
   @Get('contextos') contextos(@Request() req: RequestSecretaria) { return this.cadastros.listarContextos(req.user); }
-  @OperacaoContextual()
+  @ConsultaContextualAtas()
   @Get('contextos/:id/resumo')
   @Header('Cache-Control', 'private, no-store')
   resumo(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string) { return this.cadastros.resumoContexto(req.user, id); }
@@ -155,11 +155,11 @@ export class SecretariaController {
   motivadores(@Request() req: RequestSecretaria, @Query() filtros: Record<string, string>) {
     return this.documentos.motivadores(req.user, filtros);
   }
-  @OperacaoContextual()
+  @ConsultaContextualAtas()
   @Get('documentos/consulta')
   @Header('Cache-Control', 'private, no-store')
   consultarDocumentos(@Request() req: RequestSecretaria, @Query() parametros: unknown) { return this.documentos.consultar(req.user, parametros); }
-  @OperacaoContextual()
+  @ConsultaContextualAtas()
   @Get('documentos') listar(@Request() req: RequestSecretaria, @Query('contexto', ParseUUIDPipe) c: string, @Query('pagina', new DefaultValuePipe(0), ParseIntPipe) p: number) { this.pagina(p); return this.documentos.listar(req.user, c, p); }
   @OperacaoContextual()
   @Post('livros/:id/previa-abertura')
@@ -170,8 +170,10 @@ export class SecretariaController {
   @OperacaoContextual()
   @Post('documentos') criar(@Request() req: RequestSecretaria, @Body() b: unknown) { return this.documentos.criar(req.user, b); }
   @Header('Cache-Control', 'private, no-store')
-  @OperacaoContextual()
+  @ConsultaContextualAtas()
   @Get('documentos/:id') detalhe(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string) { return this.documentos.detalhe(req.user, id); }
+  @ConsultaContextualAtas()
+  @Post('documentos/:id/sigilo') sigiloAta(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() b: unknown) { return this.documentos.alterarSigiloAta(req.user, id, b); }
   @OperacaoContextual()
   @Patch('documentos/:id') editar(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() b: unknown) { return this.documentos.editar(req.user, id, b); }
   @OperacaoContextual()
@@ -183,7 +185,7 @@ export class SecretariaController {
     return this.documentos.medir(req.user, id, b);
   }
   @Header('Cache-Control', 'private, no-store')
-  @OperacaoContextual()
+  @ConsultaContextualAtas()
   @Get('documentos/:id/artefatos')
   listarArtefatos(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string) {
     return this.rascunhos.listar(req.user, id);
@@ -193,9 +195,9 @@ export class SecretariaController {
     return this.rascunhos.solicitarMatriz(req.user, id, versao);
   }
   @Header('Cache-Control', 'private, no-store')
-  @OperacaoContextual()
+  @ConsultaContextualAtas()
   @Get('documentos/:id/rascunhos/:trabalho') consultarRascunho(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Param('trabalho', ParseUUIDPipe) trabalho: string) { return this.rascunhos.consultar(req.user, id, trabalho); }
-  @OperacaoContextual()
+  @ConsultaContextualAtas()
   @Get(['documentos/:id/artefatos/:trabalho/arquivo', 'documentos/:id/rascunhos/:trabalho/arquivo'])
   async baixarArtefato(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Param('trabalho', ParseUUIDPipe) trabalho: string, @Res() res: Response) {
     const { bytes, nome } = await this.rascunhos.baixar(req.user, id, trabalho);
@@ -203,7 +205,7 @@ export class SecretariaController {
     res.send(bytes);
   }
   @Header('Cache-Control', 'private, no-store')
-  @OperacaoContextual()
+  @ConsultaContextualAtas()
   @Get('documentos/:id/historico') historico(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Query('pagina', new DefaultValuePipe(0), ParseIntPipe) p: number) { this.pagina(p); return this.documentos.historico(req.user, id, p); }
   @OperacaoContextual()
   @Post('documentos/:id/encaminhar') encaminhar(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() b: unknown) { return this.documentos.executar(req.user, id, 'encaminhar', b); }
@@ -215,13 +217,14 @@ export class SecretariaController {
   @OperacaoContextual()
   @Post('documentos/:id/deliberar') deliberar(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() b: unknown) { return this.documentos.deliberar(req.user, id, b); }
   @Header('Cache-Control', 'private, no-store')
-  @OperacaoContextual()
+  @ConsultaContextualAtas()
   @Get('documentos/:id/versoes/:versao/anexos/:arquivo')
   async anexo(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Param('versao', ParseUUIDPipe) versao: string, @Param('arquivo', ParseUUIDPipe) arquivo: string, @Res() res: Response, @Query('visualizacao') visualizacao?: string) {
     // A autorização é a do documento, nunca a de um UUID de arquivo isolado.
     const d = await this.documentos.detalhe(req.user, id);
     const anexo = d.versoes.find(v => v.id === versao)?.anexos.find(f => f.arquivo_id === arquivo);
     if (!anexo) throw new BadRequestException('Anexo não pertence à versão.');
+    await this.documentos.conferirAcessoAnexo(req.user, arquivo);
     const data = await this.storage.readAuthorized(req.user, { id: arquivo, igreja_id: d.igreja_id, ...anexo.arquivo }, 'anexo_documento_consulta');
     const inline = visualizacao === 'imagem';
     res.set({ 'Content-Type': inline ? tipoImagemDocumental(data).mime : 'application/octet-stream', 'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(anexo.nome)}`, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });

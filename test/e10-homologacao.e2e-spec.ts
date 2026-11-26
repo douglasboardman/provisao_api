@@ -280,9 +280,8 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
       for (const rota of ['/pessoas', '/eventos-membresia', '/contas', '/lancamentos/balanco', '/igrejas/me'])
         await get(rota, cookie);
       await apiRequest('get', '/usuarios', cookie).expect(perfil === 'OPERADOR' ? 403 : 200);
-      await apiRequest('get', '/secretaria/contextos', cookie).expect(
-        [...governanca, 'AUDITOR'].includes(perfil) ? 200 : 403,
-      );
+      const contextosVisiveis = await get('/secretaria/contextos', cookie);
+      if (['TESOUREIRO', 'OPERADOR'].includes(perfil)) expect(contextosVisiveis.body).toEqual([]);
       // Um corpo inválido é rejeitado pelo DTO após passar pelo guard de perfil.
       await apiRequest('post', '/pessoas', cookie)
         .send({})

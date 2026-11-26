@@ -26,11 +26,12 @@ export function buscaNumero(termo: string) {
 }
 
 // O chamador fornece o escopo já autorizado, com os aliases v, d e c.
-export async function selecionarDocumentos(tx: Tx, escopo: Prisma.Sql, parametros: unknown, convocatorias = false) {
+export async function selecionarDocumentos(tx: Tx, escopo: Prisma.Sql, parametros: unknown, convocatorias = false, contextosReunioesRestritas: string[] = []) {
   const f = validar(buscaAta, parametros);
+  const permiteReuniao = contextosReunioesRestritas.length ? Prisma.sql`OR r.contexto_id IN (${Prisma.join(contextosReunioesRestritas)})` : Prisma.empty;
   const pauta = Prisma.sql`coalesce(v.fonte_congelada #>> '{legado,reuniao,pauta}',
     v.fonte_congelada #>> '{reuniao,dados,pauta}', (SELECT r.dados->>'pauta' FROM reuniao r
-      WHERE r.id = v.reuniao_id AND r.igreja_id = v.igreja_id AND (NOT r.restrito OR d.restrito)), '')`;
+      WHERE r.id = v.reuniao_id AND r.igreja_id = v.igreja_id AND (NOT r.restrito ${permiteReuniao})), '')`;
   const reconvocacao = convocatorias ? Prisma.sql`EXISTS (
     SELECT 1 FROM documento_versao anterior JOIN documento ed ON ed.id = anterior.documento_id
     JOIN modelo_documento_versao modelo ON modelo.id = anterior.modelo_versao_id

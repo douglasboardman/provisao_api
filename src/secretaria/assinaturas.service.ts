@@ -1,3 +1,5 @@
+import { permissoesAtas } from './sigilo-ata';
+import { verificarImagensDasMatrizes, verificarSigiloDosAnexosDaPessoa } from './sigilo-anexos';
 import {
   BadRequestException,
   ConflictException,
@@ -43,9 +45,16 @@ export class AssinaturasService {
     private readonly sessions: SessionService,
   ) {}
 
-  private async expedicaoDoDocumento(tx: Tx, ator: AtorSecretaria, id: string, versaoId: string) {
-    await this.base.operador(tx, ator);
+  private async documentoParaAssinaturas(tx: Tx, ator: AtorSecretaria, id: string, consultarAtas: boolean) {
+    const conta = await this.base.operador(tx, ator, consultarAtas);
     const documento = await this.base.documento(tx, ator, id);
+    if (documento.tipo !== 'ATA' && !['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', 'AUDITOR'].includes(conta.perfil))
+      throw new NotFoundException('Documento indisponível.');
+    return documento;
+  }
+
+  private async expedicaoDoDocumento(tx: Tx, ator: AtorSecretaria, id: string, versaoId: string, consultarAtas = false) {
+    const documento = await this.documentoParaAssinaturas(tx, ator, id, consultarAtas);
     const e = await tx.expedicao_documento.findFirst({
       where: { versao_id: versaoId, igreja_id: ator.igreja_id, versao: { documento_id: documento.id } },
       include: incluirExpedicao,
@@ -70,8 +79,7 @@ export class AssinaturasService {
   async listar(ator: AtorSecretaria, id: string) {
     return this.base.prisma.$transaction(
       async (tx) => {
-        await this.base.operador(tx, ator);
-        await this.base.documento(tx, ator, id);
+        await this.documentoParaAssinaturas(tx, ator, id, true);
         const expedicoes = await tx.expedicao_documento.findMany({
           where: { igreja_id: ator.igreja_id, versao: { documento_id: id } },
           include: {
@@ -170,6 +178,13 @@ export class AssinaturasService {
     return conta;
   }
 
+  private async autorizarSignatario(tx: Tx, e: Expedicao, pessoaId: string) {
+    const d = e.versao.documento;
+    if (d.tipo === 'ATA' && d.restrito && !(await permissoesAtas(tx, e.igreja_id, pessoaId)).get(e.contexto_id)?.ler)
+      throw conviteInvalido();
+    await verificarSigiloDosAnexosDaPessoa(tx, e.igreja_id, pessoaId, e.versao.anexos.map(a => a.arquivo_id));
+  }
+
   enviarConvite(ator: AtorSecretaria, id: string, dados: unknown) {
     const v = validar(dto.enviarConviteSchema, dados);
     return this.base.comando(ator, 'CONVIDAR_SIGNATARIO_DOCUMENTO', id, v, async (tx) => {
@@ -178,6 +193,7 @@ export class AssinaturasService {
       const a = e.versao.arrolados.find((a) => a.id === v.arrolado_id);
       if (!a || e.assinaturas.some((s) => s.arrolado_id === a.id))
         throw new ConflictException('Signatário indisponível.');
+      await this.autorizarSignatario(tx, e, a.pessoa_id);
       const recusado = await tx.convite_assinatura.findFirst({
         where: { arrolado_id: a.id, recusado_em: { not: null } },
       });
@@ -333,9 +349,11 @@ export class AssinaturasService {
   }
 
   async baixar(ator: AtorSecretaria, id: string, versaoId: string, tipo: 'via' | 'final' | 'scan' | 'manifesto') {
-    const e = await this.base.prisma.$transaction((tx) => this.expedicaoDoDocumento(tx, ator, id, versaoId), {
-      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
-    });
+    const e = await this.base.prisma.$transaction(async tx => {
+      const expedicao = await this.expedicaoDoDocumento(tx, ator, id, versaoId, true);
+      await verificarImagensDasMatrizes(tx, ator.igreja_id, ator.sub, [versaoId]);
+      return expedicao;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     if (tipo === 'manifesto' && e.manifesto_final && e.arquivo_final) {
       await this.arquivos.storage.readAuthorized(ator, e.arquivo_final, 'anexo_documento_consulta');
       if (hashAto(e.manifesto_final as Prisma.JsonObject) !== e.final_sha256) throw new Error('Manifesto inválido.');
@@ -370,6 +388,7 @@ export class AssinaturasService {
     )
       throw conviteInvalido();
 
+    await this.autorizarSignatario(tx, e, c.arrolado.pessoa_id);
     const conta = await this.identidadeCanal(tx, c.igreja_id, c.arrolado.pessoa_id, c.email).catch(() => {
       throw conviteInvalido();
     });

@@ -42,11 +42,11 @@ export async function numerarAta(tx: Tx, d: documento, v: Pick<VersaoInput, 'con
   }
 }
 
-export function atasPendentesLivro(tx: Tx, livro: livro_atas) {
+export function atasPendentesLivro(tx: Tx, livro: livro_atas, incluirRestritas = true) {
   return tx.$queryRaw<{ documento_id: string; numero: number; assunto: string }[]>`
     SELECT d.id AS documento_id, d.numero, v.assunto FROM documento d
     JOIN documento_versao v ON v.documento_id = d.id AND v.numero = d.versao_atual
     WHERE v.livro_id = ${livro.id} AND d.igreja_id = ${livro.igreja_id} AND d.contexto_id = ${livro.contexto_id}
-    AND d.restrito = ${livro.restrito} AND d.tipo = 'ATA' AND d.numero IS NOT NULL AND d.estado IN ('EM_EDICAO', 'APROVADO')
+    AND (NOT d.restrito OR ${incluirRestritas}) AND d.tipo = 'ATA' AND d.numero IS NOT NULL AND d.estado IN ('EM_EDICAO', 'APROVADO')
     ORDER BY d.numero, d.id`;
 }

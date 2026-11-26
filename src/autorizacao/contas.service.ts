@@ -1,3 +1,4 @@
+import { permissoesAtas } from '../secretaria/sigilo-ata';
 import { codigosServico, gruposServico, rotulosServico, Servico } from './catalogo-servicos';
 import { RotasServicosService } from './rotas-servicos.service';
 import { orgaosDeAtuacao, orgaosOficiaisDaConta, presidenciaSociedades } from '../orgaos/acesso-sociedades';
@@ -203,7 +204,8 @@ export class ContasAutorizacaoService {
       permissoes.secretaria = [];
       if (recursoDaIgreja('secretaria', u.igreja_id)) {
         if (!comum && ['ADMINISTRADOR','GESTOR','SECRETARIO','AUDITOR'].includes(u.perfil)) permissoes.secretaria = ['view'];
-        if (comum && u.pessoa_id) {
+        if ((comum || !permissoes.secretaria.length) && u.pessoa_id && (await permissoesAtas(tx, u.igreja_id, u.pessoa_id)).size) permissoes.secretaria = ['view'];
+        if (comum && !permissoes.secretaria.length && u.pessoa_id) {
           const contextos = await tx.contexto_secretaria.findMany({ where: { igreja_id: u.igreja_id }, include: { orgao: true } });
           if ((await Promise.all(contextos.map(c => this.secretaria.contextoVisivel(tx, c, u)))).some(Boolean)) permissoes.secretaria = ['view'];
         }

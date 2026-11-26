@@ -192,6 +192,46 @@ integration('Atuação institucional por modelo', () => {
   });
   afterAll(async () => { await navegador?.fechar(); if (app) await app.close(); });
 
+  it('aplica o sigilo de ata do Conselho por mandato inclusive na listagem e após reclassificação', async () => {
+    const prova = await db.documento_versao.findUniqueOrThrow({ where: { id: ataCargo } });
+    const documento = await db.documento.create({ data: { igreja_id: igreja, contexto_id: contextoConselho,
+      tipo: 'ATA', estado: 'APROVADO', perfil: 'TESTE' } });
+    await db.documento_versao.create({ data: { igreja_id: igreja, contexto_id: contextoConselho, documento_id: documento.id,
+      numero: 1, assunto: 'Deliberação de teste', conteudo: { teor: 'Teor reservado' },
+      data_documento: inicio, modelo_versao_id: prova.modelo_versao_id } });
+    const semMandato = await operador('Secretário com competência técnica');
+    await db.competencia_secretaria.create({ data: { igreja_id: igreja, contexto_id: contextoConselho,
+      usuario_id: semMandato.usuario, pessoa_id: semMandato.pessoa, pode_consultar_restritos: true, pode_aprovar: false, pode_deliberar: false,
+      registrado_por_id: presidente, inicio, autoridade: 'Igreja', evidencia: 'Teste' } });
+    const rota = 'documentos/' + documento.id;
+    const restringir = { restrito: true, revisao: documento.revisao, idempotencia: randomUUID() };
+    await chamada(semMandato.usuario, 'post', rota + '/sigilo').send(restringir).expect(403);
+    await chamada(secretario, 'post', rota + '/sigilo').send(restringir).expect(201);
+    await chamada(secretario, 'post', rota + '/sigilo').send(restringir).expect(201);
+    await chamada(presidente, 'get', rota).expect(200);
+    await chamada(semMandato.usuario, 'get', rota).expect(404);
+    const listar = async (u: string) => (await chamada(u, 'get', 'documentos')
+      .query({ contexto: contextoConselho }).expect(200)).body.map(d => d.id);
+    expect(await listar(semMandato.usuario)).not.toContain(documento.id);
+    expect(await listar(secretario)).toContain(documento.id);
+    const conta = await db.usuarios.update({ where: { id: secretario }, data: { perfil: 'TESOUREIRO' } });
+    const sessaoAnterior = cookies.get(secretario)!;
+    try {
+      cookies.set(secretario, 'provisao_session=' + await app.get(SessionService).create(conta.id, igreja, conta.auth_version));
+      const contextos = (await chamada(secretario, 'get', 'contextos').expect(200)).body;
+      expect(contextos).toContainEqual(expect.objectContaining({ id: contextoConselho, somente_atas: true, pode_classificar_ata: true }));
+      expect(await listar(secretario)).toContain(documento.id);
+      await chamada(secretario, 'get', rota).expect(200);
+      await chamada(secretario, 'get', 'locais').expect(403);
+      await chamada(secretario, 'post', rota + '/sigilo')
+        .send({ restrito: false, revisao: documento.revisao + 1, idempotencia: randomUUID() }).expect(201);
+      await chamada(semMandato.usuario, 'get', rota).expect(200);
+    } finally {
+      await db.usuarios.update({ where: { id: secretario }, data: { perfil: 'SECRETARIO' } });
+      cookies.set(secretario, sessaoAnterior);
+    }
+  });
+
   it('só transcreve uma posse histórica se o período estiver livre de atos ou documentos afetados', async () => {
     const c = await db.contexto_secretaria.findUniqueOrThrow({ where: { id: contextoConselho } });
     const segundo = await db.cargo_orgao.findFirstOrThrow({ where: { igreja_id: igreja, orgao_id: c.orgao_id, codigo: 'SEGUNDO_SECRETARIO' } });

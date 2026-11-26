@@ -41,7 +41,7 @@ integracao('E09 – referências documentais', () => {
     pessoa = randomUUID(),
     membro = randomUUID();
   const cookies = new Map<string, string>();
-  const concedente = randomUUID();
+  const concedente = randomUUID(), conselheiro = randomUUID(), pessoaConselheiro = randomUUID();
   let conselho: string,
     assembleia: string,
     unidade: string,
@@ -169,7 +169,7 @@ integracao('E09 – referências documentais', () => {
     const membroDisciplina = randomUUID(),
       liderUnidade = randomUUID();
     await prisma.pessoas.createMany({
-      data: [pessoa, membro, membroDisciplina, liderUnidade].map((id) => ({
+      data: [pessoa, membro, membroDisciplina, liderUnidade, pessoaConselheiro].map((id) => ({
         id,
         igreja_id: igreja,
         nome_completo: id === membroDisciplina ? 'Identidade reservada' : 'Membro de teste',
@@ -179,6 +179,7 @@ integracao('E09 – referências documentais', () => {
     });
     for (const [nome, perfil, igreja_id, id] of [
       ['gestor', 'GESTOR', igreja, gestor],
+      ['conselheiro', 'GESTOR', igreja, conselheiro],
       ['concedente', 'ADMINISTRADOR', igreja, concedente],
       ['auditor', 'AUDITOR', igreja, randomUUID()],
       ['secretario', 'SECRETARIO', igreja, randomUUID()],
@@ -193,7 +194,7 @@ integracao('E09 – referências documentais', () => {
           igreja_id,
           perfil,
           nome_usuario: nome,
-          pessoa_id: id === gestor ? pessoa : null,
+          pessoa_id: id === gestor ? pessoa : id === conselheiro ? pessoaConselheiro : null,
           email_login: `${id}@example.invalid`,
           senha_hash: 'teste',
         },
@@ -446,12 +447,21 @@ integracao('E09 – referências documentais', () => {
       },
     });
     await http('post', path).send(ligacao(ataConselho)).expect(400);
-    await http('post', path).send(ligacao(ataRestrita)).expect(201);
+    await http('post', path).send(ligacao(ataRestrita)).expect(400);
+    const docente = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: pessoaConselheiro, tipo: 'PRESBITERO_DOCENTE' } });
+    await prisma.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: docente.id, tipo: 'ORDENACAO', data_efeito: dia,
+      ordem: 1, autoridade: 'Presbitério', evidencia: 'Ata de ordenação' } });
+    await prisma.vinculo_pastoral.create({ data: { igreja_id: igreja, oficial_id: docente.id, data_inicio: dia, exercicio_institucional: true,
+      modalidade: 'Pastor', concilio: 'Presbitério', ato: 'Posse', evidencia: 'Ata de posse' } });
+    await http('get', path, 'conselheiro').expect(404);
+    await prisma.acesso_eventos_sensiveis.create({ data: { igreja_id: igreja, usuario_id: conselheiro, concedido_por_id: concedente,
+      pode_consultar: true, pode_registrar: true, fundamento: 'Conferência disciplinar' } });
+    await http('post', path, 'conselheiro').send(ligacao(ataRestrita)).expect(201);
     await http('get', path, 'auditor').expect(404);
     await http('get', `/secretaria/documentos/${ataRestrita.documento}/registros-vinculados`, 'auditor').expect(404);
     const pendencias = await http('get', '/secretaria/pendencias-documentais', 'auditor').expect(200);
     expect(JSON.stringify(pendencias.body)).not.toContain('Identidade reservada');
-    const interno = await http('get', `/secretaria/documentos/${ataRestrita.documento}/registros-vinculados`).expect(
+    const interno = await http('get', `/secretaria/documentos/${ataRestrita.documento}/registros-vinculados`, 'conselheiro').expect(
       200,
     );
     expect(interno.body.itens).toEqual([expect.objectContaining({ alvo_id: disciplinar })]);
@@ -528,7 +538,7 @@ integracao('E09 – referências documentais', () => {
     await http('post', path, 'outra').send(dados).expect(404);
     const { body } = await http('post', path, 'tesoureiro').send(dados).expect(201);
     expect((await http('post', path, 'tesoureiro').send(dados).expect(201)).body.id).toBe(body.id);
-    await http('get', '/secretaria/contextos', 'tesoureiro').expect(403);
+    expect((await http('get', '/secretaria/contextos', 'tesoureiro').expect(200)).body).toEqual([]);
     await http('get', ref('MANDATO', mandato, 'ELEICAO'), 'tesoureiro').expect(404);
     await http('get', path, 'operador').expect(403);
     expect(await prisma.acoes.findUnique({ where: { id: projeto } })).toEqual(caixa);
