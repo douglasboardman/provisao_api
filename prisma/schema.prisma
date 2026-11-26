@@ -698,6 +698,7 @@ model cargo_orgao {
   orgao orgao_interno @relation(fields: [orgao_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   ocupacoes ocupacao_cargo[]
   modelos_atribuicoes modelo_atribuicoes[]
+  requisitos_modelo_atuacao requisito_adicional_modelo_atuacao[]
   @@unique([id, igreja_id])
   @@unique([id, igreja_id, orgao_id])
   @@unique([orgao_id, codigo])
@@ -2525,9 +2526,24 @@ model modelo_atribuicoes {
   igreja            igreja   @relation(fields: [igreja_id], references: [id], onDelete: Restrict, onUpdate: Cascade)
   cargo             cargo_orgao? @relation(fields: [cargo_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
   concessoes        concessao_modelo_atuacao[]
+  requisitos_adicionais requisito_adicional_modelo_atuacao[]
 
   @@unique([id, igreja_id])
   @@unique([igreja_id, nome_normalizado])
+}
+
+model requisito_adicional_modelo_atuacao {
+  modelo_id String
+  igreja_id String
+  ordem     Int
+  cargo_id  String?
+  oficio    oficio_tipo?
+  modelo    modelo_atribuicoes @relation(fields: [modelo_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+  cargo     cargo_orgao? @relation(fields: [cargo_id, igreja_id], references: [id, igreja_id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([modelo_id, ordem])
+  @@unique([modelo_id, cargo_id])
+  @@unique([modelo_id, oficio])
 }
 
 model concessao_modelo_atuacao {

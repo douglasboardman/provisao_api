@@ -14,7 +14,7 @@ export async function calendarioPerfis(tx: Tx, igreja: string, instante: Date) {
 
 const dataSeguinte = (data: Date) => new Date(data.getTime() + 86_400_000);
 
-export async function qualificarPerfil(tx: Tx, requisito: RequisitoModelo, igreja_id: string, pessoa_id: string, dia: string) {
+async function qualificarRequisito(tx: Tx, requisito: RequisitoModelo, igreja_id: string, pessoa_id: string, dia: string) {
   const data = new Date(dia + 'T00:00:00Z');
   if (requisito.cargo_id) {
     const ocupacoes = await tx.ocupacao_cargo.findMany({ where: { igreja_id, pessoa_id, cargo_id: requisito.cargo_id,
@@ -57,6 +57,16 @@ export async function qualificarPerfil(tx: Tx, requisito: RequisitoModelo, igrej
   return mandato ? { id: mandato.id, fimCivil: dataSeguinte(mandato.termino_efetivo ?? mandato.termino_previsto).toISOString().slice(0, 10) } : null;
 }
 
+export async function qualificarPerfil<R extends RequisitoModelo>(
+  tx: Tx, requisitos: R[], igrejaId: string, pessoaId: string, dia: string, qualificacaoId?: string,
+) {
+  for (const requisito of requisitos) {
+    const origem = await qualificarRequisito(tx, requisito, igrejaId, pessoaId, dia);
+    if (origem && (!qualificacaoId || origem.id === qualificacaoId)) return { ...origem, requisito };
+  }
+  return null;
+}
+
 export async function filtrarAtribuicoesDeModelos<R extends { concessao_modelo_id: string | null }>(
   tx: Tx, conta: Conta, registros: R[], agora: Date,
 ): Promise<R[]> {
@@ -66,12 +76,13 @@ export async function filtrarAtribuicoesDeModelos<R extends { concessao_modelo_i
   const [concessoes, { dia }] = await Promise.all([
     tx.concessao_modelo_atuacao.findMany({ where: { id: { in: ids }, igreja_id: conta.igreja_id, usuario_id: conta.id,
       pessoa_id: conta.pessoa_id, geracao_vinculo: conta.geracao_vinculo, revogado_em: null,
-      inicio: { lte: agora }, OR: [{ fim: null }, { fim: { gt: agora } }] }, include: { modelo: true } }),
+      inicio: { lte: agora }, OR: [{ fim: null }, { fim: { gt: agora } }] },
+      include: { modelo: { include: { requisitos_adicionais: { orderBy: { ordem: 'asc' } } } } } }),
     calendarioPerfis(tx, conta.igreja_id, agora),
   ]);
   const validas = await Promise.all(concessoes.map(async c => {
-    const origem = await qualificarPerfil(tx, c.modelo, c.igreja_id, c.pessoa_id, dia);
-    return origem?.id === c.qualificacao_id ? c.id : null;
+    const origem = await qualificarPerfil(tx, [c.modelo, ...c.modelo.requisitos_adicionais], c.igreja_id, c.pessoa_id, dia, c.qualificacao_id);
+    return origem ? c.id : null;
   }));
   return registros.filter(r => !r.concessao_modelo_id || validas.includes(r.concessao_modelo_id));
 }
