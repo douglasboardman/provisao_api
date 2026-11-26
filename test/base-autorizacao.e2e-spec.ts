@@ -99,6 +99,26 @@ integration('Base de autorização por conta e por igreja', () => {
     expect(concessoes.map(r => r.status).sort()).toEqual([201, 409]);
   });
 
+  it('seleciona, troca e retira a conta de atuação sem preenchimento de fundamento', async () => {
+    const pessoa_id = await criarPessoa();
+    const primeira = await criarConta('COMUM', igreja, pessoa_id);
+    const segunda = await criarConta('COMUM', igreja, pessoa_id);
+    const mudancas = [
+      { conta_id: primeira, anterior_id: null, motivo: 'Seleção da conta de atuação institucional.' },
+      { conta_id: segunda, anterior_id: primeira, motivo: 'Troca da conta de atuação institucional.' },
+      { conta_id: null, anterior_id: segunda, motivo: 'Retirada da conta de atuação institucional.' },
+    ];
+    for (const { conta_id, anterior_id, motivo } of mudancas) {
+      await http(admin, 'post', '/autorizacao/conta-atuacao').send({ pessoa_id, conta_id, anterior_id }).expect(201, { conta_id });
+      const selecionada = await db.usuarios.findFirst({ where: { igreja_id: igreja, pessoa_id, conta_atuacao: true }, select: { id: true } });
+      expect(selecionada?.id ?? null).toBe(conta_id);
+      const evento = await db.evento_autorizacao.findFirstOrThrow({
+        where: { igreja_id: igreja, acao: 'ESCOLHER_CONTA', pessoa_id, destinatario_id: conta_id },
+      });
+      expect(evento).toMatchObject({ operador_id: admin, fundamento: motivo, dados: { anterior_id } });
+    }
+  });
+
   it('exige revisão independente da presidência e transfere os poderes entre sessões abertas', async () => {
     const conferir = (id: string, etapa: string) => http(id,'post','/autorizacao/presidencias/'+presidencia+'/'+etapa).send({ fundamento });
     const comparar = async (id: string) => (await http(admin,'get','/autorizacao/contas/'+id+'/modelos/'+modelo).expect(200)).body[0];
@@ -224,7 +244,7 @@ integration('Base de autorização por conta e por igreja', () => {
       expect.objectContaining({ acao: 'MANDATOS_REGISTRAR', sobreposta: false }),
       expect.objectContaining({ acao: 'PESSOAS_CONSULTAR', sobreposta: false }),
     ]);
-    const aplicar = (operador: string, previa: string) => http(operador, 'post', rota).send({ usuario_id: conta, previa, fundamento });
+    const aplicar = (operador: string, previa: string) => http(operador, 'post', rota).send({ usuario_id: conta, previa });
     const { body: { id: concessao } } = await aplicar(presidente, proposta.previa).expect(201);
     await aplicar(admin, proposta.previa).expect(409);
     await http(conta, 'get', '/pessoas').expect(200);
@@ -234,14 +254,16 @@ integration('Base de autorização por conta e por igreja', () => {
     await buscarAtas().expect(200).expect(r => expect(r.body.itens).toContainEqual(expect.objectContaining({ versao_id: ata.id })));
     await buscarCandidatos().expect(200);
     const ato = await db.evento_autorizacao.findFirstOrThrow({ where: { recurso_id: concessao, acao: 'ATRIBUIR_MODELO_ATUACAO' } });
-    expect(ato.operador_id).toBe(presidente);
+    expect(ato).toMatchObject({ operador_id: presidente, fundamento: 'Concessão de perfil de acesso.' });
     expect(ato.dados).toMatchObject({ qualificacao_id: ocupacao.id, acoes: ['MANDATOS_REGISTRAR', 'PESSOAS_CONSULTAR'] });
 
     const { body: atribuicoes } = await http(admin, 'get', '/autorizacao/contas/' + conta).expect(200);
     const vinculada = atribuicoes.atribuicoes.find(a => a.concessao_modelo_id === concessao);
     await http(admin, 'post', '/autorizacao/atribuicoes/' + vinculada.id + '/revogar').send({ fundamento }).expect(400);
     const revogar = '/autorizacao/concessoes-modelo/' + concessao + '/revogar';
-    await http(presidente, 'post', revogar).send({ fundamento }).expect(201);
+    await http(presidente, 'post', revogar).send({}).expect(201);
+    expect(await db.evento_autorizacao.findFirst({ where: { recurso_id: concessao, acao: 'REVOGAR_MODELO_ATUACAO' } }))
+      .toMatchObject({ operador_id: presidente, fundamento: 'Revogação de perfil de acesso.', dados: { modelo_id: modeloCriado.id } });
     await http(conta, 'get', '/pessoas').expect(403);
     await buscarAtas().expect(403);
     await buscarCandidatos().expect(403);

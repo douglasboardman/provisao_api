@@ -31,8 +31,8 @@ const modeloSchema = z.union([
   modeloBase.extend({ requisito: requisitoSchema }).transform(({ requisito, ...base }) => ({ ...base, requisitos: [requisito] })),
 ]);
 const previaSchema = z.strictObject({ usuario_id: z.uuid() });
-const confirmarSchema = previaSchema.extend({ previa: z.string().regex(/^[a-f0-9]{64}$/), fundamento });
-const revogarSchema = z.strictObject({ fundamento });
+const confirmarSchema = previaSchema.extend({ previa: z.string().regex(/^[a-f0-9]{64}$/), fundamento: fundamento.optional() });
+const revogarSchema = z.strictObject({ fundamento: fundamento.optional() });
 const cargoNome = { select: { nome: true, orgao: { select: { nome: true } } } } as const;
 const incluirRequisitos = {
   cargo: cargoNome,
@@ -43,7 +43,7 @@ function rotuloRequisito({ cargo, oficio }: { cargo: { nome: string; orgao: { no
   return cargo ? `${cargo.nome} · ${cargo.orgao.nome}` : oficioNome[oficio!];
 }
 
-function validar<T>(schema: z.ZodType<T>, body: unknown, mensagem = 'Confira os dados e o fundamento informados.'): T {
+function validar<T>(schema: z.ZodType<T>, body: unknown, mensagem = 'Confira os dados informados.'): T {
   const dados = schema.safeParse(body);
   if (!dados.success) throw new BadRequestException(mensagem);
   return dados.data;
@@ -196,7 +196,7 @@ export class ModelosAtuacaoService {
       const escopo = { igreja_id, usuario_id, pessoa_id: alvo.pessoa_id, geracao_vinculo: alvo.geracao_vinculo, inicio: agora, fim };
       const concessao = await tx.concessao_modelo_atuacao.create({ data: { ...escopo, modelo_id, qualificacao_id: origem.id } });
       await tx.atribuicao_servico.createMany({ data: acoes.map(acao => ({ ...escopo, acao, concessao_modelo_id: concessao.id })) });
-      await this.auditar(tx, operador, 'ATRIBUIR_MODELO_ATUACAO', concessao.id, confirmacao.fundamento, {
+      await this.auditar(tx, operador, 'ATRIBUIR_MODELO_ATUACAO', concessao.id, confirmacao.fundamento ?? 'Concessão de perfil de acesso.', {
         modelo_id, acoes, qualificacao_id: origem.id, fim: fim?.toISOString() ?? null,
       }, escopo);
       return { id: concessao.id, atribuidas: acoes.length };
@@ -222,7 +222,7 @@ export class ModelosAtuacaoService {
       if (registro.revogado_em) return { id };
       await tx.concessao_modelo_atuacao.update({ where: { id }, data: { revogado_em: agora } });
       await tx.atribuicao_servico.updateMany({ where: { igreja_id, concessao_modelo_id: id, revogado_em: null }, data: { revogado_em: agora } });
-      await this.auditar(tx, operador, 'REVOGAR_MODELO_ATUACAO', id, v.fundamento, { modelo_id: registro.modelo_id }, registro);
+      await this.auditar(tx, operador, 'REVOGAR_MODELO_ATUACAO', id, v.fundamento ?? 'Revogação de perfil de acesso.', { modelo_id: registro.modelo_id }, registro);
       return { id };
     });
   }

@@ -16,7 +16,7 @@ import { ComposicaoService } from '../orgaos/composicao.service';
 import { Ator, contaDaSessao, camposConta, compativel, Conta, comparar, decisaoAtribuicoes, decidirAcaoModelo, decidirServico, fundamento, papeisDaConta, servicos, Tx } from './politica';
 import { filtrarAtribuicoesDeModelos } from './validade-modelo';
 
-const escolha = z.strictObject({ pessoa_id: z.uuid(), conta_id: z.uuid().nullable(), anterior_id: z.uuid().nullable(), fundamento });
+const escolha = z.strictObject({ pessoa_id: z.uuid(), conta_id: z.uuid().nullable(), anterior_id: z.uuid().nullable(), fundamento: fundamento.optional() });
 const concessao = z.strictObject({ acao: servicos, inicio: z.iso.datetime({ offset: true }),
   fim: z.iso.datetime({ offset: true }).nullable(), fundamento });
 const justificativa = z.strictObject({ fundamento });
@@ -84,7 +84,9 @@ export class ContasAutorizacaoService {
       if (v.conta_id !== v.anterior_id) {
         if (anterior) await tx.usuarios.update({ where: { id: anterior.id }, data: { conta_atuacao: false } });
         if (v.conta_id) await tx.usuarios.update({ where: { id: v.conta_id }, data: { conta_atuacao: true } });
-        await this.evento(tx, u, 'ESCOLHER_CONTA', pessoa.id, v.fundamento, pessoa.id, v.conta_id, { anterior_id: v.anterior_id });
+        const motivo = v.fundamento ?? (v.conta_id === null ? 'Retirada da conta de atuação institucional.'
+          : anterior ? 'Troca da conta de atuação institucional.' : 'Seleção da conta de atuação institucional.');
+        await this.evento(tx, u, 'ESCOLHER_CONTA', pessoa.id, motivo, pessoa.id, v.conta_id, { anterior_id: v.anterior_id });
       }
       return { conta_id: v.conta_id };
     }).catch(conflitoConcorrente);
