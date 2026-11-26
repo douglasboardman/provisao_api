@@ -72,6 +72,22 @@ integration('E02: comandos de oficiais no banco descartável', () => {
     expect(await prisma.oficial.count({ where: { igreja_id: igreja, pessoa_id: pessoaId } })).toBe(2);
     expect(await prisma.oficial.count({ where: { igreja_id: igreja, pessoa_id: pessoaId, ativo: true } })).toBe(1);
   });
+  it('reconhece o exercício do docente após registrar a ordenação só com a data', async () => {
+    const [diacono, docente] = ids;
+    const dados = { tipo: 'ORDENACAO' as const, data_efeito: '2020-01-01' };
+    await expect(service.registrarEvento(igreja, usuario, docente, { ...dados, data_efeito: '' })).rejects.toThrow('Dados do evento inválidos');
+    await expect(service.registrarEvento(igreja, usuario, diacono, dados)).rejects.toThrow('presbítero docente');
+    await expect(service.registrarEvento(outra, usuario, docente, dados)).rejects.toThrow();
+    const resultados = await Promise.allSettled([
+      service.registrarEvento(igreja, usuario, docente, dados),
+      service.registrarEvento(igreja, usuario, docente, dados),
+    ]);
+    expect(resultados.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    const registros = await prisma.evento_oficial.findMany({ where: { igreja_id: igreja, oficial_id: docente, tipo: dados.tipo } });
+    expect(registros).toHaveLength(1);
+    expect(registros[0]).toMatchObject({ ordem: 1, autoridade: 'Não informada', evidencia: 'Referência documental não informada.' });
+    expect(await exercicio.consultar(igreja, usuario, docente, '2026-01-15')).toMatchObject({ situacao: 'EM_EXERCICIO' });
+  });
   it('preserva afastamento referenciado mesmo com atualização concorrente', async () => {
     const oficialId = ids[0];
     const suspensao = await service.registrarEvento(igreja, usuario, oficialId, { tipo: 'SUSPENSAO', data_efeito: '2026-03-01', ordem: 1, autoridade: 'Conselho', evidencia: 'Ata externa' });

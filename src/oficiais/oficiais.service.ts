@@ -5,12 +5,21 @@ import { exigirAcessoSensivel } from './acesso-sensivel.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type { Ator } from '../autorizacao/politica';
 import { exigirServicoHistorico } from './autorizacao-historico';
+import { transacaoSerializavel } from '../orgaos/idempotencia';
 
 const dia = z.iso.date().refine(s => { const d = new Date(`${s}T00:00:00.000Z`); return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === s; });
 const texto = z.string().trim().min(1).max(1000);
 const registroSchema = z.object({ pessoa_id: z.string().uuid(), tipo: z.nativeEnum(oficio_tipo), ativo: z.boolean().default(true) }).strict();
 const situacaoSchema = z.object({ ativo: z.boolean() }).strict();
 const eventoSchema = z.object({ tipo: z.nativeEnum(oficial_evento_tipo), data_efeito: dia, ordem: z.number().int().min(1).max(9999), autoridade: texto, evidencia: texto, observacoes: z.string().trim().max(1000).optional(), evento_restaurado_id: z.string().uuid().optional() }).strict().refine(v => (v.tipo === 'RESTAURACAO') === !!v.evento_restaurado_id);
+const textoOpcional = z.string().trim().max(1000).optional();
+const ordenacaoPastoralSchema = z.strictObject({
+  tipo: z.literal('ORDENACAO'),
+  data_efeito: dia,
+  autoridade: textoOpcional,
+  evidencia: textoOpcional,
+});
+const registroEventoSchema = z.union([eventoSchema, ordenacaoPastoralSchema]);
 const encerramentoSchema = z.object({ motivo: texto, autoridade: texto, evidencia: texto }).strict();
 const vinculoSchema = z.object({ modalidade: texto, concilio: texto, ato: texto, data_inicio: dia, data_fim: dia.optional(), encerramento: encerramentoSchema.optional(), exercicio_institucional: z.boolean(), evidencia: texto }).strict().refine(v => (!v.data_fim && !v.encerramento) || (!!v.data_fim && !!v.encerramento && v.data_fim >= v.data_inicio));
 type Tx = Prisma.TransactionClient;
@@ -75,21 +84,38 @@ export class OficiaisService {
     });
   }
 
-  async registrarEvento(igrejaId: string, usuarioId: string, oficialId: string, dados: z.infer<typeof eventoSchema>, exigirConcessao = false, ator?: Ator) {
-    const validado = eventoSchema.safeParse(dados);
+  async registrarEvento(igrejaId: string, usuarioId: string, oficialId: string, dados: z.input<typeof registroEventoSchema>, exigirConcessao = false, ator?: Ator) {
+    const validado = registroEventoSchema.safeParse(dados);
     if (!validado.success) throw new BadRequestException('Dados do evento inválidos.');
     const v = validado.data, data = new Date(`${v.data_efeito}T00:00:00.000Z`);
-    return this.prisma.$transaction(async tx => {
+    return transacaoSerializavel(this.prisma, async tx => {
       await exigirServicoHistorico(tx, igrejaId, usuarioId, 'HISTORICO_OFICIAIS_REGISTRAR', true, ator);
       if (exigirConcessao) await exigirAcessoSensivel(tx, igrejaId, usuarioId, 'registrar');
-      await this.oficialBloqueado(tx, igrejaId, oficialId);
+      const oficial = await this.oficialBloqueado(tx, igrejaId, oficialId);
+      const escopo = { igreja_id: igrejaId, oficial_id: oficialId };
+      let ordem: number;
+      if ('ordem' in v) ordem = v.ordem;
+      else {
+        if (oficial.tipo !== 'PRESBITERO_DOCENTE')
+          throw new BadRequestException('A ordenação sem ordem informada se aplica ao presbítero docente.');
+        const existente = await tx.evento_oficial.findFirst({ where: { ...escopo, tipo: 'ORDENACAO' }, select: { id: true } });
+        if (existente) throw new ConflictException('Já existe uma ordenação registrada para este ofício.');
+        const ultimo = await tx.evento_oficial.findFirst({
+          where: { ...escopo, data_efeito: data }, orderBy: { ordem: 'desc' }, select: { ordem: true },
+        });
+        ordem = (ultimo?.ordem ?? 0) + 1;
+        if (ordem > 9999) throw new ConflictException('O limite de registros nesta data foi atingido.');
+      }
       // Alterações retroativas precisam do futuro relatório de impacto; não alterar autoridade silenciosamente.
-      const posterior = await tx.evento_oficial.findFirst({ where: { igreja_id: igrejaId, oficial_id: oficialId, OR: [{ data_efeito: { gt: data } }, { data_efeito: data, ordem: { gte: v.ordem } }] }, select: { id: true } });
+      const posterior = await tx.evento_oficial.findFirst({ where: { ...escopo, OR: [{ data_efeito: { gt: data } }, { data_efeito: data, ordem: { gte: ordem } }] }, select: { id: true } });
       if (posterior) throw new BadRequestException('Evento retroativo ou ordem ocupada exige conferência de impacto.');
-      const evento = await tx.evento_oficial.create({ data: { igreja_id: igrejaId, oficial_id: oficialId, tipo: v.tipo, data_efeito: data, ordem: v.ordem, autoridade: v.autoridade, evidencia: v.evidencia, observacoes: v.observacoes, evento_restaurado_id: v.evento_restaurado_id } });
-      await this.auditar(tx, igrejaId, usuarioId, 'evento_oficial', evento.id, { oficial_id: oficialId, ...v });
+      const evento = await tx.evento_oficial.create({ data: {
+        ...escopo, ...v, data_efeito: data, ordem, autoridade: v.autoridade || 'Não informada',
+        evidencia: v.evidencia || 'Referência documental não informada.',
+      } });
+      await this.auditar(tx, igrejaId, usuarioId, 'evento_oficial', evento.id, { oficial_id: oficialId, ...v, ordem });
       return evento;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 
   async registrarVinculoPastoral(igrejaId: string, usuarioId: string, oficialId: string, dados: z.infer<typeof vinculoSchema>) {
