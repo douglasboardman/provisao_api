@@ -1230,7 +1230,9 @@ integration('Atuação institucional por modelo', () => {
     const registrar = (corpo: object) => http('post', rota + '/eleicao-oficial').send({ ...corpo, idempotencia: randomUUID() });
     expect((await ficha()).body).toMatchObject({ pode_registrar_cargos: false, preparo_registro_cargos: 'HABILITAR_SERVICO' });
     await candidatos().expect(403);
-    const comprovado = { ...dados, comprovacao: { eleicao: prova, posse: prova } };
+    const referencia = { versao_id: ataCargo };
+    const comprovado = { pessoa_id: pessoa.id, data_eleicao: dia, data_posse: dia, termino_previsto: dia,
+      comprovacao: { eleicao: referencia, posse: referencia } };
     await registrar(comprovado).expect(403);
     await atribuir('MANDATOS_REGISTRAR').expect(403);
     const atribuicao = (await atribuir('CARGOS_REGISTRAR').expect(201)).body;
@@ -1242,11 +1244,14 @@ integration('Atuação institucional por modelo', () => {
     await db.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: oficial.id, tipo: 'ORDENACAO', data_efeito: inicio, ordem: 1, autoridade: 'Concílio', evidencia: 'Ata' } });
     await db.mandato_oficial.create({ data: { igreja_id: igreja, oficial_id: oficial.id, data_eleicao: inicio, data_posse: inicio,
       termino_previsto: new Date('2029-12-31'), autoridade: 'Assembleia', evidencia: 'Ata', avaliacao_eleicao: {} } });
-    expect((await candidatos().expect(200)).body).toEqual([expect.objectContaining({ id: pessoa.id })]);
+    const [candidato] = (await candidatos().expect(200)).body;
+    expect(candidato).toMatchObject({ id: pessoa.id, termino_sugerido: '2029-12-31' });
+    comprovado.termino_previsto = candidato.termino_sugerido;
     await registrar(dados).expect(403);
     const registro = (await registrar(comprovado).expect(201)).body;
     const ato = await db.ato_orgao.findFirstOrThrow({ where: { igreja_id: igreja, operador_id: admin.id, tipo: 'ELEICAO_CARGO' } });
-    expect(ato.detalhes).toMatchObject({ ocupacao_id: registro.ocupacao_id, atribuicao_id: atribuicao.id });
+    expect(ato.autoridade).toBe((await db.orgao_interno.findUniqueOrThrow({ where: { id: orgao_id! } })).nome);
+    expect(ato.detalhes).toMatchObject({ ocupacao_id: registro.ocupacao_id, atribuicao_id: atribuicao.id, termino_previsto: candidato.termino_sugerido });
     expect(await db.referencia_ata_institucional.count({ where: { igreja_id: igreja, ato_orgao_id: ato.id, versao_id: ataCargo } })).toBe(2);
     await http('post', '/autorizacao/atribuicoes/' + atribuicao.id + '/revogar').send({ fundamento: 'Fim do serviço' }).expect(201);
     await candidatos().expect(403);

@@ -15,8 +15,9 @@ import { hojeDaIgreja } from './relogio-igreja';
 
 const dia = z.iso.date().refine(s => { const d = new Date(`${s}T00:00:00Z`); return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === s; });
 const provaAta = z.strictObject({ versao_id: z.uuid(), trecho: z.string().trim().min(1).max(1000) });
-const comprovacao = z.strictObject({ eleicao: provaAta, posse: provaAta, sucede_id: z.uuid().optional(), confirmar_historico: z.literal(true).optional() });
-const entrada = z.object({ pessoa_id: z.uuid(), data_eleicao: dia, data_posse: dia, ordem_efeito: z.number().int().min(1).max(9999).optional(), termino_previsto: dia, comprovacao: comprovacao.optional(), autoridade: z.string().trim().min(1).max(255), evidencia: z.string().trim().min(1).max(1000), idempotencia: z.uuid() }).strict();
+const referenciaEleicao = provaAta.partial({ trecho: true });
+const comprovacao = z.strictObject({ eleicao: referenciaEleicao, posse: referenciaEleicao, sucede_id: z.uuid().optional(), confirmar_historico: z.literal(true).optional() });
+const entrada = z.object({ pessoa_id: z.uuid(), data_eleicao: dia, data_posse: dia, ordem_efeito: z.number().int().min(1).max(9999).optional(), termino_previsto: dia, comprovacao: comprovacao.optional(), autoridade: z.string().trim().min(1).max(255).optional(), evidencia: z.string().trim().min(1).max(1000).optional(), idempotencia: z.uuid() }).strict().refine(v => !!v.comprovacao || !!(v.autoridade && v.evidencia));
 const encerramento = z.object({ data_efeito: dia, ordem_efeito: z.number().int().min(1).max(9999).optional(), comprovacao: provaAta.optional(), motivo: z.string().trim().min(1).max(1000), autoridade: z.string().trim().min(1).max(255), evidencia: z.string().trim().min(1).max(1000), idempotencia: z.uuid() }).strict();
 const data = (valor: string) => new Date(`${valor}T00:00:00Z`);
 
@@ -50,6 +51,14 @@ export class CargosEleitosService {
     }, { isolationLevel: 'RepeatableRead' });
   }
 
+  private async configuracaoNaPosse(tx: Tx, igreja_id: string, orgao_id: string, posse: string, historico: boolean) {
+    const diaPosse = data(posse);
+    const vigente = await tx.versao_orgao.findFirst({ where: { igreja_id, orgao_id,
+      inicio: { lte: diaPosse }, OR: [{ fim: null }, { fim: { gt: diaPosse } }] } });
+    if (vigente || !historico) return vigente;
+    return tx.versao_orgao.findFirst({ where: { igreja_id, orgao_id, inicio: { gt: diaPosse } }, orderBy: { inicio: 'asc' } });
+  }
+
   candidatos(ator: AtorSecretaria & Ator, orgaoId: string, cargoId: string, filtros: unknown) {
     const parsed = z.strictObject({ eleicao: dia, posse: dia, busca: z.string().trim().max(100).optional(), pessoa_id: z.uuid().optional() }).safeParse(filtros);
     if (!parsed.success || parsed.data.eleicao > parsed.data.posse) throw new BadRequestException('Confira as datas da eleição e da posse.');
@@ -80,6 +89,13 @@ export class CargosEleitosService {
         const rol = eventoVigente(p.eventos_membresia, data(d));
         return tesouraria && rol.situacao === 'DEFINIDO' && rol.evento.rol === 'COMUNGANTES';
       })).slice(0,50);
+      const configuracao = await this.configuracaoNaPosse(tx, igreja_id, orgaoId, posse, posse < await hojeDaIgreja(tx, igreja_id));
+      const prazos = z.object({ cargo_prazo_sugerido_meses: z.number().int().positive().optional(),
+        cargo_prazo_maximo_meses: z.number().int().positive().optional() }).safeParse(configuracao?.configuracao);
+      const teto = tipo === 'JUNTA' ? 12 : 60;
+      const meses = Math.min(teto, prazos.data?.cargo_prazo_sugerido_meses ?? teto, prazos.data?.cargo_prazo_maximo_meses ?? teto);
+      const terminoPadrao = data(limiteExclusivoPorMeses(posse, meses));
+      terminoPadrao.setUTCDate(terminoPadrao.getUTCDate() - 1);
       return Promise.all(elegiveis.map(async p => {
         const oficial = await tx.oficial.findMany({ where: { igreja_id, pessoa_id: p.id, tipo: { in: tipo === 'JUNTA' ? ['DIACONO'] : ['PRESBITERO_REGENTE','PRESBITERO_DOCENTE'] } },
           select: { mandatos: { where: { data_posse: { lte: diaPosse }, OR: [{ orgao_id: null }, { orgao_id: orgaoId }],
@@ -88,17 +104,18 @@ export class CargosEleitosService {
             vinculos_pastorais: { where: { exercicio_institucional: true, data_inicio: { lte: diaPosse }, OR: [{ data_fim: null }, { data_fim: { gte: diaPosse } }] }, select: { data_fim: true } } } });
         const fins = oficial.flatMap(o => [...o.mandatos.map(m => m.termino_efetivo ?? m.termino_previsto), ...o.vinculos_pastorais.map(v => v.data_fim)]);
         const fim = fins.includes(null) ? null : fins.sort((a, b) => +b! - +a!)[0] ?? null;
-        return { id: p.id, nome_completo: p.nome_completo, limite_exercicio: fim?.toISOString().slice(0,10) ?? null };
+        return { id: p.id, nome_completo: p.nome_completo, termino_sugerido: (fim && fim < terminoPadrao ? fim : terminoPadrao).toISOString().slice(0,10),
+          limite_exercicio: fim?.toISOString().slice(0,10) ?? null };
       }));
     }, { isolationLevel: 'RepeatableRead' });
   }
 
-  private async ata(tx: Tx, escopo: Prisma.Sql, prova: z.infer<typeof provaAta>) {
+  private async ata(tx: Tx, escopo: Prisma.Sql, prova: z.infer<typeof referenciaEleicao>) {
     const [ata] = await tx.$queryRaw<{ documento_id: string; data: Date }[]>`
       SELECT d.id AS documento_id, v.data_documento AS data
       ${escopo} AND v.id = ${prova.versao_id} FOR SHARE OF d, v`;
     if (!ata) throw new NotFoundException('Ata indisponível para este órgão.');
-    return { ...ata, versao_id: prova.versao_id, trecho: prova.trecho };
+    return { ...ata, versao_id: prova.versao_id, trecho: prova.trecho ?? 'Referência à ata integral.' };
   }
 
   private async referenciar(tx: Tx, igreja_id: string, registrado_por_id: string, ato_orgao_id: string, etapa: string, ata: Awaited<ReturnType<CargosEleitosService['ata']>>) {
@@ -129,16 +146,13 @@ export class CargosEleitosService {
         throw new BadRequestException('Informe as atas de eleição e posse pela ficha do órgão.');
       let provas: { eleicao: Awaited<ReturnType<CargosEleitosService['ata']>>; posse: Awaited<ReturnType<CargosEleitosService['ata']>> } | null = null;
       let versaoId: string | null = null;
-    let prazoConfigurado: number | undefined;
+      let prazoConfigurado: number | undefined;
       let continuidade: 'REELEICAO' | 'SUCESSAO' | null = null;
       const historico = v.data_posse < hoje;
       if (v.comprovacao) {
         if (orgao.data_criacao && orgao.data_criacao > data(v.data_eleicao))
           throw new BadRequestException('A eleição antecede a data de instituição do órgão.');
-        const versao = await tx.versao_orgao.findFirst({ where: { igreja_id: igrejaId, orgao_id: orgaoId,
-          inicio: { lte: data(v.data_posse) }, OR: [{ fim: null }, { fim: { gt: data(v.data_posse) } }] } });
-        const configuracao = versao ?? (historico ? await tx.versao_orgao.findFirst({ where: { igreja_id: igrejaId, orgao_id: orgaoId,
-          inicio: { gt: data(v.data_posse) } }, orderBy: { inicio: 'asc' } }) : null);
+        const configuracao = await this.configuracaoNaPosse(tx, igrejaId, orgaoId, v.data_posse, historico);
         const regras = z.object({ atos: z.object({ eleicao_cargo: z.string(), posse_cargo: z.string() }),
           cargo_prazo_maximo_meses: z.number().int().min(1).max(60).optional() }).safeParse(configuracao?.configuracao);
         if (!configuracao || !regras.success || regras.data.atos.eleicao_cargo !== orgao.tipo || regras.data.atos.posse_cargo !== orgao.tipo)
@@ -214,7 +228,7 @@ export class CargosEleitosService {
       const outras = await tx.ocupacao_cargo.findMany({ where: { igreja_id: igrejaId, orgao_id: orgaoId, pessoa_id: v.pessoa_id, cargo_id: { not: cargoId }, inicio: { lte: data(v.termino_previsto) }, AND: [{ OR: [{ fim: null }, { fim: { gt: data(v.data_posse) } }, { fim: data(v.data_posse), fim_ordem: { gt: ordem } }] }, { OR: [{ termino_previsto: null }, { termino_previsto: { gte: data(v.data_posse) } }] }] }, include: { cargo: { select: { permite_acumulacao: true } } } });
       if (outras.length && (!cargo.permite_acumulacao || outras.some(o => !o.cargo.permite_acumulacao))) throw new BadRequestException('Acumulação não autorizada para os cargos.');
       const ocupacao = await tx.ocupacao_cargo.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, cargo_id: cargoId, pessoa_id: v.pessoa_id, inicio: data(v.data_posse), inicio_ordem: ordem, termino_previsto: data(v.termino_previsto) } });
-      const ato = await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, operador_id: usuarioId, tipo: 'ELEICAO_CARGO', data_efeito: data(v.data_posse), autoridade: v.autoridade, evidencia: v.evidencia, idempotencia, hash_requisicao: hash, detalhes: { ordem_efeito: ordem, cargo_id: cargoId, ocupacao_id: ocupacao.id, data_eleicao: v.data_eleicao, termino_previsto: v.termino_previsto, oficial_na_posse: oficialNaPosse, ...(versaoId && { versao_orgao_id: versaoId, atribuicao_id: poder!.atribuicao, sucede_id: v.comprovacao?.sucede_id ?? null, continuidade, transcricao_historica: historico }) } } });
+      const ato = await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, operador_id: usuarioId, tipo: 'ELEICAO_CARGO', data_efeito: data(v.data_posse), autoridade: v.autoridade ?? orgao.nome, evidencia: v.evidencia ?? `Ata da eleição de ${v.data_eleicao}`, idempotencia, hash_requisicao: hash, detalhes: { ordem_efeito: ordem, cargo_id: cargoId, ocupacao_id: ocupacao.id, data_eleicao: v.data_eleicao, termino_previsto: v.termino_previsto, oficial_na_posse: oficialNaPosse, ...(versaoId && { versao_orgao_id: versaoId, atribuicao_id: poder!.atribuicao, sucede_id: v.comprovacao?.sucede_id ?? null, continuidade, transcricao_historica: historico }) } } });
       if (provas) {
         await this.referenciar(tx, igrejaId, usuarioId, ato.id, 'ELEICAO', provas.eleicao);
         await this.referenciar(tx, igrejaId, usuarioId, ato.id, 'POSSE', provas.posse);
