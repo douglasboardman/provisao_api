@@ -1281,7 +1281,7 @@ integration('Atuação institucional por modelo', () => {
     }
   },60000);
 
-  it('permite ao administrador registrar o próprio cargo com atribuição vigente, exercício e ata', async () => {
+  it('permite ao administrador identificado registrar o próprio cargo com exercício e ata', async () => {
     const { orgao_id } = await db.contexto_secretaria.findUniqueOrThrow({ where: { id: contextoConselho } });
     const pessoa = await db.pessoas.create({ data: { igreja_id: igreja, nome_completo: 'Administrador presbítero', sexo: 'MASCULINO', data_nascimento: inicio } });
     const admin = await db.usuarios.create({ data: { igreja_id: igreja, pessoa_id: pessoa.id, nome_usuario: 'Administrador presbítero',
@@ -1293,20 +1293,13 @@ integration('Atuação institucional por modelo', () => {
     const rota = '/orgaos/gestao/' + orgao_id + '/cargos/' + vaga.id;
     const candidatos = () => http('get', rota + '/candidatos').query({ eleicao: dia, posse: dia, pessoa_id: pessoa.id });
     const ficha = () => http('get', '/orgaos/' + orgao_id).query({ data: dia }).expect(200);
-    const atribuir = (acao: string) => http('post', '/autorizacao/contas/' + admin.id + '/atribuicoes')
-      .send({ acao, inicio: inicio.toISOString(), fim: null, fundamento: 'Registro dos atos do Conselho' });
     const prova = { versao_id: ataCargo, trecho: 'Item sobre a eleição e a posse' };
     const dados = { pessoa_id: pessoa.id, data_eleicao: dia, data_posse: dia, termino_previsto: dia, autoridade: 'Conselho', evidencia: prova.trecho };
     const registrar = (corpo: object) => http('post', rota + '/eleicao-oficial').send({ ...corpo, idempotencia: randomUUID() });
-    expect((await ficha()).body).toMatchObject({ pode_registrar_cargos: false, preparo_registro_cargos: 'HABILITAR_SERVICO' });
-    await candidatos().expect(403);
     const referencia = { versao_id: ataCargo };
     const comprovado = { pessoa_id: pessoa.id, data_eleicao: dia, data_posse: dia, termino_previsto: dia,
       comprovacao: { eleicao: referencia, posse: referencia } };
-    await registrar(comprovado).expect(403);
-    await atribuir('MANDATOS_REGISTRAR').expect(403);
-    const atribuicao = (await atribuir('CARGOS_REGISTRAR').expect(201)).body;
-    expect((await ficha()).body).toMatchObject({ pode_registrar_cargos: true });
+    expect((await ficha()).body).toMatchObject({ pode_registrar_cargos: true, preparo_registro_cargos: null });
     expect((await candidatos().expect(200)).body).toEqual([]);
     await registrar(comprovado).expect(400);
     await db.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: pessoa.id, data_evento: inicio, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE' } });
@@ -1321,9 +1314,10 @@ integration('Atuação institucional por modelo', () => {
     const registro = (await registrar(comprovado).expect(201)).body;
     const ato = await db.ato_orgao.findFirstOrThrow({ where: { igreja_id: igreja, operador_id: admin.id, tipo: 'ELEICAO_CARGO' } });
     expect(ato.autoridade).toBe((await db.orgao_interno.findUniqueOrThrow({ where: { id: orgao_id! } })).nome);
-    expect(ato.detalhes).toMatchObject({ ocupacao_id: registro.ocupacao_id, atribuicao_id: atribuicao.id, termino_previsto: candidato.termino_sugerido });
+    expect(ato.detalhes).toMatchObject({ ocupacao_id: registro.ocupacao_id, atribuicao_id: null, origem_autorizacao: 'PERFIL_ADMINISTRADOR', termino_previsto: candidato.termino_sugerido });
     expect(await db.referencia_ata_institucional.count({ where: { igreja_id: igreja, ato_orgao_id: ato.id, versao_id: ataCargo } })).toBe(2);
-    await http('post', '/autorizacao/atribuicoes/' + atribuicao.id + '/revogar').send({ fundamento: 'Fim do serviço' }).expect(201);
+    await db.usuarios.update({ where: { id: admin.id }, data: { pessoa_id: null } });
+    expect((await ficha()).body).toMatchObject({ pode_registrar_cargos: false, preparo_registro_cargos: 'VINCULAR_PESSOA' });
     await candidatos().expect(403);
   });
 

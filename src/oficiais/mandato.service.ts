@@ -53,7 +53,7 @@ export class MandatoService {
         const poder = ator && ator.igreja_id === igrejaId && ator.sub === usuarioId ? await permissaoMandato(tx, ator) : null;
         if (!poder || poder.pessoa === atual.pessoa_id) throw new ForbiddenException('O encerramento exige serviço vigente e operador distinto do titular.');
         await tx.evento_autorizacao.create({ data: { igreja_id: igrejaId, operador_id: usuarioId, operador_pessoa_id: poder.pessoa,
-          pessoa_id: atual.pessoa_id, acao: 'MANDATO_ENCERRADO', recurso_id: mandatoId, fundamento: v.autoridade, dados: { orgao_id: atual.orgao_id, atribuicao_id: poder.atribuicao, data_efeito: v.data_efeito } } });
+          pessoa_id: atual.pessoa_id, acao: 'MANDATO_ENCERRADO', recurso_id: mandatoId, fundamento: v.autoridade, dados: { orgao_id: atual.orgao_id, atribuicao_id: poder.atribuicao, origem_autorizacao: poder.origem, data_efeito: v.data_efeito } } });
       }
       if (atual.termino_efetivo || efeito < atual.data_posse || efeito > atual.termino_previsto) throw new BadRequestException('Mandato já encerrado ou data de encerramento inválida.');
       const encerrado = await tx.mandato_oficial.update({ where: { id: mandatoId }, data: { termino_efetivo: efeito, motivo_encerramento: v.motivo } });

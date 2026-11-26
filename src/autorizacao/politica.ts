@@ -43,7 +43,15 @@ export function compativel(perfil: usuarios_perfil, acao: Servico) {
   return perfil !== 'AUDITOR' || servicosDeConsulta.has(acao);
 }
 
-export async function decidirServico(tx: Tx, conta: Conta, acao: Servico, agora = new Date()) {
+function registroAdministrativo(conta: Conta, acao: Servico) {
+  if (conta.ativo && conta.pessoa_id && conta.perfil === 'ADMINISTRADOR' &&
+      (acao === 'MANDATOS_REGISTRAR' || acao === 'CARGOS_REGISTRAR'))
+    return { permite: true, motivo: 'PERFIL_ADMINISTRADOR' };
+}
+
+export async function decidirServico(tx: Tx, conta: Conta, acao: Servico, agora = new Date()): Promise<{ permite: boolean; motivo: string; origem?: string }> {
+  const administrativo = registroAdministrativo(conta, acao);
+  if (administrativo) return administrativo;
   if (!conta.ativo || !compativel(conta.perfil, acao)) return { permite: false, motivo: 'CONTA_INCOMPATIVEL' };
   const registros = await tx.atribuicao_servico.findMany({ where: { igreja_id: conta.igreja_id, usuario_id: conta.id, acao },
     select: { id: true, geracao_vinculo: true, inicio: true, fim: true, revogado_em: true, concessao_modelo_id: true }, orderBy: { inicio: 'desc' } });
@@ -53,6 +61,8 @@ export async function decidirServico(tx: Tx, conta: Conta, acao: Servico, agora 
 export function decisaoAtribuicoes(conta: Conta, acao: Servico, registros: {
   id: string; geracao_vinculo: number; inicio: Date; fim: Date | null; revogado_em: Date | null;
 }[], agora: Date): { permite: boolean; motivo: string; origem?: string } {
+  const administrativo = registroAdministrativo(conta, acao);
+  if (administrativo) return administrativo;
   if (!conta.ativo || !compativel(conta.perfil, acao)) return { permite: false, motivo: 'CONTA_INCOMPATIVEL' };
   const vigente = registros.find(r => r.geracao_vinculo === conta.geracao_vinculo && !r.revogado_em &&
     r.inicio <= agora && (!r.fim || agora < r.fim));

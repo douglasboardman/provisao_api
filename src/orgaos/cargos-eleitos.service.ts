@@ -32,8 +32,11 @@ export class CargosEleitosService {
       throw new ForbiddenException('O registro com ata exige acesso à Secretaria.');
     const conta = await contaDaSessao(tx, ator);
     const decisao = await decidirServico(tx, conta, 'CARGOS_REGISTRAR');
-    if (!conta.pessoa_id || !decisao.permite) throw new ForbiddenException('Atribuição vigente de registro de cargos necessária.');
-    return { pessoa: conta.pessoa_id, atribuicao: decisao.origem!, podeRegistrarParaSi: conta.perfil === 'ADMINISTRADOR' };
+    if (!conta.pessoa_id || !decisao.permite) throw new ForbiddenException('A conta precisa estar vinculada a uma pessoa e ter permissão para registrar cargos.');
+    return {
+      pessoa: conta.pessoa_id, atribuicao: decisao.origem ?? null, origem: decisao.motivo,
+      podeRegistrarParaSi: conta.perfil === 'ADMINISTRADOR',
+    };
   }
 
   private async escopoAtas(tx: Tx, ator: AtorSecretaria, orgao: string, hoje: string) {
@@ -229,7 +232,7 @@ export class CargosEleitosService {
       const outras = await tx.ocupacao_cargo.findMany({ where: { igreja_id: igrejaId, orgao_id: orgaoId, pessoa_id: v.pessoa_id, cargo_id: { not: cargoId }, inicio: { lte: data(v.termino_previsto) }, AND: [{ OR: [{ fim: null }, { fim: { gt: data(v.data_posse) } }, { fim: data(v.data_posse), fim_ordem: { gt: ordem } }] }, { OR: [{ termino_previsto: null }, { termino_previsto: { gte: data(v.data_posse) } }] }] }, include: { cargo: { select: { permite_acumulacao: true } } } });
       if (outras.length && (!cargo.permite_acumulacao || outras.some(o => !o.cargo.permite_acumulacao))) throw new BadRequestException('Acumulação não autorizada para os cargos.');
       const ocupacao = await tx.ocupacao_cargo.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, cargo_id: cargoId, pessoa_id: v.pessoa_id, inicio: data(v.data_posse), inicio_ordem: ordem, termino_previsto: data(v.termino_previsto) } });
-      const ato = await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, operador_id: usuarioId, tipo: 'ELEICAO_CARGO', data_efeito: data(v.data_posse), autoridade: v.autoridade ?? orgao.nome, evidencia: v.evidencia ?? `Ata da eleição de ${v.data_eleicao}`, idempotencia, hash_requisicao: hash, detalhes: { ordem_efeito: ordem, cargo_id: cargoId, ocupacao_id: ocupacao.id, data_eleicao: v.data_eleicao, termino_previsto: v.termino_previsto, oficial_na_posse: oficialNaPosse, ...(versaoId && { versao_orgao_id: versaoId, atribuicao_id: poder!.atribuicao, sucede_id: antecessorId, continuidade, transcricao_historica: historico }) } } });
+      const ato = await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, operador_id: usuarioId, tipo: 'ELEICAO_CARGO', data_efeito: data(v.data_posse), autoridade: v.autoridade ?? orgao.nome, evidencia: v.evidencia ?? `Ata da eleição de ${v.data_eleicao}`, idempotencia, hash_requisicao: hash, detalhes: { ordem_efeito: ordem, cargo_id: cargoId, ocupacao_id: ocupacao.id, data_eleicao: v.data_eleicao, termino_previsto: v.termino_previsto, oficial_na_posse: oficialNaPosse, ...(versaoId && { versao_orgao_id: versaoId, atribuicao_id: poder!.atribuicao, origem_autorizacao: poder!.origem, sucede_id: antecessorId, continuidade, transcricao_historica: historico }) } } });
       if (provas) {
         await this.referenciar(tx, igrejaId, usuarioId, ato.id, 'ELEICAO', provas.eleicao);
         await this.referenciar(tx, igrejaId, usuarioId, ato.id, 'POSSE', provas.posse);
@@ -281,7 +284,7 @@ export class CargosEleitosService {
       }, select: { id: true } });
       if (sucessor) throw new ConflictException('O encerramento deve anteceder a posse seguinte neste cargo.');
       await tx.ocupacao_cargo.update({ where: { id: ocupacao.id }, data: { fim: efeito, fim_ordem: ordem } });
-      const ato = await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, operador_id: usuarioId, tipo: 'ENCERRAMENTO_CARGO', data_efeito: efeito, autoridade: v.autoridade, evidencia: v.evidencia, idempotencia, hash_requisicao: hash, detalhes: { ordem_efeito: ordem, ocupacao_id: ocupacao.id, motivo: v.motivo } } });
+      const ato = await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, operador_id: usuarioId, tipo: 'ENCERRAMENTO_CARGO', data_efeito: efeito, autoridade: v.autoridade, evidencia: v.evidencia, idempotencia, hash_requisicao: hash, detalhes: { ordem_efeito: ordem, ocupacao_id: ocupacao.id, motivo: v.motivo, ...(poder && { atribuicao_id: poder.atribuicao, origem_autorizacao: poder.origem }) } } });
       if (provaFim) await this.referenciar(tx, igrejaId, usuarioId, ato.id, 'ATO', provaFim);
       await tx.logs_atividades.create({ data: { igreja_id: igrejaId, usuario_id: usuarioId, acao: logs_atividades_acao.CRIACAO, tabela_afetada: 'ato_orgao', registro_id: ato.id, dados_novos: { orgao_id: orgaoId, ocupacao_id: ocupacao.id, data_efeito: v.data_efeito } } });
       return { ato_id: ato.id, ocupacao_id: ocupacao.id };

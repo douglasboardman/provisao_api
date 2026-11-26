@@ -35,7 +35,7 @@ export class MandatoDiretoService {
 
   indicacoes(ator: AtorSecretaria & Ator, orgaoId: string, pessoa: string, ata: string) {
     return this.prisma.$transaction(async tx => {
-      if (!await permissaoMandato(tx, ator)) throw new ForbiddenException('A consulta de indicações exige atribuição vigente de mandato.');
+      if (!await permissaoMandato(tx, ator)) throw new ForbiddenException('A consulta de indicações exige permissão para registrar mandatos.');
       const { oficio } = await this.orgao(tx, ator.igreja_id, orgaoId);
       const acesso = await this.atas.acesso(tx, ator);
       const eleicao = await this.atas.ata(tx, ator, acesso, 'ASSEMBLEIA', ata);
@@ -50,7 +50,9 @@ export class MandatoDiretoService {
     const igreja_id = ator.igreja_id;
     return transacaoSerializavel(this.prisma, async tx => {
       const permissao = await permissaoMandato(tx, ator, confirmar);
-      if (!permissao || permissao.pessoa === v.pessoa_id) throw new ForbiddenException('O registro exige serviço vigente e operador distinto do beneficiário.');
+      if (!permissao) throw new ForbiddenException('A conta precisa de permissão para registrar mandatos.');
+      if (permissao.pessoa === v.pessoa_id && !permissao.podeRegistrarParaSi)
+        throw new ForbiddenException('O mandato deve ser registrado por outro operador autorizado.');
       const acesso = await this.atas.acesso(tx, ator);
       const { orgao, oficio } = await this.orgao(tx, igreja_id, orgao_id);
       const assembleia = await this.atas.ata(tx, ator, acesso, 'ASSEMBLEIA', v.ata_eleicao);
@@ -136,7 +138,7 @@ export class MandatoDiretoService {
         versao_orgao_id: versao.id, chave_registro: v.idempotencia, hash_registro: hash, data_eleicao: assembleia.data,
         indicacao_id: indicacao?.id,
         data_posse: posse, termino_previsto: termino, autoridade: 'Assembleia Geral', evidencia: 'Referências versionadas da eleição e da posse.',
-        avaliacao_eleicao: { ...resultado, avaliacao, ata_eleicao: assembleia.versao_id, ata_posse: instalacao.versao_id, operador_id: ator.sub, atribuicao_id: permissao.atribuicao, ordenacao_id: ordenacao.id,
+        avaliacao_eleicao: { ...resultado, avaliacao, ata_eleicao: assembleia.versao_id, ata_posse: instalacao.versao_id, operador_id: ator.sub, atribuicao_id: permissao.atribuicao, origem_autorizacao: permissao.origem, ordenacao_id: ordenacao.id,
           rol_eleicao_evento_id: eleicao.evento.id, rol_posse_evento_id: naPosse.evento.id } } });
       await tx.referencia_ata_oficial.createMany({ data: [
         { ato: 'ELEICAO', ata_documento_id: assembleia.documento_id, versao_id: assembleia.versao_id, justificativa: v.trecho_eleicao },
@@ -144,7 +146,7 @@ export class MandatoDiretoService {
       ].map(r => ({ ...r, igreja_id, mandato_id: mandato.id, sequencia: 1, registrado_por_id: ator.sub })) });
       await tx.evento_autorizacao.create({ data: { igreja_id, operador_id: ator.sub, operador_pessoa_id: permissao.pessoa, pessoa_id: v.pessoa_id,
         acao: 'MANDATO_REGISTRADO', recurso_id: mandato.id, fundamento: 'Eleição e posse documentadas',
-        dados: { orgao_id, atribuicao_id: permissao.atribuicao, ordenacao_id: ordenacao.id, indicacao_id: indicacao?.id ?? null } } });
+        dados: { orgao_id, atribuicao_id: permissao.atribuicao, origem_autorizacao: permissao.origem, ordenacao_id: ordenacao.id, indicacao_id: indicacao?.id ?? null } } });
       return { id: mandato.id, oficial_id: titular.id };
     });
   }

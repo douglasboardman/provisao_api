@@ -11,5 +11,8 @@ export async function permissaoMandato(tx: Tx, ator: Ator, emEscrita = false) {
   const conta = await contaDaSessao(tx, ator);
   if (!conta?.pessoa_id) return null;
   const decisao = await decidirServico(tx, conta, 'MANDATOS_REGISTRAR');
-  return decisao.permite ? { pessoa: conta.pessoa_id, atribuicao: decisao.origem! } : null;
+  return decisao.permite ? {
+    pessoa: conta.pessoa_id, atribuicao: decisao.origem ?? null, origem: decisao.motivo,
+    podeRegistrarParaSi: conta.perfil === 'ADMINISTRADOR',
+  } : null;
 }

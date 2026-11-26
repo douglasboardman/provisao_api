@@ -123,14 +123,14 @@ export class OrgaosController {
 
   @Post(':id/mandatos/previa')
   @ServicoDaRota('MANDATOS_REGISTRAR')
-  @Roles(Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
   previaMandato(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: unknown) {
     return this.mandatos.executar(req.user, id, dados, false);
   }
 
   @Get(':id/mandatos/indicacoes')
   @ServicoDaRota('MANDATOS_REGISTRAR')
-  @Roles(Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
   @Header('Cache-Control', 'private, no-store')
   indicacoesMandato(@Request() req, @Param('id', ParseUUIDPipe) id: string,
     @Query('pessoa', ParseUUIDPipe) pessoa: string, @Query('ata', ParseUUIDPipe) ata: string) {
@@ -139,7 +139,7 @@ export class OrgaosController {
 
   @Post(':id/mandatos')
   @ServicoDaRota('MANDATOS_REGISTRAR')
-  @Roles(Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
   registrarMandato(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: unknown) {
     return this.mandatos.executar(req.user, id, dados, true);
   }
@@ -302,8 +302,7 @@ export class OrgaosController {
         recursoDaIgreja('orgaos_gestao', igrejaId) && recursoDaIgreja('secretaria', igrejaId) &&
         req.user.perfil !== 'AUDITOR' ? await contaDaSessao(tx, req.user) : null;
       const podeRegistrarCargos = !!contaRegistro?.pessoa_id && (await decidirServico(tx, contaRegistro, 'CARGOS_REGISTRAR')).permite;
-      const preparoRegistro = !podeRegistrarCargos && contaRegistro?.perfil === 'ADMINISTRADOR'
-        ? (contaRegistro.pessoa_id ? 'HABILITAR_SERVICO' : 'VINCULAR_PESSOA') : null;
+      const preparoRegistro = contaRegistro?.perfil === 'ADMINISTRADOR' && !contaRegistro.pessoa_id ? 'VINCULAR_PESSOA' : null;
       const cargosNaData = vigenteNaData && nominal ? await tx.cargo_orgao.findMany({ where: { igreja_id: igrejaId, orgao_id: id, ativo: true }, select: {
         id: true, nome: true, ocupacoes: { where: { inicio: { lte: data }, OR: [{ fim: null }, { fim: { gt: data } }],
           AND: [{ OR: [{ termino_previsto: null }, { termino_previsto: { gte: data } }] }] }, select: { id: true, inicio: true, fim: true, termino_previsto: true, pessoa: { select: { id: true, nome_completo: true } } } }

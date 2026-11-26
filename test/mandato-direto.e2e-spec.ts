@@ -23,9 +23,9 @@ ensaio('Ficha e mandato por ata', () => {
     return (await db.documento_versao.create({ data: { igreja_id: igreja, contexto_id, documento_id: d.id, numero: 1,
       modelo_versao_id: m.id, assunto: 'Eleição ou posse', data_documento: datas(data), conteudo: {} } })).id;
   }
-  async function usuario(id: string, igreja_id: string) {
+  async function usuario(id: string, igreja_id: string, perfil: 'ADMINISTRADOR' | 'GESTOR' = 'GESTOR') {
     const pessoa_id = await pessoa(igreja_id, 'Operador');
-    const u = await db.usuarios.create({ data: { id, igreja_id, pessoa_id, nome_usuario: 'Operador', perfil: 'GESTOR', email_login: id + '@example.invalid', senha_hash: 'teste' } });
+    const u = await db.usuarios.create({ data: { id, igreja_id, pessoa_id, nome_usuario: 'Operador', perfil, email_login: id + '@example.invalid', senha_hash: 'teste' } });
     return { cookie: 'provisao_session=' + await app.get(SessionService).create(id, igreja_id, u.auth_version), pessoa_id };
   }
   const http = (metodo: 'get' | 'post' | 'patch', path: string, c = cookie) => request(app.getHttpServer())[metodo](path)
@@ -151,5 +151,34 @@ ensaio('Ficha e mandato por ata', () => {
     await db.atribuicao_servico.update({ where: { id: concessao }, data: { revogado_em: new Date() } });
     await http('post', path).send(confirmar).expect(403);
     expect((await http('get', path).expect(200)).body.pode_registrar).toBe(false);
+  });
+
+  it('permite ao administrador identificado registrar o próprio mandato documentado sem concessão', async () => {
+    const adminId = randomUUID();
+    const admin = await usuario(adminId, igreja, 'ADMINISTRADOR');
+    const adminOutraIgreja = await usuario(randomUUID(), visitante, 'ADMINISTRADOR');
+    const path = '/orgaos/' + conselho + '/mandatos';
+    const dados = { ...await novo(admin.pessoa_id, '2022-02-01', '2022-03-01'),
+      ordenacao: { data: '2022-03-01', autoridade: 'Conselho', evidencia: 'Ata da ordenação' } };
+    const consulta = async () => (await http('get', path, admin.cookie).expect(200)).body;
+    const conferir = (sessao: string) => http('post', path + '/previa', sessao).send(dados);
+    expect((await consulta()).pode_registrar).toBe(true);
+    await http('get', '/oficiais/indicacoes/selecao-atas', admin.cookie).query({ tipo: 'ASSEMBLEIA' }).expect(200)
+      .expect(r => expect(r.body.itens.some(v => v.versao_id === dados.ata_eleicao)).toBe(true));
+    await http('get', path + '/indicacoes', admin.cookie).query({ pessoa: admin.pessoa_id, ata: dados.ata_eleicao }).expect(200);
+    await conferir(adminOutraIgreja.cookie).expect(404);
+    const { body: previa } = await conferir(admin.cookie).expect(201);
+    const escopo = { igreja_id: igreja, acao: 'MANDATOS_REGISTRAR' };
+    await db.liberacao_servico.create({ data: { ...escopo, estado: 'PAUSADO', revisao: 1 } });
+    expect((await consulta()).pode_registrar).toBe(false);
+    await conferir(admin.cookie).expect(403);
+    await db.liberacao_servico.update({ where: { igreja_id_acao: escopo }, data: { estado: 'ATRIBUICAO', revisao: 2 } });
+    await db.usuarios.update({ where: { id: adminId }, data: { pessoa_id: null } });
+    expect((await consulta()).pode_registrar).toBe(false);
+    await conferir(admin.cookie).expect(403);
+    await db.usuarios.update({ where: { id: adminId }, data: { pessoa_id: admin.pessoa_id } });
+    const { body: mandato } = await http('post', path, admin.cookie).send({ ...dados, previa: previa.previa }).expect(201);
+    expect(await db.evento_autorizacao.findFirstOrThrow({ where: { igreja_id: igreja, recurso_id: mandato.id, acao: 'MANDATO_REGISTRADO' } }))
+      .toMatchObject({ operador_id: adminId, pessoa_id: admin.pessoa_id, dados: { atribuicao_id: null, origem_autorizacao: 'PERFIL_ADMINISTRADOR' } });
   });
 });
