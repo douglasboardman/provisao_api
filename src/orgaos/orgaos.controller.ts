@@ -117,8 +117,35 @@ export class OrgaosController {
         const vagas = await tx.cargo_orgao.count({ where: { ...where, ativo: true, ocupacoes: { none: { ...periodo, AND: [{ OR: [{ termino_previsto: null }, { termino_previsto: { gte: data } }] }] } } } });
         return { ...orgao, integrantes, vagas };
       }));
-      return { itens, pode_gerir_sociedades: !!acesso.poder && recursoDaIgreja('orgaos_gestao', igrejaId), proximo_cursor: registros.length > 50 ? pagina[pagina.length - 1].id : null };
+      const resumo = await this.resumirOrgaos(tx, scope, igrejaId, dia);
+      return { itens, resumo, pode_gerir_sociedades: !!acesso.poder && recursoDaIgreja('orgaos_gestao', igrejaId), proximo_cursor: registros.length > 50 ? pagina[pagina.length - 1].id : null };
     }, { isolationLevel: 'RepeatableRead' });
+  }
+
+  private async resumirOrgaos(tx: Prisma.TransactionClient, scope: Prisma.orgao_internoWhereInput, igrejaId: string, dia?: string) {
+    const orgaos = await tx.orgao_interno.findMany({
+      where: { AND: [scope, { OR: [{ ativo: true }, { tipo: { in: ['CONSELHO', 'JUNTA'] } }] }] },
+      select: { id: true, tipo: true, ativo: true },
+    });
+    const ativos = orgaos.filter(orgao => orgao.ativo);
+    const conselhos = orgaos.filter(orgao => orgao.tipo === 'CONSELHO').map(orgao => orgao.id);
+    const juntas = orgaos.filter(orgao => orgao.tipo === 'JUNTA').map(orgao => orgao.id);
+    const data = dia ? new Date(dia) : null;
+    const vinculos: Prisma.mandato_oficialWhereInput[] = [];
+    // Mandatos legados sem órgão seguem a mesma associação por ofício da ficha do Conselho ou da Junta.
+    if (conselhos.length) vinculos.push({ oficial: { tipo: 'PRESBITERO_REGENTE' }, OR: [{ orgao_id: { in: conselhos } }, { orgao_id: null }] });
+    if (juntas.length) vinculos.push({ oficial: { tipo: 'DIACONO' }, OR: [{ orgao_id: { in: juntas } }, { orgao_id: null }] });
+    const mandatos = data && vinculos.length ? await tx.mandato_oficial.count({
+      where: { igreja_id: igrejaId, data_posse: { lte: data }, OR: [
+        { termino_efetivo: { gte: data } }, { termino_efetivo: null, termino_previsto: { gte: data } },
+      ], AND: [{ OR: vinculos }] },
+    }) : 0;
+    return {
+      oficiais: ativos.filter(orgao => orgao.tipo === 'ASSEMBLEIA_GERAL' || orgao.tipo === 'CONSELHO' || orgao.tipo === 'JUNTA').length,
+      sociedades: ativos.filter(orgao => orgao.tipo === 'SOCIEDADE_INTERNA').length,
+      unidades: ativos.filter(orgao => orgao.tipo === 'UNIDADE_MINISTERIAL').length,
+      mandatos_vigentes: data ? mandatos : null,
+    };
   }
 
   @Post(':id/mandatos/previa')
