@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { presidenciaSociedades } from '../orgaos/acesso-sociedades';
 import { hashAto, transacaoSerializavel } from '../orgaos/idempotencia';
 import { PrismaService } from '../prisma/prisma.service';
-import { codigosServico, rotulosServico } from './catalogo-servicos';
+import { areasServico, codigosServico, rotulosServico } from './catalogo-servicos';
 import { Ator, camposConta, compativel, Conta, contaDaSessao, fundamento, servicos, Tx } from './politica';
 import { calendarioPerfis, qualificarPerfil } from './validade-modelo';
 
@@ -23,7 +23,7 @@ const modeloBase = z.strictObject({
   nome: z.string().transform(v => v.normalize('NFC').trim().replace(/\s+/g, ' ')).pipe(z.string().min(1).max(100)),
   acoes: z.array(servicos).min(1).max(acoesPermitidas.length).refine(acoes =>
     new Set(acoes).size === acoes.length && acoes.every(acao => acoesPermitidas.includes(acao))),
-  fundamento,
+  fundamento: fundamento.optional(),
 });
 const modeloSchema = z.union([
   modeloBase.extend({ requisitos: z.array(requisitoSchema).min(1).refine(requisitos =>
@@ -43,9 +43,9 @@ function rotuloRequisito({ cargo, oficio }: { cargo: { nome: string; orgao: { no
   return cargo ? `${cargo.nome} · ${cargo.orgao.nome}` : oficioNome[oficio!];
 }
 
-function validar<T>(schema: z.ZodType<T>, body: unknown): T {
+function validar<T>(schema: z.ZodType<T>, body: unknown, mensagem = 'Confira os dados e o fundamento informados.'): T {
   const dados = schema.safeParse(body);
-  if (!dados.success) throw new BadRequestException('Confira os dados e o fundamento informados.');
+  if (!dados.success) throw new BadRequestException(mensagem);
   return dados.data;
 }
 
@@ -96,13 +96,13 @@ export class ModelosAtuacaoService {
       return {
         cargos: cargos.map(c => ({ id: c.id, nome: `${c.nome} · ${c.orgao.nome}` })),
         oficios: Object.entries(oficioNome).map(([oficio, nome]) => ({ oficio, nome })),
-        catalogo: acoesPermitidas.map(acao => ({ acao, rotulo: rotulosServico[acao] })),
+        catalogo: acoesPermitidas.map(acao => ({ acao, rotulo: rotulosServico[acao], area: areasServico[acao] })),
       };
     });
   }
 
   salvar(ator: Ator, body: unknown) {
-    const v = validar(modeloSchema, body);
+    const v = validar(modeloSchema, body, 'Confira o nome, as atribuições e as permissões do perfil.');
     return transacaoSerializavel(this.db, async tx => {
       const operador = await this.operador(tx, ator, '', true);
       const igreja_id = operador.igreja_id;
@@ -118,7 +118,7 @@ export class ModelosAtuacaoService {
           data: adicionais.map((r, indice) => ({ ...r, ordem: indice + 1 })),
         } } }) },
         select: { id: true, nome: true } });
-      await this.auditar(tx, operador, 'SALVAR_MODELO_ATUACAO', modelo.id, v.fundamento, {
+      await this.auditar(tx, operador, 'SALVAR_MODELO_ATUACAO', modelo.id, v.fundamento ?? 'Criação de perfil de acesso', {
         nome: modelo.nome, acoes: v.acoes, ...primeiro, requisitos,
       });
       return modelo;

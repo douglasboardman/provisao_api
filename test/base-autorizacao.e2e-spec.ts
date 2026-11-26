@@ -171,6 +171,16 @@ integration('Base de autorização por conta e por igreja', () => {
       inicio: hoje, registrado_por: admin, evidencia: fundamento } });
 
     const modelos = '/autorizacao/modelos-atuacao';
+    const { body: opcoes } = await http(admin, 'get', modelos + '/opcoes').expect(200);
+    expect(opcoes.catalogo).toEqual(expect.arrayContaining([
+      expect.objectContaining({ acao: 'HISTORICO_MEMBRESIA_RETIFICAR', area: 'pessoas-membresia' }),
+      expect.objectContaining({ acao: 'AUTORIZACOES_FINANCEIRAS_REGISTRAR', area: 'financeiro' }),
+      expect.objectContaining({ acao: 'CARGOS_REGISTRAR', area: 'institucional' }),
+      expect.objectContaining({ acao: 'ACOES_EDITAR', area: 'administracao' }),
+    ]));
+    expect(new Set(opcoes.catalogo.map(item => item.area))).toEqual(
+      new Set(['pessoas-membresia', 'financeiro', 'institucional', 'administracao']),
+    );
     const entrada = { nome: ' Perfil   Secretário ', requisito: { tipo: 'cargo', id: cargo.id },
       acoes: ['AUDITORIA_CONSULTAR', 'PESSOAS_CONSULTAR'], fundamento };
     await http(presidente, 'get', modelos).expect(403);
@@ -183,6 +193,7 @@ integration('Base de autorização por conta e por igreja', () => {
     await http(admin, 'post', modelos).send({ ...entrada, nome: 'perfil secretário' }).expect(409);
     expect((await http(presidente, 'get', modelos).expect(200)).body).toMatchObject({ pode_criar: false, modelos: [expect.objectContaining({ id: modeloCriado.id })] });
     expect((await http(outroAdmin, 'get', modelos).expect(200)).body.modelos).toEqual([]);
+    expect((await http(admin, 'get', '/autorizacao/navegacao').expect(200)).body.perfis_atuacao).toEqual([]);
 
     const rota = modelos + '/' + modeloCriado.id + '/concessoes';
     const previa = (operador: string, usuario_id: string) => http(operador, 'post', rota + '/previa').send({ usuario_id });
@@ -202,6 +213,7 @@ integration('Base de autorização por conta e por igreja', () => {
     const { body: { id: concessao } } = await aplicar(presidente, proposta.previa).expect(201);
     await aplicar(admin, proposta.previa).expect(409);
     await http(conta, 'get', '/pessoas').expect(200);
+    expect((await http(conta, 'get', '/autorizacao/navegacao').expect(200)).body.perfis_atuacao).toEqual(['Perfil Secretário']);
     const ato = await db.evento_autorizacao.findFirstOrThrow({ where: { recurso_id: concessao, acao: 'ATRIBUIR_MODELO_ATUACAO' } });
     expect(ato.operador_id).toBe(presidente);
     expect(ato.dados).toMatchObject({ qualificacao_id: ocupacao.id, acoes: ['PESSOAS_CONSULTAR'] });
@@ -212,18 +224,21 @@ integration('Base de autorização por conta e por igreja', () => {
     const revogar = '/autorizacao/concessoes-modelo/' + concessao + '/revogar';
     await http(presidente, 'post', revogar).send({ fundamento }).expect(201);
     await http(conta, 'get', '/pessoas').expect(403);
+    expect((await http(conta, 'get', '/autorizacao/navegacao').expect(200)).body.perfis_atuacao).toEqual([]);
     expect((await me(conta)).servicos_propostos).toContainEqual(expect.objectContaining({ acao: 'AUDITORIA_CONSULTAR', permite: true }));
 
     const { body: nova } = await previa(admin, conta).expect(201);
     const respostas = await Promise.all([aplicar(admin, nova.previa), aplicar(revisor, nova.previa)]);
     expect(respostas.map(r => r.status).sort()).toEqual([201, 409]);
     const requisitoRegente = { tipo: 'oficio', oficio: 'PRESBITERO_REGENTE' };
-    const perfilComposto = { nome: 'Perfil Secretário ou Regente', acoes: ['FAMILIAS_CONSULTAR'], fundamento };
+    const perfilComposto = { nome: 'Perfil Secretário ou Regente', acoes: ['FAMILIAS_CONSULTAR'] };
     await http(admin, 'post', modelos).send({ ...perfilComposto, requisitos: [] }).expect(400);
     await http(admin, 'post', modelos).send({ ...perfilComposto, requisitos: [requisitoRegente, requisitoRegente] }).expect(400);
     await http(outroAdmin, 'post', modelos).send({ ...perfilComposto, requisitos: [requisitoRegente, entrada.requisito] }).expect(404);
     const { body: perfilRegente } = await http(admin, 'post', modelos).send({ ...perfilComposto,
       requisitos: [entrada.requisito, requisitoRegente] }).expect(201);
+    expect(await db.evento_autorizacao.findFirst({ where: { recurso_id: perfilRegente.id, acao: 'SALVAR_MODELO_ATUACAO' } }))
+      .toMatchObject({ operador_id: admin, fundamento: 'Criação de perfil de acesso' });
     const listagem = (await http(admin, 'get', modelos).expect(200)).body.modelos;
     expect(listagem.find(m => m.id === perfilRegente.id).requisitos).toEqual([expect.stringContaining(cargo.nome), 'Mandato de presbítero regente']);
     expect(listagem.find(m => m.id === modeloCriado.id).requisitos).toEqual([expect.stringContaining(cargo.nome)]);
@@ -238,6 +253,7 @@ integration('Base de autorização por conta e por igreja', () => {
     await http(conta, 'get', '/pessoas').expect(403);
     const { body: navegacao } = await http(conta, 'get', '/autorizacao/navegacao').expect(200);
     expect(navegacao.permissoes.pessoas).not.toContain('view');
+    expect(navegacao.perfis_atuacao).toEqual([]);
     await previa(admin, conta).expect(400);
     expect((await me(conta)).servicos_propostos).toContainEqual(expect.objectContaining({ acao: 'FAMILIAS_CONSULTAR', permite: false }));
     await http(admin, 'post', '/autorizacao/concessoes-modelo/' + concessaoComposta.id + '/revogar').send({ fundamento }).expect(201);
@@ -247,6 +263,7 @@ integration('Base de autorização por conta e por igreja', () => {
     expect(regente.requisito).toBe('Mandato de presbítero regente');
     await http(admin, 'post', rotaRegente).send({ usuario_id: conta, previa: regente.previa, fundamento }).expect(201);
     expect((await me(conta)).servicos_propostos).toContainEqual(expect.objectContaining({ acao: 'FAMILIAS_CONSULTAR', permite: true }));
+    expect((await http(conta, 'get', '/autorizacao/navegacao').expect(200)).body.perfis_atuacao).toEqual(['Perfil Secretário ou Regente']);
     await db.mandato_oficial.update({ where: { id: mandato.id }, data: { termino_efetivo: new Date(hoje.getTime() - 86_400_000),
       motivo_encerramento: 'Término registrado em ata de ensaio' } });
     expect((await me(conta)).servicos_propostos).toContainEqual(expect.objectContaining({ acao: 'FAMILIAS_CONSULTAR', permite: false }));

@@ -176,7 +176,13 @@ export class ContasAutorizacaoService {
         geracao_vinculo: u.geracao_vinculo, revogado_em: null } }) : [];
       const vigentes = registros.filter(r => r.inicio <= agora && (!r.fim || r.fim > agora) &&
         servicos.safeParse(r.acao).success && compativel(u.perfil, r.acao as Servico));
-      const ativos = new Set((await filtrarAtribuicoesDeModelos(tx, u, vigentes, agora)).map(r => r.acao as Servico));
+      const efetivas = await filtrarAtribuicoesDeModelos(tx, u, vigentes, agora);
+      const ativos = new Set(efetivas.map(r => r.acao as Servico));
+      const concessoes = [...new Set(efetivas.flatMap(r => r.concessao_modelo_id ? [r.concessao_modelo_id] : []))];
+      const perfis = concessoes.length ? await tx.modelo_atribuicoes.findMany({
+        where: { igreja_id: u.igreja_id, concessoes: { some: { id: { in: concessoes } } } },
+        select: { nome: true }, orderBy: { nome_normalizado: 'asc' },
+      }) : [];
       const rotas = comum ? [] : this.rotas.listar().filter(r => r.perfis.includes(u.perfil));
       const permissoes: Record<string, string[]> = {};
       for (const [modulo, acoes] of Object.entries(gruposServico)) {
@@ -215,7 +221,7 @@ export class ContasAutorizacaoService {
           modos.get('AUTORIZACOES_FINANCEIRAS_REGISTRAR') === 'ATRIBUICAO' ||
           ['ADMINISTRADOR','GESTOR','TESOUREIRO'].includes(u.perfil));
       }
-      return { permissoes, mandatos_legados: !modos.has('MANDATOS_REGISTRAR') };
+      return { permissoes, mandatos_legados: !modos.has('MANDATOS_REGISTRAR'), perfis_atuacao: perfis.map(p => p.nome) };
     }, { isolationLevel: 'RepeatableRead' });
   }
 

@@ -32,8 +32,37 @@ export const servicosDeHistorico = [
 ] as const;
 export const servicosAdicionais = ['VINCULOS_DOCUMENTAIS_CONSULTAR', 'VINCULOS_DOCUMENTAIS_REGISTRAR', ...servicosDeHistorico] as const;
 type Valores<T> = T extends unknown ? T[keyof T] : never;
-export type Servico = Valores<(typeof gruposServico)[keyof typeof gruposServico]> |
-  (typeof servicosInstitucionais)[number] | (typeof servicosAdicionais)[number];
+type ModuloServico = keyof typeof gruposServico;
+type ServicoDeModulo = Valores<(typeof gruposServico)[ModuloServico]>;
+type ServicoComplementar = (typeof servicosInstitucionais)[number] | (typeof servicosAdicionais)[number];
+export type Servico = ServicoDeModulo | ServicoComplementar;
+type AreaServico = 'pessoas-membresia' | 'financeiro' | 'institucional' | 'administracao';
+
+const areasDosModulos: Record<ModuloServico, AreaServico> = {
+  pessoas: 'pessoas-membresia', 'grupos-familiares': 'pessoas-membresia', 'eventos-membresia': 'pessoas-membresia',
+  profissoes: 'pessoas-membresia', tratamentos: 'pessoas-membresia', 'regras-relacao-enum': 'pessoas-membresia',
+  contas: 'financeiro', 'cat-receita': 'financeiro', 'cat-despesa': 'financeiro', receitas: 'financeiro',
+  despesas: 'financeiro', lancamentos: 'financeiro', 'balanco-mensal': 'financeiro', 'autorizacoes-financeiras': 'financeiro',
+  oficiais: 'institucional', orgaos: 'institucional',
+  igreja: 'administracao', usuarios: 'administracao', 'solicitacoes-acesso': 'administracao', logs: 'administracao', acoes: 'administracao',
+};
+const areasComplementares: Record<ServicoComplementar, AreaServico> = {
+  HISTORICO_MEMBRESIA_CONSULTAR: 'pessoas-membresia',
+  HISTORICO_MEMBRESIA_RETIFICAR: 'pessoas-membresia',
+  PRESIDENCIA_CONFERIR: 'institucional',
+  MANDATOS_REGISTRAR: 'institucional',
+  CARGOS_REGISTRAR: 'institucional',
+  VINCULOS_DOCUMENTAIS_CONSULTAR: 'institucional',
+  VINCULOS_DOCUMENTAIS_REGISTRAR: 'institucional',
+  HISTORICO_OFICIAIS_CONSULTAR: 'institucional',
+  HISTORICO_OFICIAIS_REGISTRAR: 'institucional',
+  REVISOES_ELEITORAIS_DECIDIR: 'institucional',
+};
+export const areasServico: Record<Servico, AreaServico> = {
+  ...Object.fromEntries((Object.keys(gruposServico) as ModuloServico[]).flatMap(modulo =>
+    Object.values(gruposServico[modulo]).map(acao => [acao, areasDosModulos[modulo]]))) as Record<ServicoDeModulo, AreaServico>,
+  ...areasComplementares,
+};
 
 export const servicosDeConsulta = new Set<Servico>([
   ...Object.values(gruposServico).map(g => g.view), 'VINCULOS_DOCUMENTAIS_CONSULTAR',
