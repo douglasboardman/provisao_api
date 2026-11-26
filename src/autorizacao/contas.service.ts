@@ -95,7 +95,7 @@ export class ContasAutorizacaoService {
     return transacaoSerializavel(this.db, async tx => {
       const u = await this.administrador(tx, a);
       const alvo = await this.destinatario(tx, u.igreja_id, id);
-      this.independente(u, alvo);
+      if (u.id !== alvo.id || v.acao !== 'CARGOS_REGISTRAR') this.independente(u, alvo);
       if (!alvo.ativo || !compativel(alvo.perfil, v.acao)) throw new BadRequestException('Serviço incompatível com a conta.');
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id=${id} FOR UPDATE`;
       const where = { usuario_id: id, igreja_id: u.igreja_id, geracao_vinculo: alvo.geracao_vinculo, acao: v.acao, revogado_em: null };

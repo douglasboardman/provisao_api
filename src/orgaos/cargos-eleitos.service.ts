@@ -31,7 +31,7 @@ export class CargosEleitosService {
     const conta = await contaDaSessao(tx, ator);
     const decisao = await decidirServico(tx, conta, 'CARGOS_REGISTRAR');
     if (!conta.pessoa_id || !decisao.permite) throw new ForbiddenException('Atribuição vigente de registro de cargos necessária.');
-    return { pessoa: conta.pessoa_id, atribuicao: decisao.origem! };
+    return { pessoa: conta.pessoa_id, atribuicao: decisao.origem!, podeRegistrarParaSi: conta.perfil === 'ADMINISTRADOR' };
   }
 
   private async escopoAtas(tx: Tx, ator: AtorSecretaria, orgao: string, hoje: string) {
@@ -66,7 +66,8 @@ export class CargosEleitosService {
       const idsPosse = naPosse.membros.filter(m => !m.revisao_pendente && idsEleicao.has(m.pessoa_id)).map(m => m.pessoa_id);
       const tesouraria = tipo === 'CONSELHO' && (cargo.codigo === 'TESOUREIRO' || cargo.funcao === 'TESOUREIRO');
       const diaPosse = data(posse);
-      const candidatos = await tx.pessoas.findMany({ where: { igreja_id, id: { equals: pessoa_id, not: operador.pessoa,
+      const candidatos = await tx.pessoas.findMany({ where: { igreja_id, id: { equals: pessoa_id,
+        ...(!operador.podeRegistrarParaSi && { not: operador.pessoa }),
         ...(tesouraria ? { notIn: [...naEleicao.situacao_indeterminada, ...naPosse.situacao_indeterminada,
           ...naEleicao.membros.filter(m => m.revisao_pendente).map(m => m.pessoa_id), ...naPosse.membros.filter(m => m.revisao_pendente).map(m => m.pessoa_id)] } : { in: idsPosse }) },
         ...(busca && { nome_completo: { contains: busca, mode: 'insensitive' } }),
@@ -115,7 +116,7 @@ export class CargosEleitosService {
       const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', ...(v.comprovacao && ator?.perfil === 'COMUM' ? ['COMUM' as const] : [])] } }, select: { id: true, pessoa_id: true } });
       if (!operador) throw new ForbiddenException('Operador não autorizado.');
       const poder = v.comprovacao ? await this.poder(tx, igrejaId, usuarioId, ator) : null;
-      if (operador.pessoa_id === v.pessoa_id) throw new ForbiddenException('O titular exige registro por outra pessoa.');
+      if (operador.pessoa_id === v.pessoa_id && !poder?.podeRegistrarParaSi) throw new ForbiddenException('O titular exige registro por outra pessoa.');
       const hoje = await hojeDaIgreja(tx, igrejaId);
       const anterior = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, orgao: orgaoId, idempotencia, tipo: 'ELEICAO_CARGO', hash }, 'ocupacao_id');
       if (anterior) return anterior;

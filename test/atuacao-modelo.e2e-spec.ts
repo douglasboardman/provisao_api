@@ -1211,4 +1211,45 @@ integration('Atuação institucional por modelo', () => {
     }
   },60000);
 
+  it('permite ao administrador registrar o próprio cargo com atribuição vigente, exercício e ata', async () => {
+    const { orgao_id } = await db.contexto_secretaria.findUniqueOrThrow({ where: { id: contextoConselho } });
+    const pessoa = await db.pessoas.create({ data: { igreja_id: igreja, nome_completo: 'Administrador presbítero', sexo: 'MASCULINO', data_nascimento: inicio } });
+    const admin = await db.usuarios.create({ data: { igreja_id: igreja, pessoa_id: pessoa.id, nome_usuario: 'Administrador presbítero',
+      perfil: 'ADMINISTRADOR', email_login: randomUUID() + '@example.invalid', senha_hash: 'inutilizavel' } });
+    const cookie = 'provisao_session=' + await app.get(SessionService).create(admin.id, igreja, 0);
+    const http = (verbo: 'get' | 'post', rota: string) => request(app.getHttpServer())[verbo](rota)
+      .set('Cookie', cookie).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1');
+    const vaga = await db.cargo_orgao.create({ data: { igreja_id: igreja, orgao_id: orgao_id!, codigo: 'TESTE_REGISTRO_ADMIN', nome: 'Secretário adjunto' } });
+    const rota = '/orgaos/gestao/' + orgao_id + '/cargos/' + vaga.id;
+    const candidatos = () => http('get', rota + '/candidatos').query({ eleicao: dia, posse: dia, pessoa_id: pessoa.id });
+    const ficha = () => http('get', '/orgaos/' + orgao_id).query({ data: dia }).expect(200);
+    const atribuir = (acao: string) => http('post', '/autorizacao/contas/' + admin.id + '/atribuicoes')
+      .send({ acao, inicio: inicio.toISOString(), fim: null, fundamento: 'Registro dos atos do Conselho' });
+    const prova = { versao_id: ataCargo, trecho: 'Item sobre a eleição e a posse' };
+    const dados = { pessoa_id: pessoa.id, data_eleicao: dia, data_posse: dia, termino_previsto: dia, autoridade: 'Conselho', evidencia: prova.trecho };
+    const registrar = (corpo: object) => http('post', rota + '/eleicao-oficial').send({ ...corpo, idempotencia: randomUUID() });
+    expect((await ficha()).body).toMatchObject({ pode_registrar_cargos: false, preparo_registro_cargos: 'HABILITAR_SERVICO' });
+    await candidatos().expect(403);
+    const comprovado = { ...dados, comprovacao: { eleicao: prova, posse: prova } };
+    await registrar(comprovado).expect(403);
+    await atribuir('MANDATOS_REGISTRAR').expect(403);
+    const atribuicao = (await atribuir('CARGOS_REGISTRAR').expect(201)).body;
+    expect((await ficha()).body).toMatchObject({ pode_registrar_cargos: true });
+    expect((await candidatos().expect(200)).body).toEqual([]);
+    await registrar(comprovado).expect(400);
+    await db.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: pessoa.id, data_evento: inicio, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE' } });
+    const oficial = await db.oficial.create({ data: { igreja_id: igreja, pessoa_id: pessoa.id, tipo: 'PRESBITERO_REGENTE' } });
+    await db.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: oficial.id, tipo: 'ORDENACAO', data_efeito: inicio, ordem: 1, autoridade: 'Concílio', evidencia: 'Ata' } });
+    await db.mandato_oficial.create({ data: { igreja_id: igreja, oficial_id: oficial.id, data_eleicao: inicio, data_posse: inicio,
+      termino_previsto: new Date('2029-12-31'), autoridade: 'Assembleia', evidencia: 'Ata', avaliacao_eleicao: {} } });
+    expect((await candidatos().expect(200)).body).toEqual([expect.objectContaining({ id: pessoa.id })]);
+    await registrar(dados).expect(403);
+    const registro = (await registrar(comprovado).expect(201)).body;
+    const ato = await db.ato_orgao.findFirstOrThrow({ where: { igreja_id: igreja, operador_id: admin.id, tipo: 'ELEICAO_CARGO' } });
+    expect(ato.detalhes).toMatchObject({ ocupacao_id: registro.ocupacao_id, atribuicao_id: atribuicao.id });
+    expect(await db.referencia_ata_institucional.count({ where: { igreja_id: igreja, ato_orgao_id: ato.id, versao_id: ataCargo } })).toBe(2);
+    await http('post', '/autorizacao/atribuicoes/' + atribuicao.id + '/revogar').send({ fundamento: 'Fim do serviço' }).expect(201);
+    await candidatos().expect(403);
+  });
+
 });

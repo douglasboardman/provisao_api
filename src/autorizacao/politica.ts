@@ -37,6 +37,7 @@ export function compativel(perfil: usuarios_perfil, acao: Servico) {
   if ((servicosDeHistorico as readonly Servico[]).includes(acao))
     return ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', 'COMUM'].includes(perfil) ||
       perfil === 'AUDITOR' && servicosDeConsulta.has(acao);
+  if (acao === 'CARGOS_REGISTRAR' && perfil === 'ADMINISTRADOR') return true;
   if (acao === 'MANDATOS_REGISTRAR' || acao === 'CARGOS_REGISTRAR') return perfil === 'COMUM' || perfil === 'GESTOR' || perfil === 'SECRETARIO';
   if (acao === 'PRESIDENCIA_CONFERIR') return perfil === 'ADMINISTRADOR';
   return perfil !== 'AUDITOR' || servicosDeConsulta.has(acao);
