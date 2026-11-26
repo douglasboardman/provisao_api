@@ -51,9 +51,9 @@ export class CargosEleitosService {
   }
 
   candidatos(ator: AtorSecretaria & Ator, orgaoId: string, cargoId: string, filtros: unknown) {
-    const parsed = z.strictObject({ eleicao: dia, posse: dia, busca: z.string().trim().max(100).optional() }).safeParse(filtros);
+    const parsed = z.strictObject({ eleicao: dia, posse: dia, busca: z.string().trim().max(100).optional(), pessoa_id: z.uuid().optional() }).safeParse(filtros);
     if (!parsed.success || parsed.data.eleicao > parsed.data.posse) throw new BadRequestException('Confira as datas da eleição e da posse.');
-    const { eleicao, posse, busca } = parsed.data;
+    const { eleicao, posse, busca, pessoa_id } = parsed.data;
     return this.prisma.$transaction(async tx => {
       const igreja_id = ator.igreja_id;
       const operador = await this.poder(tx, igreja_id, ator.sub, ator);
@@ -66,7 +66,7 @@ export class CargosEleitosService {
       const idsPosse = naPosse.membros.filter(m => !m.revisao_pendente && idsEleicao.has(m.pessoa_id)).map(m => m.pessoa_id);
       const tesouraria = tipo === 'CONSELHO' && (cargo.codigo === 'TESOUREIRO' || cargo.funcao === 'TESOUREIRO');
       const diaPosse = data(posse);
-      const candidatos = await tx.pessoas.findMany({ where: { igreja_id, id: { not: operador.pessoa,
+      const candidatos = await tx.pessoas.findMany({ where: { igreja_id, id: { equals: pessoa_id, not: operador.pessoa,
         ...(tesouraria ? { notIn: [...naEleicao.situacao_indeterminada, ...naPosse.situacao_indeterminada,
           ...naEleicao.membros.filter(m => m.revisao_pendente).map(m => m.pessoa_id), ...naPosse.membros.filter(m => m.revisao_pendente).map(m => m.pessoa_id)] } : { in: idsPosse }) },
         ...(busca && { nome_completo: { contains: busca, mode: 'insensitive' } }),
