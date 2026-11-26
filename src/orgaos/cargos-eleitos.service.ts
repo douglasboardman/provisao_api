@@ -140,7 +140,7 @@ export class CargosEleitosService {
       const anterior = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, orgao: orgaoId, idempotencia, tipo: 'ELEICAO_CARGO', hash }, 'ocupacao_id');
       if (anterior) return anterior;
       if (v.data_eleicao > hoje || v.data_eleicao > v.data_posse || (v.data_posse < hoje && !v.comprovacao?.confirmar_historico) || (!v.comprovacao && v.data_posse !== hoje))
-        throw new BadRequestException('Confira a data da eleição e da posse. Posse passada exige revisão de impacto.');
+        throw new BadRequestException('Confira as datas e confirme o registro histórico para uma posse anterior a hoje.');
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
       const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, ativo: true, tipo: { in: ['CONSELHO', 'JUNTA'] } } });
       if (!orgao || (orgao.tipo !== 'CONSELHO' && orgao.tipo !== 'JUNTA')) throw new NotFoundException('Órgão oficial não encontrado.');
@@ -165,24 +165,6 @@ export class CargosEleitosService {
         provas = { eleicao: await this.ata(tx, escopo, v.comprovacao.eleicao), posse: await this.ata(tx, escopo, v.comprovacao.posse) };
         if (+provas.eleicao.data !== +data(v.data_eleicao) || provas.posse.data < provas.eleicao.data)
           throw new BadRequestException('Confira a data da eleição e a ata que documenta a posse.');
-        if (historico) {
-          const janela = { gte: data(v.data_posse), lte: data(v.termino_previsto < hoje ? v.termino_previsto : hoje) };
-          const [documento, ato] = await Promise.all([
-            tx.documento_versao.findFirst({ where: { igreja_id: igrejaId, data_documento: janela,
-              documento_id: { notIn: [provas.eleicao.documento_id, provas.posse.documento_id] },
-              documento: { estado: { notIn: ['CANCELADO','ANULADO'] }, contexto: { orgao_id: orgaoId } } }, select: { id: true } }),
-            tx.ato_orgao.findFirst({ where: { orgao_id: orgaoId, igreja_id: igrejaId, data_efeito: janela,
-              tipo: { in: ['ELEICAO_CARGO','ENCERRAMENTO_CARGO'] } }, select: { id: true } }),
-          ]);
-          if (documento || ato) throw new ConflictException('O período histórico cruza atos ou documentos já registrados e exige revisão institucional antes da inclusão.');
-        }
-        if (v.comprovacao.sucede_id) {
-          const anterior = await tx.ocupacao_cargo.findFirst({ where: { id: v.comprovacao.sucede_id, igreja_id: igrejaId, orgao_id: orgaoId, cargo_id: cargoId } });
-          const fim = anterior?.fim ?? anterior?.termino_previsto;
-          if (!anterior || !fim || (anterior.fim ? fim > data(v.data_posse) : fim >= data(v.data_posse)))
-            throw new BadRequestException('A posse deve respeitar o encerramento ou o término do titular anterior.');
-          continuidade = anterior.pessoa_id === v.pessoa_id ? 'REELEICAO' : 'SUCESSAO';
-        }
       }
       const ordem = await ordemDoAto(tx, igrejaId, orgaoId, data(v.data_posse), v.ordem_efeito);
       const cargo = await tx.cargo_orgao.findFirst({ where: { id: cargoId, orgao_id: orgaoId, igreja_id: igrejaId, ativo: true } });
@@ -221,6 +203,23 @@ export class CargosEleitosService {
           throw new BadRequestException('Exercício institucional indisponível no término previsto.');
       }
       const dataPosse = data(v.data_posse), terminoPrevisto = data(v.termino_previsto);
+      const escopoCargo = { igreja_id: igrejaId, orgao_id: orgaoId, cargo_id: cargoId };
+      let antecessorId: string | null = null;
+      if (provas) {
+        const anterior = await tx.ocupacao_cargo.findFirst({
+          where: { ...escopoCargo, OR: [{ inicio: { lt: dataPosse } }, { inicio: dataPosse, inicio_ordem: { lt: ordem } }] },
+          orderBy: [{ inicio: 'desc' }, { inicio_ordem: 'desc' }],
+        });
+        if (v.comprovacao?.sucede_id && v.comprovacao.sucede_id !== anterior?.id)
+          throw new ConflictException('O titular anterior mudou. Confira o histórico deste cargo.');
+        if (anterior) {
+          if (anterior.pessoa_id !== v.pessoa_id && (!anterior.fim || anterior.fim > dataPosse ||
+              (+anterior.fim === +dataPosse && anterior.fim_ordem! >= ordem)))
+            throw new ConflictException('Registre o encerramento do titular anterior deste cargo antes da nova posse. A ocupação está no Histórico do órgão.');
+          antecessorId = anterior.id;
+          continuidade = anterior.pessoa_id === v.pessoa_id ? 'REELEICAO' : 'SUCESSAO';
+        }
+      }
       const colisao = await tx.ocupacao_cargo.findFirst({ where: { igreja_id: igrejaId, orgao_id: orgaoId, cargo_id: cargoId,
         inicio: { lte: terminoPrevisto }, AND: [
           { OR: [{ fim: null }, { fim: { gt: dataPosse } }, { fim: dataPosse, fim_ordem: { gt: ordem } }] },
@@ -230,7 +229,7 @@ export class CargosEleitosService {
       const outras = await tx.ocupacao_cargo.findMany({ where: { igreja_id: igrejaId, orgao_id: orgaoId, pessoa_id: v.pessoa_id, cargo_id: { not: cargoId }, inicio: { lte: data(v.termino_previsto) }, AND: [{ OR: [{ fim: null }, { fim: { gt: data(v.data_posse) } }, { fim: data(v.data_posse), fim_ordem: { gt: ordem } }] }, { OR: [{ termino_previsto: null }, { termino_previsto: { gte: data(v.data_posse) } }] }] }, include: { cargo: { select: { permite_acumulacao: true } } } });
       if (outras.length && (!cargo.permite_acumulacao || outras.some(o => !o.cargo.permite_acumulacao))) throw new BadRequestException('Acumulação não autorizada para os cargos.');
       const ocupacao = await tx.ocupacao_cargo.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, cargo_id: cargoId, pessoa_id: v.pessoa_id, inicio: data(v.data_posse), inicio_ordem: ordem, termino_previsto: data(v.termino_previsto) } });
-      const ato = await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, operador_id: usuarioId, tipo: 'ELEICAO_CARGO', data_efeito: data(v.data_posse), autoridade: v.autoridade ?? orgao.nome, evidencia: v.evidencia ?? `Ata da eleição de ${v.data_eleicao}`, idempotencia, hash_requisicao: hash, detalhes: { ordem_efeito: ordem, cargo_id: cargoId, ocupacao_id: ocupacao.id, data_eleicao: v.data_eleicao, termino_previsto: v.termino_previsto, oficial_na_posse: oficialNaPosse, ...(versaoId && { versao_orgao_id: versaoId, atribuicao_id: poder!.atribuicao, sucede_id: v.comprovacao?.sucede_id ?? null, continuidade, transcricao_historica: historico }) } } });
+      const ato = await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, operador_id: usuarioId, tipo: 'ELEICAO_CARGO', data_efeito: data(v.data_posse), autoridade: v.autoridade ?? orgao.nome, evidencia: v.evidencia ?? `Ata da eleição de ${v.data_eleicao}`, idempotencia, hash_requisicao: hash, detalhes: { ordem_efeito: ordem, cargo_id: cargoId, ocupacao_id: ocupacao.id, data_eleicao: v.data_eleicao, termino_previsto: v.termino_previsto, oficial_na_posse: oficialNaPosse, ...(versaoId && { versao_orgao_id: versaoId, atribuicao_id: poder!.atribuicao, sucede_id: antecessorId, continuidade, transcricao_historica: historico }) } } });
       if (provas) {
         await this.referenciar(tx, igrejaId, usuarioId, ato.id, 'ELEICAO', provas.eleicao);
         await this.referenciar(tx, igrejaId, usuarioId, ato.id, 'POSSE', provas.posse);
@@ -257,7 +256,7 @@ export class CargosEleitosService {
       const poder = v.comprovacao ? await this.poder(tx, igrejaId, usuarioId, ator) : null;
       const anterior = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, orgao: orgaoId, idempotencia, tipo: 'ENCERRAMENTO_CARGO', hash }, 'ocupacao_id');
       if (anterior) return anterior;
-      if (v.comprovacao ? v.data_efeito < hoje : v.data_efeito !== hoje) throw new BadRequestException('Encerramento retroativo exige revisão de impacto.');
+      if (!v.comprovacao && v.data_efeito !== hoje) throw new BadRequestException('Informe a ata para registrar o encerramento em outra data.');
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
       const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, tipo: { in: ['CONSELHO', 'JUNTA'] } }, select: { id: true, ativo: true, tipo_padrao: true, tipo: true } });
       if (!orgao) throw new NotFoundException('Órgão oficial não encontrado.');
@@ -267,11 +266,20 @@ export class CargosEleitosService {
       const atoEleicao = await tx.ato_orgao.findFirst({ where: { igreja_id: igrejaId, orgao_id: orgaoId, tipo: 'ELEICAO_CARGO',
         detalhes: { path: ['ocupacao_id'], equals: ocupacao.id } }, select: { detalhes: true } });
       const temComprovacao = !!(atoEleicao?.detalhes as { versao_orgao_id?: string } | null)?.versao_orgao_id;
-      if (((temComprovacao || ator && orgao.tipo_padrao === orgao.tipo && recursoDaIgreja('secretaria', igrejaId)) && !poder) || poder?.pessoa === ocupacao.pessoa_id)
-        throw new ForbiddenException('O encerramento exige ata e operador autorizado distinto do titular.');
+      if (((temComprovacao || ator && orgao.tipo_padrao === orgao.tipo && recursoDaIgreja('secretaria', igrejaId)) && !poder) || (poder?.pessoa === ocupacao.pessoa_id && !poder.podeRegistrarParaSi))
+        throw new ForbiddenException('O encerramento exige ata e permissão para registrar este ato.');
       const provaFim = v.comprovacao ? await this.ata(tx, await this.escopoAtas(tx, ator!, orgaoId, hoje), v.comprovacao) : null;
-      if (provaFim && provaFim.data > efeito) throw new BadRequestException('A ata deve comprovar o encerramento até a data do efeito.');
-      if (ocupacao.fim || (ocupacao.inicio > efeito || (ocupacao.inicio.getTime() === efeito.getTime() && ocupacao.inicio_ordem >= ordem)) || (ocupacao.termino_previsto ? ocupacao.termino_previsto < efeito : !poder)) throw new BadRequestException('Ocupação não está vigente ou exige ordenação do mesmo dia.');
+      if (ocupacao.fim || (ocupacao.inicio > efeito || (ocupacao.inicio.getTime() === efeito.getTime() && ocupacao.inicio_ordem >= ordem)) || (!poder && (!ocupacao.termino_previsto || ocupacao.termino_previsto < efeito))) throw new BadRequestException('Ocupação não está vigente ou exige ordenação do mesmo dia.');
+      if (ocupacao.termino_previsto && +efeito > +ocupacao.termino_previsto + 86_400_000)
+        throw new BadRequestException('A data de encerramento deve respeitar o período da ocupação. Informe quando o titular deixou o cargo.');
+      const sucessor = await tx.ocupacao_cargo.findFirst({ where: {
+        igreja_id: igrejaId, orgao_id: orgaoId, cargo_id: ocupacao.cargo_id,
+        AND: [
+          { OR: [{ inicio: { gt: ocupacao.inicio } }, { inicio: ocupacao.inicio, inicio_ordem: { gt: ocupacao.inicio_ordem } }] },
+          { OR: [{ inicio: { lt: efeito } }, { inicio: efeito, inicio_ordem: { lte: ordem } }] },
+        ],
+      }, select: { id: true } });
+      if (sucessor) throw new ConflictException('O encerramento deve anteceder a posse seguinte neste cargo.');
       await tx.ocupacao_cargo.update({ where: { id: ocupacao.id }, data: { fim: efeito, fim_ordem: ordem } });
       const ato = await tx.ato_orgao.create({ data: { igreja_id: igrejaId, orgao_id: orgaoId, operador_id: usuarioId, tipo: 'ENCERRAMENTO_CARGO', data_efeito: efeito, autoridade: v.autoridade, evidencia: v.evidencia, idempotencia, hash_requisicao: hash, detalhes: { ordem_efeito: ordem, ocupacao_id: ocupacao.id, motivo: v.motivo } } });
       if (provaFim) await this.referenciar(tx, igrejaId, usuarioId, ato.id, 'ATO', provaFim);

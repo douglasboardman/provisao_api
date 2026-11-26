@@ -232,7 +232,7 @@ integration('Atuação institucional por modelo', () => {
     }
   });
 
-  it('só transcreve uma posse histórica se o período estiver livre de atos ou documentos afetados', async () => {
+  it('registra eleição histórica com atas posteriores e exige encerramento autorizado para trocar de titular', async () => {
     const c = await db.contexto_secretaria.findUniqueOrThrow({ where: { id: contextoConselho } });
     const segundo = await db.cargo_orgao.findFirstOrThrow({ where: { igreja_id: igreja, orgao_id: c.orgao_id, codigo: 'SEGUNDO_SECRETARIO' } });
     const original = await db.documento_versao.findUniqueOrThrow({ where: { id: ataCargo } });
@@ -248,9 +248,36 @@ integration('Atuação institucional por modelo', () => {
         autoridade: 'Conselho', evidencia: 'Ata', idempotencia: randomUUID(),
         comprovacao: { eleicao: prova, posse: prova, ...(confirmar && { confirmar_historico: true }) } });
     await enviar(false,'2025-04-01').expect(400);
-    await ata('2025-05-01');
+    const ataPosterior = await ata('2025-05-01');
+    const registro = (await enviar(true,'2025-06-01').expect(201)).body;
     await enviar(true,'2025-06-01').expect(409);
-    const registro = (await enviar(true,'2025-04-01').expect(201)).body;
+
+    const responsavel = await operador('Responsável pela sucessão');
+    const sucessao = { pessoa_id: pPastor, data_eleicao: '2025-05-01', data_posse: '2025-06-02',
+      termino_previsto: '2025-12-31', idempotencia: randomUUID(), comprovacao: { confirmar_historico: true,
+        eleicao: { versao_id: ataPosterior.id }, posse: { versao_id: ataPosterior.id } } };
+    const rota = '/orgaos/gestao/' + c.orgao_id;
+    const pedido = (verbo: 'post' | 'patch', caminho: string) => request(app.getHttpServer())[verbo](rota + caminho)
+      .set('Cookie', cookies.get(responsavel.usuario)!).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1');
+    const substituir = () => pedido('post', '/cargos/' + segundo.id + '/eleicao-oficial').send(sucessao);
+    const fim = { data_efeito: '2025-06-02', idempotencia: randomUUID(), autoridade: 'Conselho', evidencia: 'Ata da troca',
+      motivo: 'Sucessão', comprovacao: { versao_id: (await ata('2025-06-10')).id, trecho: 'Mudança da mesa' } };
+    const encerrar = () => pedido('patch', '/ocupacoes/' + registro.ocupacao_id + '/encerrar-oficial').send(fim);
+    await substituir().expect(403);
+    await encerrar().expect(403);
+    await db.atribuicao_servico.create({ data: { igreja_id: igreja, usuario_id: responsavel.usuario,
+      pessoa_id: responsavel.pessoa, geracao_vinculo: 0, acao: 'CARGOS_REGISTRAR', inicio } });
+    await substituir().expect(409);
+    await encerrar().expect(200);
+    await encerrar().expect(200);
+    const nova = (await substituir().expect(201)).body;
+    await substituir().expect(201, nova);
+    const anterior = await db.ocupacao_cargo.findUniqueOrThrow({ where: { id: registro.ocupacao_id } });
+    const seguinte = await db.ocupacao_cargo.findUniqueOrThrow({ where: { id: nova.ocupacao_id } });
+    expect(anterior.fim).toEqual(seguinte.inicio);
+    expect(anterior.fim_ordem).toBeLessThan(seguinte.inicio_ordem);
+    expect(await db.ato_orgao.findUniqueOrThrow({ where: { id: nova.ato_id } }))
+      .toMatchObject({ operador_id: responsavel.usuario, detalhes: { continuidade: 'SUCESSAO', sucede_id: anterior.id } });
     expect(await db.ato_orgao.findUniqueOrThrow({ where: { id: registro.ato_id }, select: { detalhes: true } }))
       .toMatchObject({ detalhes: { transcricao_historica: true, versao_orgao_id: expect.any(String) } });
   });
@@ -781,7 +808,10 @@ integration('Atuação institucional por modelo', () => {
       };
       const operacional = await contaComum(true), alternativa = await contaComum(false);
       expect((await chamada(operacional, 'get', 'contextos').expect(200)).body.map(c => c.id)).toEqual(expect.arrayContaining([c.id, contexto]));
-      expect((await chamada(alternativa, 'get', 'contextos').expect(200)).body).toEqual([]);
+      const contextosAlternativa = (await chamada(alternativa, 'get', 'contextos').expect(200)).body;
+      expect(contextosAlternativa.map(c => c.id).sort()).toEqual([c.id, contexto].sort());
+      for (const contextoLeitura of contextosAlternativa)
+        expect(contextoLeitura).toMatchObject({ somente_atas: true, pode_preparar: false, pode_aprovar: false });
       const modelosAssembleia = await chamada(operacional,'get','modelos?contexto='+contexto).expect(200);
       expect(modelosAssembleia.body.some(m => m.permissoes.criar)).toBe(false);
       const livro = (await chamada(secretario, 'post','livros').send({ contexto_id:c.id, serie:'ATA_PADRAO', numero:7, modalidade:'PARA_ENCADERNACAO',
