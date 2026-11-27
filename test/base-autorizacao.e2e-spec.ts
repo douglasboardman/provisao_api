@@ -61,7 +61,8 @@ integration('Base de autorização por conta e por igreja', () => {
   it('compara a regra legada e aplica a atribuição na conta comum', async () => {
     await http(admin,'get','/pessoas').expect(200);
     await http(comum,'get','/pessoas').expect(403);
-    const r = await conceder(comum).expect(201);
+    const r = await http(admin, 'post', '/autorizacao/contas/' + comum + '/atribuicoes')
+      .send({ acao: 'PESSOAS_CONSULTAR', inicio: antes.toISOString(), fim: null }).expect(201);
     expect((await me(comum)).servicos_propostos).toContainEqual(expect.objectContaining({ acao: 'PESSOAS_CONSULTAR', permite: true }));
     await http(comum,'get','/pessoas').expect(200);
     await http(comum,'get','/contas').expect(403);
@@ -70,8 +71,13 @@ integration('Base de autorização por conta e por igreja', () => {
       dados: expect.objectContaining({ legado: false, proposta: true, origem_proposta: r.body.id }) }));
     expect(eventos).toContainEqual(expect.objectContaining({ destinatario_id: admin, fundamento: 'SEM_ATRIBUICAO',
       dados: expect.objectContaining({ legado: true, proposta: false }) }));
-    await http(admin,'post','/autorizacao/atribuicoes/'+r.body.id+'/revogar').send({ fundamento }).expect(201);
+    await http(admin,'post','/autorizacao/atribuicoes/'+r.body.id+'/revogar').send({}).expect(201);
     expect((await me(comum)).servicos_propostos).toContainEqual(expect.objectContaining({ acao: 'PESSOAS_CONSULTAR', permite: false, motivo: 'ATRIBUICAO_REVOGADA' }));
+    const historico = await db.evento_autorizacao.findMany({ where: { igreja_id: igreja, recurso_id: r.body.id, operador_id: admin } });
+    expect(historico).toEqual(expect.arrayContaining([
+      expect.objectContaining({ acao: 'CONCEDER_SERVICO', fundamento: 'Concessão de atribuição de serviço.', destinatario_id: comum }),
+      expect.objectContaining({ acao: 'REVOGAR_SERVICO', fundamento: 'Revogação de atribuição de serviço.', destinatario_id: comum }),
+    ]));
   });
 
   it('bloqueia autoconcessão pelos dois logins, isolamento, escrita de auditor e autoridade por perfil para assinar', async () => {

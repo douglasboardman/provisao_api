@@ -18,8 +18,9 @@ import { filtrarAtribuicoesDeModelos } from './validade-modelo';
 
 const escolha = z.strictObject({ pessoa_id: z.uuid(), conta_id: z.uuid().nullable(), anterior_id: z.uuid().nullable(), fundamento: fundamento.optional() });
 const concessao = z.strictObject({ acao: servicos, inicio: z.iso.datetime({ offset: true }),
-  fim: z.iso.datetime({ offset: true }).nullable(), fundamento });
+  fim: z.iso.datetime({ offset: true }).nullable(), fundamento: fundamento.optional() });
 const justificativa = z.strictObject({ fundamento });
+const revogacao = justificativa.partial();
 const acoesConversao = z.array(servicos).max(codigosServico.length)
   .refine(v => new Set(v).size === v.length);
 const previaConversao = z.strictObject({ acoes: acoesConversao, competencias: z.array(z.uuid()).max(100).default([])
@@ -105,13 +106,14 @@ export class ContasAutorizacaoService {
       if (await tx.atribuicao_servico.findFirst({ where: { ...where, ...(fim && { inicio: { lt: fim } }),
         OR: [{ fim: null }, { fim: { gt: inicio } }] } })) throw new ConflictException('Já existe atribuição para o período.');
       const r = await tx.atribuicao_servico.create({ data: { ...where, pessoa_id: alvo.pessoa_id!, inicio, fim } });
-      await this.evento(tx, u, 'CONCEDER_SERVICO', r.id, v.fundamento, alvo.pessoa_id, id, { acao: v.acao, inicio: v.inicio, fim: v.fim, escopo: u.igreja_id });
+      await this.evento(tx, u, 'CONCEDER_SERVICO', r.id, v.fundamento ?? 'Concessão de atribuição de serviço.',
+        alvo.pessoa_id, id, { acao: v.acao, inicio: v.inicio, fim: v.fim, escopo: u.igreja_id });
       return { id: r.id };
     }).catch(conflitoConcorrente);
   }
 
   revogar(a: Ator, id: string, body: unknown) {
-    const v = validar(justificativa, body);
+    const v = validar(revogacao, body);
     return transacaoSerializavel(this.db, async tx => {
       const u = await this.administrador(tx, a);
       const r = await tx.atribuicao_servico.findFirst({ where: { id, igreja_id: u.igreja_id } });
@@ -119,7 +121,8 @@ export class ContasAutorizacaoService {
       if (r.concessao_modelo_id) throw new BadRequestException('Revogue a concessão na tela de perfis de acesso.');
       if (!r.revogado_em) {
         await tx.atribuicao_servico.update({ where: { id }, data: { revogado_em: new Date() } });
-        await this.evento(tx, u, 'REVOGAR_SERVICO', id, v.fundamento, r.pessoa_id, r.usuario_id, { acao: r.acao });
+        await this.evento(tx, u, 'REVOGAR_SERVICO', id, v.fundamento ?? 'Revogação de atribuição de serviço.',
+          r.pessoa_id, r.usuario_id, { acao: r.acao });
       }
       return { id };
     });
