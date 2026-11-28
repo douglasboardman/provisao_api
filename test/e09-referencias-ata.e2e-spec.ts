@@ -174,8 +174,8 @@ integracao('E09 – referências documentais', () => {
     prisma = app.get(PrismaService);
     await prisma.igreja.createMany({
       data: [
-        { id: igreja, nome: 'E09' },
-        { id: outraIgreja, nome: 'Outra igreja' },
+        { id: igreja, nome: 'E09', mfa_obrigatorio: false },
+        { id: outraIgreja, nome: 'Outra igreja', mfa_obrigatorio: false },
       ],
     });
     const membroDisciplina = randomUUID(),
@@ -190,7 +190,8 @@ integracao('E09 – referências documentais', () => {
       })),
     });
     for (const [nome, perfil, igreja_id, id] of [
-      ['gestor', 'COMUM', igreja, gestor],
+      ['gestor', 'ADMINISTRADOR', igreja, gestor],
+      ['presidente', 'COMUM', igreja, randomUUID()],
       ['conselheiro', 'COMUM', igreja, conselheiro],
       ['concedente', 'ADMINISTRADOR', igreja, concedente],
       ['auditor', 'AUDITOR', igreja, randomUUID()],
@@ -198,19 +199,27 @@ integracao('E09 – referências documentais', () => {
       ['secretarioOutra', 'COMUM', outraIgreja, randomUUID()],
       ['tesoureiro', 'COMUM', igreja, randomUUID()],
       ['operador', 'COMUM', igreja, randomUUID()],
-      ['outra', 'COMUM', outraIgreja, randomUUID()],
+      ['outra', 'ADMINISTRADOR', outraIgreja, randomUUID()],
     ] as const) {
+      const pessoaConta = id === gestor || nome === 'presidente' ? pessoa : id === conselheiro ? pessoaConselheiro : (await prisma.pessoas.create({ data: { igreja_id, nome_completo: nome, sexo: 'MASCULINO', data_nascimento: new Date('1980-01-01') } })).id;
       const u = await prisma.usuarios.create({
         data: {
           id,
           igreja_id,
           perfil,
           nome_usuario: nome,
-          pessoa_id: id === gestor ? pessoa : id === conselheiro ? pessoaConselheiro : null,
+          pessoa_id: pessoaConta,
+          conta_atuacao: nome.startsWith('secretario') || nome === 'presidente',
           email_login: `${id}@example.invalid`,
           senha_hash: 'teste',
         },
       });
+      const acoes = nome === 'operador' || perfil === 'ADMINISTRADOR' ? [] : [
+        'VINCULOS_DOCUMENTAIS_CONSULTAR',
+        ...(perfil === 'AUDITOR' ? ['AUTORIZACOES_FINANCEIRAS_CONSULTAR'] : ['VINCULOS_DOCUMENTAIS_REGISTRAR']),
+        ...(['tesoureiro', 'outra'].includes(nome) ? ['AUTORIZACOES_FINANCEIRAS_CONSULTAR', 'AUTORIZACOES_FINANCEIRAS_REGISTRAR', 'LANCAMENTOS_REGISTRAR', 'PESSOAS_EDITAR'] : []),
+      ];
+      for (const acao of acoes) await prisma.atribuicao_servico.create({ data: { igreja_id, usuario_id: u.id, pessoa_id: pessoaConta, geracao_vinculo: u.geracao_vinculo, acao, inicio: new Date('2020-01-01') } });
       cookies.set(nome, 'provisao_session=' + (await app.get(SessionService).create(u.id, igreja_id, u.auth_version)));
     }
     conselho = (await contextoOrgao('CONSELHO', 'CON')).contexto;
@@ -225,7 +234,7 @@ integracao('E09 – referências documentais', () => {
     const ctxOutra = await prisma.contexto_secretaria.create({
       data: { igreja_id: outraIgreja, tipo: 'ASSEMBLEIA_GERAL', nome: 'Outra Assembleia', sigla: 'AG' },
     });
-    await Promise.all([acesso(conselho), acesso(assembleia)]);
+    await Promise.all([acesso(conselho), acesso(assembleia), acesso(junta)]);
     const [ata1, ata2, ata3, ata4, ata5, doc6] = await Promise.all([
       documento(conselho, 'ATA'),
       documento(junta, 'ATA'),
@@ -264,8 +273,12 @@ integracao('E09 – referências documentais', () => {
     const of = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: pessoa, tipo: 'DIACONO' } });
     const secretarioJunta = await prisma.pessoas.create({ data: { igreja_id: igreja, nome_completo: 'Secretário da Junta', sexo: 'MASCULINO', data_nascimento: new Date('1980-01-01') } });
     await prisma.usuarios.updateMany({ where: { igreja_id: igreja, nome_usuario: 'secretario' }, data: { pessoa_id: secretarioJunta.id } });
+    await prisma.usuarios.updateMany({ where: { igreja_id: igreja, nome_usuario: 'secretario' }, data: { conta_atuacao: true } });
+    const secretarioAtual = await prisma.usuarios.findFirstOrThrow({ where: { igreja_id: igreja, nome_usuario: 'secretario' } });
+    await prisma.atribuicao_servico.updateMany({ where: { usuario_id: secretarioAtual.id }, data: { pessoa_id: secretarioJunta.id, geracao_vinculo: secretarioAtual.geracao_vinculo } });
+    cookies.set('secretario', 'provisao_session=' + await app.get(SessionService).create(secretarioAtual.id, igreja, secretarioAtual.auth_version));
     const diacono = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: secretarioJunta.id, tipo: 'DIACONO' } });
-    await prisma.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: secretarioJunta.id, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: dia } });
+    await prisma.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: secretarioJunta.id, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: dia, referencia_documental: 'Registro de teste' } });
     await prisma.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: diacono.id, tipo: 'ORDENACAO', data_efeito: dia, ordem: 1, autoridade: 'Conselho', evidencia: 'Ato conferido' } });
     await prisma.mandato_oficial.create({ data: { igreja_id: igreja, oficial_id: diacono.id, data_eleicao: dia, data_posse: dia, termino_previsto: new Date('2031-01-09'), autoridade: 'Assembleia', evidencia: 'Ata', avaliacao_eleicao: {} } });
     const cargoJunta = await prisma.cargo_orgao.create({ data: { igreja_id: igreja, orgao_id: ctxJunta.orgao, codigo: 'SECRETARIO', funcao: 'SECRETARIO', nome: 'Primeiro secretário' } });
@@ -337,7 +350,7 @@ integracao('E09 – referências documentais', () => {
     });
     const data_efeito = await hojeDaIgreja(prisma, igreja);
     const rota = `/orgaos/gestao/${unidade}/cargos/${cargo.id}/designacoes`;
-    const designado = await http('post', rota)
+    const designado = await http('post', rota, 'presidente')
       .send({
         pessoa_id: liderUnidade,
         data_efeito,
@@ -347,7 +360,7 @@ integracao('E09 – referências documentais', () => {
       })
       .expect(201);
     ocupacao = designado.body.ocupacao_id;
-    const dispensado = await http('post', rota)
+    const dispensado = await http('post', rota, 'presidente')
       .send({
         pessoa_id: null,
         data_efeito,
@@ -491,7 +504,7 @@ integracao('E09 – referências documentais', () => {
       .expect(404);
     const ataEncerramento = await documento(conselho, 'ATA');
     await prisma.documento.update({ where: { id: ataEncerramento.documento }, data: { estado: 'APROVADO' } });
-    const encerramento = await http('patch', `/oficiais/mandatos/${mandato}/encerrar`)
+    const encerramento = await http('patch', `/oficiais/mandatos/${mandato}/encerrar`, 'concedente')
       .send({ data_efeito: '2026-01-11', motivo: 'Renúncia', ata_encerramento: ataEncerramento.versao })
       .expect(200);
     expect(encerramento.body.termino_efetivo).toContain('2026-01-11');
@@ -552,7 +565,7 @@ integracao('E09 – referências documentais', () => {
     const { body } = await http('post', path, 'tesoureiro').send(dados).expect(201);
     expect((await http('post', path, 'tesoureiro').send(dados).expect(201)).body.id).toBe(body.id);
     expect((await http('get', '/secretaria/contextos', 'tesoureiro').expect(200)).body).toEqual([]);
-    await http('get', ref('MANDATO', mandato, 'ELEICAO'), 'tesoureiro').expect(404);
+    await http('get', ref('MANDATO', mandato, 'ELEICAO'), 'tesoureiro').expect(200);
     await http('get', path, 'operador').expect(403);
     expect(await prisma.acoes.findUnique({ where: { id: projeto } })).toEqual(caixa);
     await http('post', ref('FINANCEIRO', body.id), 'tesoureiro').send(ligacao(ataRestrita)).expect(400);
@@ -912,6 +925,28 @@ integracao('E09 – referências documentais', () => {
   });
 
   it('vincula uma reunião ordinária do Conselho à ata legada e preserva sua referência', async () => {
+    // Conta institucional: cargo vigente de secretário, com perfil COMUM.
+    const institucional = await prisma.pessoas.create({ data: { igreja_id: igreja, nome_completo: 'Secretaria institucional',
+      sexo: 'MASCULINO', data_nascimento: new Date('1980-01-01') } });
+    const conta = await prisma.usuarios.create({ data: { igreja_id: igreja, pessoa_id: institucional.id,
+      nome_usuario: 'Secretaria institucional', email_login: randomUUID() + '@example.invalid', senha_hash: 'inutilizavel',
+      perfil: 'COMUM', conta_atuacao: true } });
+    cookies.set('secretariaInstitucional', 'provisao_session=' + await app.get(SessionService).create(conta.id, igreja, conta.auth_version));
+    const oficialSecretario = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: institucional.id, tipo: 'PRESBITERO_REGENTE' } });
+    await prisma.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: institucional.id, tipo_evento: 'ADMISSAO',
+      rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: dia, referencia_documental: 'Registro de teste' } });
+    await prisma.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: oficialSecretario.id, tipo: 'ORDENACAO',
+      data_efeito: dia, ordem: 1, autoridade: 'Concílio', evidencia: 'Registro' } });
+    await prisma.mandato_oficial.create({ data: { igreja_id: igreja, oficial_id: oficialSecretario.id, data_eleicao: dia,
+      data_posse: dia, termino_previsto: new Date('2031-01-09'), autoridade: 'Assembleia', evidencia: 'Ata', avaliacao_eleicao: {} } });
+    const orgao = (await prisma.contexto_secretaria.findUniqueOrThrow({ where: { id: conselho } })).orgao_id;
+    const cargo = await prisma.cargo_orgao.create({ data: { igreja_id: igreja, orgao_id: orgao,
+      codigo: 'SECRETARIO', funcao: 'SECRETARIO', nome: 'Secretário do Conselho' } });
+    const ocupacao = await prisma.ocupacao_cargo.create({ data: { igreja_id: igreja, orgao_id: orgao, cargo_id: cargo.id,
+      pessoa_id: institucional.id, inicio: dia, termino_previsto: new Date('2031-01-09') } });
+    for (const acao of ['VINCULOS_DOCUMENTAIS_CONSULTAR', 'VINCULOS_DOCUMENTAIS_REGISTRAR'] as const)
+      await prisma.atribuicao_servico.create({ data: { igreja_id: igreja, usuario_id: conta.id, pessoa_id: institucional.id,
+        geracao_vinculo: conta.geracao_vinculo, acao, inicio: dia } });
     const caminho = '/secretaria/atas-legadas';
     const dadosReuniao = {
       ...await planejamento(conselho),
@@ -1115,28 +1150,28 @@ integracao('E09 – referências documentais', () => {
     await editar('auditor').expect(403);
     await editar('secretarioOutra').expect(404);
     await http('patch', caminho + '/' + ataRestrita.documento, 'secretario').send(edicao).expect(404);
-    await http('patch', caminho + '/' + ataConselho.documento, 'secretario')
-      .send({ ...edicao, revisao: (await http('get', '/secretaria/documentos/' + ataConselho.documento, 'secretario')).body.revisao }).expect(400);
-    await editar('secretario', { pdf: entrada.pdf }).expect(400);
-    await editar('secretario', { resolucoes: [{ ...edicao.resolucoes[0], proponentes_pessoas_ids: [randomUUID()] }] }).expect(400);
+    await http('patch', caminho + '/' + ataConselho.documento, 'secretariaInstitucional')
+      .send({ ...edicao, revisao: (await http('get', '/secretaria/documentos/' + ataConselho.documento, 'secretariaInstitucional')).body.revisao }).expect(400);
+    await editar('secretariaInstitucional', { pdf: entrada.pdf }).expect(400);
+    await editar('secretariaInstitucional', { resolucoes: [{ ...edicao.resolucoes[0], proponentes_pessoas_ids: [randomUUID()] }] }).expect(400);
     // A consulta e a decisão são obrigatórias quando há atos vinculados.
-    await editar('secretario').expect(409);
-    let modal = (await http('get', documento + '/atos-para-reatribuir', 'secretario').expect(200)).body;
+    await editar('secretariaInstitucional').expect(409);
+    let modal = (await http('get', documento + '/atos-para-reatribuir', 'secretariaInstitucional').expect(200)).body;
     expect(modal).toHaveLength(2);
     expect(modal.find(a => a.grupo === 'MEMBRESIA')).toMatchObject({ alvo_id: evento, pode_reatribuir: true });
     await http('get', documento + '/atos-para-reatribuir', 'secretarioOutra').expect(404);
-    await editar('secretario', { reatribuicao_atos: { vistas: [randomUUID()], selecionadas: [] } }).expect(409);
+    await editar('secretariaInstitucional', { reatribuicao_atos: { vistas: [randomUUID()], selecionadas: [] } }).expect(409);
     // Um vínculo mudado enquanto o modal está aberto invalida a decisão inteira.
     const membroAntes = modal.find(a => a.grupo === 'MEMBRESIA').referencia_id;
     await http('post', referenciaLegada).send(ligacao({ documento: id, versao }, membroAntes)).expect(201);
-    await editar('secretario', { reatribuicao_atos: { vistas: modal.map(a => a.referencia_id), selecionadas: [membroAntes] } }).expect(409);
+    await editar('secretariaInstitucional', { reatribuicao_atos: { vistas: modal.map(a => a.referencia_id), selecionadas: [membroAntes] } }).expect(409);
     expect((await http('get', documento).expect(200)).body.versao_atual).toBe(1);
-    modal = (await http('get', documento + '/atos-para-reatribuir', 'secretario').expect(200)).body;
+    modal = (await http('get', documento + '/atos-para-reatribuir', 'secretariaInstitucional').expect(200)).body;
     const decisao = { reatribuicao_atos: { vistas: modal.map(a => a.referencia_id), selecionadas: [modal.find(a => a.grupo === 'MEMBRESIA').referencia_id] } };
-    const salva = (await editar('secretario', decisao).expect(200)).body;
-    expect((await editar('secretario', decisao).expect(200)).body).toEqual(salva);
-    await editar('secretario', { idempotencia: randomUUID() }).expect(409);
-    const corrigida = (await http('get', documento, 'secretario').expect(200)).body;
+    const salva = (await editar('secretariaInstitucional', decisao).expect(200)).body;
+    expect((await editar('secretariaInstitucional', decisao).expect(200)).body).toEqual(salva);
+    await editar('secretariaInstitucional', { idempotencia: randomUUID() }).expect(409);
+    const corrigida = (await http('get', documento, 'secretariaInstitucional').expect(200)).body;
     expect(corrigida.versao_atual).toBe(2);
     expect(corrigida.versoes[0]).toMatchObject({ id: versao, conteudo: { teor: entrada.teor } });
     expect(corrigida.versoes[1]).toMatchObject({
@@ -1146,7 +1181,7 @@ integracao('E09 – referências documentais', () => {
       resolucoes: [{ assunto: 'Admissão revisada', proponentes: [{ arrolado: { pessoa_id: membro } }] }],
     });
     expect(corrigida.versoes[1].arrolados).toHaveLength(2);
-    expect((await http('get', '/secretaria/reunioes/' + reuniao.body.id, 'secretario').expect(200)).body.dados)
+    expect((await http('get', '/secretaria/reunioes/' + reuniao.body.id, 'secretariaInstitucional').expect(200)).body.dados)
       .toMatchObject({ local: 'Salão', pauta: 'Pauta corrigida' });
     expect((await http('get', '/secretaria/livros/' + livro).expect(200)).body.atas_legadas).toHaveLength(1);
     expect((await http('get', referenciaMandato).expect(200)).body.itens[0]).toMatchObject({ id: refMandato, versao_id: versao, situacao: 'SUPERADA' });
@@ -1154,36 +1189,14 @@ integracao('E09 – referências documentais', () => {
     expect(transferida.itens[0].versao_id).toBe(corrigida.versoes[1].id);
     expect(transferida.itens[1].versao_id).toBe(versao);
     expect(transferida.itens[1].situacao).toBe('SUPERADA');
-    const novaLista = (await http('get', documento + '/atos-para-reatribuir', 'secretario').expect(200)).body;
+    const novaLista = (await http('get', documento + '/atos-para-reatribuir', 'secretariaInstitucional').expect(200)).body;
     // NÃO cria a versão, mas mantém o ato na referência anterior.
-    await editar('secretario', { revisao: salva.revisao, numero_original: '005', idempotencia: randomUUID(),
+    await editar('secretariaInstitucional', { revisao: salva.revisao, numero_original: '005', idempotencia: randomUUID(),
       reatribuicao_atos: { vistas: novaLista.map(a => a.referencia_id), selecionadas: [] } }).expect(200);
     const mantida = (await http('get', referenciaLegada).expect(200)).body;
     expect(mantida.itens[0].id).toBe(transferida.itens[0].id);
     expect(mantida.situacao).toBe('SUPERADA');
 
-    // Conta institucional: cargo vigente de secretário, com perfil COMUM.
-    const institucional = await prisma.pessoas.create({ data: { igreja_id: igreja, nome_completo: 'Secretaria institucional',
-      sexo: 'MASCULINO', data_nascimento: new Date('1980-01-01') } });
-    const conta = await prisma.usuarios.create({ data: { igreja_id: igreja, pessoa_id: institucional.id,
-      nome_usuario: 'Secretaria institucional', email_login: randomUUID() + '@example.invalid', senha_hash: 'inutilizavel',
-      perfil: 'COMUM', conta_atuacao: true } });
-    cookies.set('secretariaInstitucional', 'provisao_session=' + await app.get(SessionService).create(conta.id, igreja, conta.auth_version));
-    const oficialSecretario = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: institucional.id, tipo: 'PRESBITERO_REGENTE' } });
-    await prisma.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: institucional.id, tipo_evento: 'ADMISSAO',
-      rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: dia, referencia_documental: 'Registro de teste' } });
-    await prisma.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: oficialSecretario.id, tipo: 'ORDENACAO',
-      data_efeito: dia, ordem: 1, autoridade: 'Concílio', evidencia: 'Registro' } });
-    await prisma.mandato_oficial.create({ data: { igreja_id: igreja, oficial_id: oficialSecretario.id, data_eleicao: dia,
-      data_posse: dia, termino_previsto: new Date('2031-01-09'), autoridade: 'Assembleia', evidencia: 'Ata', avaliacao_eleicao: {} } });
-    const orgao = (await prisma.contexto_secretaria.findUniqueOrThrow({ where: { id: conselho } })).orgao_id;
-    const cargo = await prisma.cargo_orgao.create({ data: { igreja_id: igreja, orgao_id: orgao,
-      codigo: 'SECRETARIO', funcao: 'SECRETARIO', nome: 'Secretário do Conselho' } });
-    const ocupacao = await prisma.ocupacao_cargo.create({ data: { igreja_id: igreja, orgao_id: orgao, cargo_id: cargo.id,
-      pessoa_id: institucional.id, inicio: dia, termino_previsto: new Date('2031-01-09') } });
-    for (const acao of ['VINCULOS_DOCUMENTAIS_CONSULTAR', 'VINCULOS_DOCUMENTAIS_REGISTRAR'] as const)
-      await prisma.atribuicao_servico.create({ data: { igreja_id: igreja, usuario_id: conta.id, pessoa_id: institucional.id,
-        geracao_vinculo: conta.geracao_vinculo, acao, inicio: dia } });
     const contextos = (await http('get', '/secretaria/contextos', 'secretariaInstitucional').expect(200)).body;
     expect(contextos.find(c => c.id === conselho).pode_editar_ata_legada).toBe(true);
     expect(contextos.find(c => c.id === assembleia).pode_editar_ata_legada).toBe(true);
