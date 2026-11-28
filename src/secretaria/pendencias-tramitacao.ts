@@ -1,3 +1,5 @@
+import { BadRequestException } from '@nestjs/common';
+import { quorumDoModelo, efetivosAta } from './regras-modelo-reuniao';
 import { ehCampoNumeracao } from './numeracao-campos';
 import { itensCampo, ocorrencias, textosPagina } from './composicao-pagina';
 import { cargosDoArrolado, type ConfiguracaoModelo, type ReuniaoInput, type VersaoInput } from './secretaria.dto';
@@ -44,12 +46,32 @@ export function pendenciasConteudo(config: ConfiguracaoModelo, conteudo: VersaoI
   return pendencias;
 }
 
+export function dadosConsolidadosAta(dados: ReuniaoInput, conteudo: VersaoInput['conteudo']): ReuniaoInput {
+  const e = efetivosAta.safeParse(conteudo.efetivos);
+  if (!e.success) throw new BadRequestException('Complete na ata a abertura, o encerramento, o local e as contagens de presença e quórum.');
+  const efetivos = e.data;
+  const modelo = dados.modelo_reuniao;
+  const regra = dados.convocacao==='Segunda' ? modelo?.configuracao.segunda : modelo?.configuracao.primeira;
+  const minimo = efetivos.minimo_declarado ?? dados.quorum_minimo;
+  const quorum = modelo && regra!=='Pendente' ? quorumDoModelo(dados, efetivos) :
+    { minimo, atingido: minimo > 0 && efetivos.habilitados_presentes >= minimo };
+  if (efetivos.presentes < dados.participantes.filter(p=>p.presente).length)
+    throw new BadRequestException('O total da lista precisa incluir os participantes registrados como presentes.');
+  if (!quorum?.atingido) throw new BadRequestException('Confira o universo, a composição e o quórum mínimo da convocação.');
+  if (['CANCELADA','ADIADA','NAO_INSTALADA'].includes(dados.situacao ?? ''))
+    throw new BadRequestException('A situação da reunião é incompatível com a realização registrada na ata.');
+  return { ...dados, situacao:'ENCERRADA', inicio: efetivos.inicio, fim: efetivos.fim, total_presentes: efetivos.presentes,
+    local_efetivo: efetivos.local, quorum_minimo: quorum.minimo, quorum_conferido: true,
+    universo_informado: efetivos.universo,
+    competencia: modelo?.finalidade ?? dados.competencia, fundamento_quorum: modelo?.configuracao.fundamentacao ?? dados.fundamento_quorum };
+}
+
 export function pendenciasMesa(dados: ReuniaoInput, participantes: { presente: boolean; papeis: string[] }[], minuta?: VersaoInput['conteudo']): PendenciaTramitacao[] {
   const presentes = participantes.filter(p => p.presente);
   const mensagens: string[] = [];
   if (dados.situacao && !['EM_ANDAMENTO', 'ENCERRADA'].includes(dados.situacao))
     mensagens.push('Registre a realização da reunião antes de formalizar a ata.');
-  if (!dados.quorum_conferido || presentes.length < dados.quorum_minimo) mensagens.push('Quórum da reunião deve ser conferido e atendido.');
+  if (!dados.quorum_conferido || (dados.total_presentes ?? presentes.length) < dados.quorum_minimo) mensagens.push('Quórum da reunião deve ser conferido e atendido.');
   for (const papel of ['PRESIDENTE', 'SECRETARIO']) if (!presentes.some(p => p.papeis.includes(papel))) mensagens.push('Mesa exige ' + papel + ' presente.');
   if (minuta && !dados.fim) mensagens.push('Informe o horário efetivo de encerramento da reunião.');
   const pendencias = mensagens.map(mensagem => ({ destino: 'mesa', mensagem }));

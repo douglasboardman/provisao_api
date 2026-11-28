@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario, podeServico } from '../autorizacao/operacao-atual';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { logs_atividades_acao, Prisma, usuarios_perfil } from '@prisma/client';
 import { z } from 'zod';
@@ -6,7 +7,6 @@ const texto = z.string().trim().min(1);
 const politicaSchema = z.object({ ativo: z.boolean(), dias_antecedencia: z.number().int().min(1).max(365), dias_apos_termino: z.number().int().min(0).max(365), fuso_iana: texto.max(100), autoridade: texto.max(255), fundamento: texto.max(1000) }).strict();
 const inscricaoSchema = z.object({ usuario_id: z.string().uuid() }).strict();
 type Tx = Prisma.TransactionClient;
-const perfis = [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO];
 function diaNoFuso(agora: Date, fuso: string) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: fuso, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(agora);
   const parte = (tipo: string) => parts.find(p => p.type === tipo)?.value;
@@ -26,8 +26,7 @@ export class NotificacoesMandatoService {
     if (!ator) throw new ForbiddenException('Operador não autorizado.');
   }
   private async usuarioValido(tx: Tx, igreja: string, usuario: string) {
-    const ator = await tx.usuarios.findFirst({ where: { id: usuario, igreja_id: igreja, ativo: true, perfil: { in: perfis } }, select: { id: true } });
-    if (!ator) throw new ForbiddenException('Operador não autorizado.');
+    return exigirServicoDoUsuario(tx, igreja, usuario, 'OFICIAIS_CONSULTAR');
   }
   async configurar(igreja: string, usuario: string, dados: z.infer<typeof politicaSchema>) {
     const parsed = politicaSchema.safeParse(dados); if (!parsed.success) throw new BadRequestException('Configuração de alertas inválida.');
@@ -47,8 +46,8 @@ export class NotificacoesMandatoService {
     return this.prisma.$transaction(async tx => {
       await this.administrador(tx, igreja, usuario);
       await tx.$queryRaw`SELECT id FROM igreja WHERE id = ${igreja} FOR UPDATE`;
-      const alvo = await tx.usuarios.findFirst({ where: { id: parsed.data.usuario_id, igreja_id: igreja, ativo: true, perfil: { in: perfis } }, select: { id: true } });
-      if (!alvo) throw new NotFoundException('Destinatário ativo não encontrado nesta igreja.');
+      const alvo = await tx.usuarios.findFirst({ where: { id: parsed.data.usuario_id, igreja_id: igreja, ativo: true },  });
+      if (!alvo || !await podeServico(tx, alvo, 'OFICIAIS_CONSULTAR')) throw new NotFoundException('Destinatário ativo não encontrado nesta igreja.');
       const existente = await tx.inscricao_alerta_oficial.findFirst({ where: { igreja_id: igreja, usuario_id: alvo.id, revogado_em: null } });
       if (existente) return existente;
       const registro = await tx.inscricao_alerta_oficial.create({ data: { igreja_id: igreja, usuario_id: alvo.id, criado_por_id: usuario } });
@@ -86,10 +85,12 @@ export class NotificacoesMandatoService {
       const tentativa = new Date();
       try {
         const { inicio, fim, inicioAtraso } = janela(agora, politica.fuso_iana, politica.dias_antecedencia, politica.dias_apos_termino);
-        const [inscritos, mandatos] = await Promise.all([
-          this.prisma.inscricao_alerta_oficial.findMany({ where: { igreja_id: politica.igreja_id, revogado_em: null, usuario: { ativo: true, perfil: { in: perfis } } }, select: { id: true, usuario_id: true } }),
+        const [candidatos, mandatos] = await Promise.all([
+          this.prisma.inscricao_alerta_oficial.findMany({ where: { igreja_id: politica.igreja_id, revogado_em: null, usuario: { ativo: true } }, select: { id: true, usuario_id: true, usuario: true } }),
           this.prisma.mandato_oficial.findMany({ where: { igreja_id: politica.igreja_id, data_posse: { lte: inicio }, OR: [{ termino_efetivo: { gte: inicioAtraso, lte: fim } }, { termino_efetivo: null, termino_previsto: { gte: inicioAtraso, lte: fim } }] }, select: { id: true, termino_efetivo: true, termino_previsto: true } }),
         ]);
+        const inscritos: typeof candidatos = [];
+        for (const inscrito of candidatos) if (await podeServico(this.prisma, inscrito.usuario, 'OFICIAIS_CONSULTAR')) inscritos.push(inscrito);
         const dados = mandatos.flatMap(m => inscritos.map(i => ({ igreja_id: politica.igreja_id, mandato_id: m.id, usuario_id: i.usuario_id, inscricao_id: i.id, data_termino: m.termino_efetivo ?? m.termino_previsto })));
         const total = dados.length ? (await this.prisma.alerta_mandato.createMany({ data: dados, skipDuplicates: true })).count : 0;
         criados += total;

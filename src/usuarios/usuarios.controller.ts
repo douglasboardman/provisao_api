@@ -1,3 +1,4 @@
+import { ContaComum } from '../autorizacao/politica';
 import { ObservarServico, ServicoDaRota } from '../autorizacao/politica';
 import {
   Controller, Get, Post, Body, Patch, Param, Delete, Header,
@@ -16,7 +17,7 @@ import { OutboxService } from 'src/outbox/outbox.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO, Perfil.AUDITOR, Perfil.SECRETARIO)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 @Controller('usuarios')
 export class UsuariosController {
   constructor(
@@ -119,6 +120,7 @@ export class UsuariosController {
    * Permitido ao próprio usuário ou a um ADMINISTRADOR da mesma igreja.
    * Rota: PATCH /usuarios/:id/profile-image
    */
+  @ContaComum()
   @Patch(':id/profile-image')
   @Roles(...ALL_ROLES)
   @UseInterceptors(FileInterceptor('file'))

@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import { usuarios_perfil } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -11,7 +12,7 @@ export class AlertasOficiaisService {
     const inicio = new Date(`${dataReferencia}T00:00:00.000Z`);
     if (!Number.isFinite(inicio.getTime()) || inicio.toISOString().slice(0, 10) !== dataReferencia) throw new BadRequestException('Data ou período de alerta inválido.');
     const fim = new Date(inicio.getTime()); fim.setUTCDate(fim.getUTCDate() + dias);
-    const usuario = await this.prisma.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO] } }, select: { id: true } });
+    const usuario = await exigirServicoDoUsuario(this.prisma, igrejaId, usuarioId, 'OFICIAIS_CONSULTAR');
     if (!usuario) throw new ForbiddenException('Operador não autorizado nesta igreja.');
     const registros = await this.prisma.mandato_oficial.findMany({
       where: { igreja_id: igrejaId, data_posse: { lte: fim }, OR: [

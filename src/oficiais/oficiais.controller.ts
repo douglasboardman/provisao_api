@@ -5,7 +5,7 @@ import { RevisaoEleitoralService } from './revisao-eleitoral.service';
 import { InsercaoRetroativaOficialService } from './insercao-retroativa-oficial.service';
 import { CorrecaoConteudoService } from './correcao-conteudo.service';
 import { InsercaoRetroativaService } from './insercao-retroativa.service';
-import { BadRequestException, Body, ConflictException, Controller, Get, Header, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Get, GoneException, Header, NotFoundException, Param, ParseUUIDPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
 import { Prisma, usuarios_perfil as Perfil } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
@@ -24,22 +24,24 @@ import { MandatoService } from './mandato.service';
 import { PoliticaEleicaoService } from '../elegibilidade/politica-eleicao.service';
 import { ConferenciaEleicaoService } from '../elegibilidade/conferencia-eleicao.service';
 import { SituacaoExercicioService } from './situacao-exercicio.service';
-import { IndicacoesEleicaoService } from './indicacoes-eleicao.service';
+import { AtasEleitoraisService } from './atas-eleitorais.service';
 
+@ServicoDaRota('OFICIAIS_REGISTRAR')
 @Controller('oficiais')
 @UseGuards(AuthGuard, RolesGuard, GovernancaGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+@Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
 export class OficiaisController {
-  constructor(private readonly revisoesEleitorais: RevisaoEleitoralService, private readonly insercoesOficial: InsercaoRetroativaOficialService, private readonly correcoesConteudo: CorrecaoConteudoService, private readonly insercoesRetroativas: InsercaoRetroativaService, private readonly prisma: PrismaService, private readonly alertas: AlertasOficiaisService, private readonly exercicio: SituacaoExercicioService, private readonly oficiais: OficiaisService, private readonly mandatos: MandatoService, private readonly politicas: PoliticaEleicaoService, private readonly conferencias: ConferenciaEleicaoService, private readonly acessoSensivel: AcessoSensivelService, private readonly acervo: AcervoHistoricoService, private readonly correcoes: CorrecaoMembresiaService, private readonly identidadePastoral: IdentidadePastoralService, private readonly notificacoes: NotificacoesMandatoService, private readonly ordenacoes: OrdenacaoMembresiaService, private readonly indicacoes: IndicacoesEleicaoService) {}
+  constructor(private readonly revisoesEleitorais: RevisaoEleitoralService, private readonly insercoesOficial: InsercaoRetroativaOficialService, private readonly correcoesConteudo: CorrecaoConteudoService, private readonly insercoesRetroativas: InsercaoRetroativaService, private readonly prisma: PrismaService, private readonly alertas: AlertasOficiaisService, private readonly exercicio: SituacaoExercicioService, private readonly oficiais: OficiaisService, private readonly mandatos: MandatoService, private readonly politicas: PoliticaEleicaoService, private readonly conferencias: ConferenciaEleicaoService, private readonly acessoSensivel: AcessoSensivelService, private readonly acervo: AcervoHistoricoService, private readonly correcoes: CorrecaoMembresiaService, private readonly identidadePastoral: IdentidadePastoralService, private readonly notificacoes: NotificacoesMandatoService, private readonly ordenacoes: OrdenacaoMembresiaService, private readonly atasEleitorais: AtasEleitoraisService) {}
 
   @ServicoDaRota('OFICIAIS_CONSULTAR')
   @Get()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
-  async listar(@Request() req, @Query('cursor') cursor?: string) {
+  async listar(@Request() req, @Query('cursor') cursor?: string, @Query('tipo') tipo?: string) {
+    if (tipo && !['DIACONO', 'PRESBITERO_REGENTE', 'PRESBITERO_DOCENTE'].includes(tipo)) throw new BadRequestException('Tipo de oficial inválido.');
     if (cursor && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cursor)) throw new BadRequestException('Cursor inválido.');
     if (cursor && !await this.prisma.oficial.findFirst({ where: { id: cursor, igreja_id: req.user.igreja_id }, select: { id: true } })) throw new BadRequestException('Cursor inválido.');
-    const rows = await this.prisma.oficial.findMany({ where: { igreja_id: req.user.igreja_id }, select: { id: true, tipo: true, ativo: true, pessoa: { select: { id: true, nome_completo: true } } }, orderBy: { id: 'asc' }, take: 51, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
+    const rows = await this.prisma.oficial.findMany({ where: { igreja_id: req.user.igreja_id, ...(tipo ? { tipo: tipo as 'DIACONO' | 'PRESBITERO_REGENTE' | 'PRESBITERO_DOCENTE' } : {}) }, select: { id: true, tipo: true, ativo: true, pessoa: { select: { id: true, nome_completo: true } } }, orderBy: { id: 'asc' }, take: 51, ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}) });
     const itens = rows.slice(0, 50);
     return { itens, proximo_cursor: rows.length > 50 ? itens[itens.length - 1].id : null };
   }
@@ -60,12 +62,14 @@ export class OficiaisController {
     });
   }
 
+  @ServicoDaRota('OFICIAIS_CONSULTAR')
   @Get('notificacoes')
   @Header('Cache-Control', 'private, no-store')
   minhasNotificacoes(@Request() req) {
     return this.notificacoes.minhas(req.user.igreja_id, req.user.sub);
   }
 
+  @ServicoDaRota('OFICIAIS_CONSULTAR')
   @Patch('notificacoes/:id/lida')
   marcarNotificacao(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.notificacoes.marcarLida(req.user.igreja_id, req.user.sub, id);
@@ -105,7 +109,7 @@ export class OficiaisController {
 
   @Get('meu-acesso-sensivel')
   @ContaComum()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR, Perfil.COMUM)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   async meuAcesso(@Request() req) {
     return this.prisma.$transaction(async tx => {
@@ -114,9 +118,7 @@ export class OficiaisController {
         select: { pode_consultar: true, pode_registrar: true } });
       const operacoes = Object.fromEntries(await Promise.all(servicosDeHistorico.map(async acao => {
         const estado = await estadoDaLiberacao(tx, conta.igreja_id, acao);
-        const permite = estado !== 'PAUSADO' && (estado === 'ATRIBUICAO' || conta.perfil === Perfil.COMUM
-          ? (await decidirServico(tx, conta, acao)).permite
-          : conta.perfil !== Perfil.AUDITOR || servicosDeConsulta.has(acao));
+        const permite = estado !== 'PAUSADO' && (await decidirServico(tx, conta, acao)).permite;
         return [acao, permite] as const;
       })));
       return { pode_consultar: !!acesso?.pode_consultar,
@@ -126,14 +128,14 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_OFICIAIS_CONSULTAR')
   @Get(':id/insercoes-retroativas')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   insercoesRetroativasOficial(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.insercoesOficial.listar(req.user.igreja_id, req.user.sub, id, req.user);
   }
   @ServicoDaRota('HISTORICO_OFICIAIS_CONSULTAR')
   @Post(':id/insercoes-retroativas/previa')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   previaInsercaoOficial(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<InsercaoRetroativaOficialService['previa']>[3]) {
     return this.comando(() => this.insercoesOficial.previa(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
@@ -145,7 +147,7 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_OFICIAIS_CONSULTAR')
   @Get(':id/eventos-sensiveis')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   eventosSensiveis(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.acessoSensivel.consultarEventos(req.user.igreja_id, req.user.sub, id);
@@ -171,7 +173,7 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/revisoes-eleitorais')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   revisoesEleitoraisPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.revisoesEleitorais.listar(req.user.igreja_id, req.user.sub, id, req.user);
@@ -184,14 +186,14 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/correcoes-conteudo')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   correcoesConteudoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.correcoesConteudo.listar(req.user.igreja_id, req.user.sub, id, req.user);
   }
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post('pessoas/:id/correcoes-conteudo/previa')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   previaConteudoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoConteudoService['previa']>[3]) {
     return this.comando(() => this.correcoesConteudo.previa(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
@@ -203,14 +205,14 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/insercoes-retroativas')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   insercoesPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.insercoesRetroativas.listar(req.user.igreja_id, req.user.sub, id, req.user);
   }
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post('pessoas/:id/insercoes-retroativas/previa')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   previaInsercaoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<InsercaoRetroativaService['previa']>[3]) {
     return this.comando(() => this.insercoesRetroativas.previa(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
@@ -222,14 +224,14 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/correcoes-data')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   correcoesPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.correcoes.listarCorrecoes(req.user.igreja_id, req.user.sub, id, true, req.user);
   }
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post('pessoas/:id/correcoes-data/previa')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   previaCorrecaoPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoMembresiaService['previa']>[3]) {
     return this.comando(() => this.correcoes.previa(req.user.igreja_id, req.user.sub, id, dados, true, req.user));
   }
@@ -241,21 +243,21 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/eventos-para-ordem')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   eventosPessoaParaOrdem(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.ordenacoes.eventosPessoa(req.user.igreja_id, req.user.sub, id, req.user);
   }
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('pessoas/:id/ordenacoes-dia')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   ordenacoesPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.ordenacoes.listar(req.user.igreja_id, req.user.sub, id, true, req.user);
   }
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post('pessoas/:id/ordenacoes-dia/previa')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   previaOrdemPessoa(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OrdenacaoMembresiaService['previa']>[3]) {
     return this.comando(() => this.ordenacoes.previa(req.user.igreja_id, req.user.sub, id, dados, true, req.user));
   }
@@ -267,7 +269,7 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get(':id/ordenacoes-dia')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   listarOrdenacoes(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.ordenacoes.listar(req.user.igreja_id, req.user.sub, id, false, req.user);
@@ -275,7 +277,7 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post(':id/ordenacoes-dia/previa')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   previaOrdenacao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OrdenacaoMembresiaService['previa']>[3]) {
     return this.comando(() => this.ordenacoes.previa(req.user.igreja_id, req.user.sub, id, dados, false, req.user));
   }
@@ -288,7 +290,7 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get(':id/membresia-para-correcao')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   eventosParaCorrecao(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.correcoes.listarEventos(req.user.igreja_id, req.user.sub, id, req.user);
@@ -296,7 +298,7 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get(':id/correcoes-data')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   correcoesRegistradas(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.correcoes.listarCorrecoes(req.user.igreja_id, req.user.sub, id, false, req.user);
@@ -304,7 +306,7 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Post(':id/correcoes-data/previa')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   previaCorrecao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<CorrecaoMembresiaService['previa']>[3]) {
     return this.comando(() => this.correcoes.previa(req.user.igreja_id, req.user.sub, id, dados, false, req.user));
   }
@@ -347,7 +349,7 @@ export class OficiaisController {
 
   @ServicoDaRota('HISTORICO_OFICIAIS_CONSULTAR')
   @Get('acervo-historico/:id/detalhe')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   detalheAcervo(@Request() req, @Param('id', ParseUUIDPipe) id: string) {
     return this.acervo.detalhe(req.user.igreja_id, req.user.sub, id, req.user);
@@ -359,6 +361,7 @@ export class OficiaisController {
     return this.comando(() => this.acervo.registrar(req.user.igreja_id, req.user.sub, id, dados, req.user));
   }
 
+  @ServicoDaRota('OFICIAIS_CONSULTAR')
   @Get('politicas')
   @Header('Cache-Control', 'private, no-store')
   listarPoliticas(@Request() req) {
@@ -367,44 +370,34 @@ export class OficiaisController {
 
   @Get('indicacoes/selecao-atas')
   @ContaComum()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.COMUM)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   selecionarAtas(@Request() req, @Query() consulta: Record<string, string>) {
     const { tipo, ...filtros } = consulta;
-    return this.indicacoes.selecionarAtas(req.user, tipo, filtros);
+    return this.atasEleitorais.selecionarAtas(req.user, tipo, filtros);
   }
 
+  @ServicoDaRota('OFICIAIS_CONSULTAR')
   @Get('indicacoes/atas')
   @Header('Cache-Control', 'private, no-store')
   atasDeEleicao(@Request() req, @Query('tipo') tipo: string, @Query('busca') busca?: string) {
-    return this.indicacoes.listarAtas(req.user, tipo, busca);
+    return this.atasEleitorais.listarAtas(req.user, tipo, busca);
   }
 
   @Get('indicacoes/candidatos')
   @ContaComum()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.COMUM)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   candidatosDeEleicao(@Request() req, @Query('ata') ata: string, @Query('busca') busca?: string, @Query('tipo') tipo?: string) {
-    return this.indicacoes.candidatos(req.user, ata, busca, tipo);
-  }
-
-  @Get('indicacoes')
-  @Header('Cache-Control', 'private, no-store')
-  listarIndicacoes(@Request() req, @Query('assembleia') assembleia?: string) {
-    return this.indicacoes.listar(req.user, assembleia);
-  }
-
-  @Post('indicacoes')
-  registrarIndicacao(@Request() req, @Body() dados: unknown) {
-    return this.comando(() => this.indicacoes.registrar(req.user, dados));
+    return this.atasEleitorais.candidatos(req.user, ata, busca, tipo);
   }
 
   @Post('indicacoes/mandatos')
-  @RotaLegadaDe('MANDATOS_REGISTRAR')
-  registrarMandatoPorIndicacao(@Request() req, @Body() dados: unknown) {
-    return this.comando(() => this.indicacoes.registrarMandato(req.user, dados));
+  mandatoPorIndicacaoRetirado() {
+    throw new GoneException('Registre o mandato na ficha do Conselho ou da Junta.');
   }
 
+  @ServicoDaRota('OFICIAIS_CONSULTAR')
   @Get('conferencias/:pessoaId')
   @Header('Cache-Control', 'private, no-store')
   async listarConferencias(@Request() req, @Param('pessoaId', ParseUUIDPipe) pessoaId: string) {
@@ -412,18 +405,6 @@ export class OficiaisController {
     if (!pessoa) throw new NotFoundException('Pessoa não encontrada nesta igreja.');
     const conferencias = await this.prisma.conferencia_eleicao_oficial.findMany({ where: { igreja_id: req.user.igreja_id, pessoa_id: pessoaId }, select: { id: true, data_eleicao: true, politica_id: true, mandato: { select: { id: true } }, revisoes_pendentes: { where: { OR: [{ revisado_em: null }, { permite_reutilizacao: false }] }, select: { revisado_em: true } } }, orderBy: [{ data_eleicao: 'desc' }, { id: 'asc' }] });
     return conferencias.map(({ revisoes_pendentes, ...c }) => ({ ...c, revisao_pendente: revisoes_pendentes.some(r => r.revisado_em === null), impedida_para_mandato: revisoes_pendentes.length > 0 }));
-  }
-
-  @Get('indicacoes/historico')
-  @Header('Cache-Control', 'private, no-store')
-  indicacoesHistoricas(@Request() req, @Query('cursor') cursor?: string) {
-    return this.indicacoes.historico(req.user, undefined, cursor);
-  }
-
-  @Get(':id/indicacoes-historicas')
-  @Header('Cache-Control', 'private, no-store')
-  historicoIndicacoes(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Query('cursor') cursor?: string) {
-    return this.indicacoes.historico(req.user, id, cursor);
   }
 
   @ServicoDaRota('OFICIAIS_CONSULTAR')
@@ -439,6 +420,7 @@ export class OficiaisController {
     return { mandatos: mandatos.map(({ revisoes_pendentes, ...m }) => ({ ...m, revisao_pendente: revisoes_pendentes.length > 0 })), vinculos };
   }
 
+  @ServicoDaRota('OFICIAIS_CONSULTAR')
   @Get('alertas')
   @Header('Cache-Control', 'private, no-store')
   async consultarAlertas(@Request() req, @Query('data') data: string, @Query('dias') dias: string) {
@@ -503,7 +485,7 @@ export class OficiaisController {
 
   @Patch('mandatos/:id/encerrar')
   @ContaComum()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.COMUM)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   @ServicoEmContexto('MANDATOS_REGISTRAR')
   encerrarMandato(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<MandatoService['encerrar']>[3]) {
     return this.comando(() => this.mandatos.encerrar(req.user.igreja_id, req.user.sub, id, dados, req.user));

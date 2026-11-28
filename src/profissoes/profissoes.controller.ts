@@ -9,7 +9,7 @@ import { ProfissoesService } from './profissoes.service';
 
 @Controller('profissoes')
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
+@Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
 export class ProfissoesController {
   constructor(private readonly profissoes: ProfissoesService) {}
 

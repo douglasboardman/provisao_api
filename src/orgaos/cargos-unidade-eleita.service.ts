@@ -25,7 +25,7 @@ export class CargosUnidadeEleitaService {
     const hash = hashAto({ operacao: 'ELEICAO_CARGO_UNIDADE', orgaoId, cargoId, dados: v });
     return transacaoComRetentativa(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const gestor = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: 'GESTOR' }, select: { pessoa_id: true } });
+      const gestor = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: 'COMUM' }, select: { pessoa_id: true } });
       const hoje = await hojeDaIgreja(tx, igrejaId);
       if (!gestor?.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: gestor.pessoa_id, inicio: { lte: data(hoje) }, OR: [{ fim: null }, { fim: { gt: data(hoje) } }] }, select: { id: true } })) throw new ForbiddenException('Competência institucional não comprovada.');
       const anterior = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, orgao: orgaoId, idempotencia, tipo: 'ELEICAO_CARGO_UNIDADE', hash }, 'ocupacao_id');
@@ -65,7 +65,7 @@ export class CargosUnidadeEleitaService {
     const hash = hashAto({ operacao: 'ENCERRAMENTO_CARGO_UNIDADE', orgaoId, ocupacaoId, dados: v });
     return transacaoSerializavel(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const gestor = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: 'GESTOR' }, select: { pessoa_id: true } });
+      const gestor = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: 'COMUM' }, select: { pessoa_id: true } });
       const hoje = await hojeDaIgreja(tx, igrejaId), efeito = data(hoje);
       if (!gestor?.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: gestor.pessoa_id, inicio: { lte: efeito }, OR: [{ fim: null }, { fim: { gt: efeito } }] }, select: { id: true } })) throw new ForbiddenException('Competência institucional não comprovada.');
       const anterior = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, orgao: orgaoId, idempotencia, tipo: 'ENCERRAMENTO_CARGO_UNIDADE', hash }, 'ocupacao_id');

@@ -22,21 +22,14 @@ import { Roles } from 'src/auth/decorators/roles.decorator';
 import { usuarios_perfil as Perfil } from '@prisma/client';
 
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(
-  Perfil.ADMINISTRADOR,
-  Perfil.GESTOR,
-  Perfil.OPERADOR,
-  Perfil.SECRETARIO,
-  Perfil.TESOUREIRO,
-  Perfil.AUDITOR,
-)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 @Controller('eventos-membresia')
 export class EventosMembresiaController {
   constructor(private readonly service: EventosMembresiaService, private readonly ordenacao: OrdenacaoMembresiaService) {}
 
   @ServicoDaRota('MEMBRESIA_REGISTRAR')
   @Post()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   create(@Request() req, @Body() dto: CreateEventoMembresiaDto) {
     return this.service.create(req.user.igreja_id, dto, req.user);
   }
@@ -44,7 +37,7 @@ export class EventosMembresiaController {
   @ServicoDaRota('HISTORICO_MEMBRESIA_RETIFICAR')
   @Post(':id/ordem-inicial')
   @UseGuards(GovernancaGuard)
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   ordenarAtoIsolado(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<OrdenacaoMembresiaService['ordenarUnico']>[3]) {
     return this.ordenacao.ordenarUnico(req.user.igreja_id, req.user.sub, id, dados, req.user);
   }
@@ -69,7 +62,7 @@ export class EventosMembresiaController {
 
   @ServicoDaRota('MEMBRESIA_EDITAR')
   @Patch(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   update(
     @Request() req,
     @Param('id') id: string,
@@ -80,7 +73,7 @@ export class EventosMembresiaController {
 
   @ServicoDaRota('MEMBRESIA_EXCLUIR')
   @Delete(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   remove(@Request() req, @Param('id') id: string) {
     return this.service.remove(id, req.user.igreja_id, req.user);
   }

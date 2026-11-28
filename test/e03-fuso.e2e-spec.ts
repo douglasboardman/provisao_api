@@ -23,7 +23,7 @@ integration('E03: configuração de fuso', () => {
     app = modulo.createNestApplication(); await app.init();
     const p = app.get(PrismaService);
     await p.igreja.createMany({ data: [{ id: igreja, nome: 'Igreja de fuso sintética' }, { id: outra, nome: 'Outra igreja sintética' }] });
-    for (const [id, igrejaId, perfil, salvar] of [[admin, igreja, 'ADMINISTRADOR', (s: string) => { adminCookie = s; }], [gestor, igreja, 'GESTOR', (s: string) => { gestorCookie = s; }], [adminOutra, outra, 'ADMINISTRADOR', (s: string) => { outraCookie = s; }]] as const) {
+    for (const [id, igrejaId, perfil, salvar] of [[admin, igreja, 'ADMINISTRADOR', (s: string) => { adminCookie = s; }], [gestor, igreja, 'COMUM', (s: string) => { gestorCookie = s; }], [adminOutra, outra, 'ADMINISTRADOR', (s: string) => { outraCookie = s; }]] as const) {
       const usuario = await p.usuarios.create({ data: { id, igreja_id: igrejaId, nome_usuario: 'Usuário sintético', email_login: `${id}@example.invalid`, senha_hash: 'inutilizavel', perfil } });
       salvar(`provisao_session=${await app.get(SessionService).create(id, igrejaId, usuario.auth_version)}`);
     }

@@ -15,11 +15,11 @@ import { FileInterceptor } from '@nestjs/platform-express';
 
 /**
  * Controller responsável por gerir todas as operações relacionadas a Pessoas.
- * Protegido por autenticação e restrito aos perfis de ADMIN, GESTOR e OPERADOR por padrão.
+ * Acesso conforme as atribuições de serviço da conta.
  */
 @Controller('pessoas')
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.OPERADOR, Perfil.SECRETARIO, Perfil.TESOUREIRO, Perfil.AUDITOR)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 export class PessoasController {
   constructor(
     private readonly pessoasService: PessoasService,
@@ -28,13 +28,13 @@ export class PessoasController {
 
   /**
    * Cria um novo registro de pessoa na mesma igreja do solicitante.
-   * Acesso restrito aos perfis ADMIN e GESTOR.
+ * Acesso conforme as atribuições de serviço da conta.
    * Rota: POST /pessoas
    */
   @ObservarServico('PESSOAS_CADASTRAR')
   @ServicoDaRota('PESSOAS_CADASTRAR')
   @Post()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   create(@Request() req, @Body() createPessoaDto: CreatePessoaDto) {
     return this.pessoasService.create(req.user.igreja_id, createPessoaDto, req.user);
   }
@@ -61,12 +61,12 @@ export class PessoasController {
   }
 
   /**
-   * Atualiza uma pessoa da mesma igreja. Restrito a ADMIN e GESTOR.
+ * Acesso conforme as atribuições de serviço da conta.
    * Rota: PATCH /pessoas/:id
    */
   @ServicoDaRota('PESSOAS_EDITAR')
   @Patch(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   update(@Request() req, @Param('id') id: string, @Body() updatePessoaDto: UpdatePessoaDto) {
     return this.pessoasService.update(id, req.user.igreja_id, updatePessoaDto, req.user);
   }
@@ -77,7 +77,7 @@ export class PessoasController {
    */
   @ServicoDaRota('PESSOAS_EXCLUIR')
   @Delete(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   remove(@Request() req, @Param('id') id: string) {
     return this.pessoasService.remove(id, req.user.igreja_id, req.user);
   }
@@ -88,7 +88,7 @@ export class PessoasController {
    */
   @ServicoDaRota('PESSOAS_EDITAR')
   @Patch('atrib-foto-pessoa/:id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   @UseInterceptors(FileInterceptor('file'))
   async uploadFotoPessoa(
     @Request() req,
@@ -110,7 +110,7 @@ export class PessoasController {
    */
   @ServicoDaRota('PESSOAS_EDITAR')
   @Patch('atrib-grupo-familiar/:idPessoa/:idFamilia')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   setFamilia(
     @Request() req,
     @Param('idPessoa') idPessoa: string,

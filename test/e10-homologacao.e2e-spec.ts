@@ -194,7 +194,7 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
     const adminEmail = await ator(igreja, 'ADMINISTRADOR');
     const auditorEmail = await ator(igreja, 'AUDITOR');
     const externoEmail = await ator(outra, 'ADMINISTRADOR');
-    const perfisOperacionais = ['SECRETARIO', 'TESOUREIRO', 'OPERADOR'] as const;
+    const perfisOperacionais = ['COMUM'] as const;
     const emailsOperacionais = await Promise.all(perfisOperacionais.map((perfil) => ator(igreja, perfil)));
     await iniciarApi();
     ({ id: usuarioAdmin, cookie: cookieAdmin } = await login(igreja, adminEmail));
@@ -253,7 +253,7 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
     await apiRequest('post', '/auth/set-password', '').send({ token: tokenSenha, nova_senha: senha }).expect(200);
     ({ id: usuarioGestor, cookie: cookieGestor } = await login(igreja, emailPastor));
     await apiRequest('get', '/oficiais').expect(403);
-    await patch(`/usuarios/${usuarioGestor}`, { perfil: 'GESTOR' });
+    await patch(`/usuarios/${usuarioGestor}`, { perfil: 'COMUM' });
     ({ cookie: cookieGestor } = await login(igreja, emailPastor));
 
     const membros = [randomUUID(), randomUUID()];
@@ -272,26 +272,15 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
     const sessoes = new Map<usuarios_perfil, string>([
       ['ADMINISTRADOR', cookieAdmin],
       ['AUDITOR', cookieAuditor],
-      ['GESTOR', cookieGestor],
+      ['COMUM', cookieGestor],
       ...cookiesOperacionais,
     ]);
-    const governanca = ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO'];
     for (const [perfil, cookie] of sessoes) {
-      for (const rota of ['/pessoas', '/eventos-membresia', '/contas', '/lancamentos/balanco', '/igrejas/me'])
-        await get(rota, cookie);
-      await apiRequest('get', '/usuarios', cookie).expect(perfil === 'OPERADOR' ? 403 : 200);
-      const contextosVisiveis = await get('/secretaria/contextos', cookie);
-      if (['TESOUREIRO', 'OPERADOR'].includes(perfil)) expect(contextosVisiveis.body).toEqual([]);
-      // Um corpo inválido é rejeitado pelo DTO após passar pelo guard de perfil.
-      await apiRequest('post', '/pessoas', cookie)
-        .send({})
-        .expect([...governanca, 'TESOUREIRO'].includes(perfil) ? 400 : 403);
-      await apiRequest('post', '/eventos-membresia', cookie)
-        .send({})
-        .expect(governanca.includes(perfil) ? 400 : 403);
-      await apiRequest('post', '/lancamentos', cookie)
-        .send({})
-        .expect(['ADMINISTRADOR', 'TESOUREIRO', 'OPERADOR'].includes(perfil) ? 400 : 403);
+      for (const rota of ['/pessoas', '/eventos-membresia', '/contas', '/lancamentos/balanco', '/igrejas/me', '/usuarios'])
+        await apiRequest('get', rota, cookie).expect(perfil === 'ADMINISTRADOR' ? 200 : 403);
+      await get('/secretaria/contextos', cookie);
+      for (const rota of ['/pessoas', '/eventos-membresia', '/lancamentos'])
+        await apiRequest('post', rota, cookie).send({}).expect(perfil === 'ADMINISTRADOR' ? 400 : 403);
     }
     const oficial = (await post('/oficiais', { pessoa_id: pastor, tipo: 'PRESBITERO_DOCENTE' })).body.id;
     await post(`/oficiais/${oficial}/eventos`, {
@@ -349,6 +338,7 @@ habilitado('E10: homologação integrada com API, SMTP e worker reais', () => {
         tipo_evento: 'ADMISSAO',
         rol: 'COMUNGANTES',
         motivacao_evento: 'PROFISSAO_DE_FE',
+        referencia_documental: 'Ata nº 1/2020',
         data_evento: '2020-01-12',
       });
     const lider = await prisma.cargo_orgao.findFirstOrThrow({ where: { orgao_id: unidade, codigo: 'LIDER' } });

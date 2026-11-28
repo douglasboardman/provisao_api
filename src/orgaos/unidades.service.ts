@@ -34,8 +34,8 @@ export class UnidadesService {
       if (!operador) throw new ForbiddenException('Operador não autorizado.');
       const repetido = await requisicaoAnterior(tx, contexto);
       if (repetido) return { id: repetido.id as string };
-      const gestor = await tx.usuarios.findFirst({ where: { id: v.usuario_id, igreja_id: igrejaId, ativo: true, perfil: 'GESTOR' }, select: { id: true, pessoa_id: true } });
-      if (!gestor?.pessoa_id) throw new NotFoundException('Gestor ativo vinculado a pessoa não encontrado.');
+      const gestor = await tx.usuarios.findFirst({ where: { id: v.usuario_id, igreja_id: igrejaId, ativo: true, perfil: 'COMUM' }, select: { id: true, pessoa_id: true } });
+      if (!gestor?.pessoa_id) throw new NotFoundException('Responsável ativo vinculado a pessoa não encontrado.');
       const registro = await tx.competencia_unidades.create({ data: { igreja_id: igrejaId, usuario_id: gestor.id, pessoa_id: gestor.pessoa_id, registrado_por: operadorId, inicio: dataCivil(v.inicio), fim: v.fim ? dataCivil(v.fim) : null, autoridade: v.autoridade, evidencia: v.evidencia } });
       await this.auditar(tx, igrejaId, operadorId, 'competencia_unidades', registro.id, { usuario_id: gestor.id, pessoa_id: gestor.pessoa_id, inicio: v.inicio, fim: v.fim ?? null });
       await registrarRequisicao(tx, contexto, { id: registro.id });
@@ -50,8 +50,8 @@ export class UnidadesService {
     const hash = hashAto({ operacao: 'INSTITUICAO_UNIDADE', dados: v });
     return transacaoSerializavel(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${operadorId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const gestor = await tx.usuarios.findFirst({ where: { id: operadorId, igreja_id: igrejaId, ativo: true, perfil: 'GESTOR' }, select: { id: true, pessoa_id: true } });
-      if (!gestor?.pessoa_id) throw new ForbiddenException('Gestor institucional vinculado a pessoa é obrigatório.');
+      const gestor = await tx.usuarios.findFirst({ where: { id: operadorId, igreja_id: igrejaId, ativo: true, perfil: 'COMUM' }, select: { id: true, pessoa_id: true } });
+      if (!gestor?.pessoa_id) throw new ForbiddenException('Responsável institucional vinculado a pessoa é obrigatório.');
       const hoje = dataCivil(await hojeDaIgreja(tx, igrejaId));
       if (data > hoje) throw new BadRequestException('Ato futuro exige conferência institucional.');
       const autoridade = await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: gestor.id, pessoa_id: gestor.pessoa_id, inicio: { lte: data }, OR: [{ fim: null }, { fim: { gt: hoje } }] }, select: { id: true } });

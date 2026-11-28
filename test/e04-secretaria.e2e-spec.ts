@@ -52,7 +52,7 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     p = app.get(PrismaService);
     for (const [id, nome] of [[igreja, 'E04 Alfa'], [outra, 'E04 Beta']]) await p.igreja.create({ data: { id, nome } });
     for (const [id, tenant] of [[pessoa, igreja], [pessoaOutra, outra]]) await p.pessoas.create({ data: { id, igreja_id: tenant, nome_completo: 'Pessoa E04 sintética', data_nascimento: new Date('1980-01-01'), sexo: 'FEMININO' } });
-    for (const [key, id, tenant, perfil] of [['admin', admin, igreja, 'ADMINISTRADOR'], ['secretario', secretario, igreja, 'SECRETARIO'], ['gestor', gestor, igreja, 'GESTOR'], ['auditor', auditor, igreja, 'AUDITOR'], ['outra', randomUUID(), outra, 'ADMINISTRADOR']] as const) {
+    for (const [key, id, tenant, perfil] of [['admin', admin, igreja, 'ADMINISTRADOR'], ['secretario', secretario, igreja, 'COMUM'], ['gestor', gestor, igreja, 'COMUM'], ['auditor', auditor, igreja, 'AUDITOR'], ['outra', randomUUID(), outra, 'ADMINISTRADOR']] as const) {
       const u = await p.usuarios.create({ data: { id, igreja_id: tenant, pessoa_id: key === 'gestor' ? pessoa : null, nome_usuario: `E04 ${key}`, email_login: key === 'outra' ? `${admin}@example.invalid` : `${id}@example.invalid`, senha_hash: 'inutilizavel', perfil, ativo: true } });
       cookies[key] = `provisao_session=${await app.get(SessionService).create(id, tenant, u.auth_version)}`;
     }
@@ -184,6 +184,15 @@ integration('E04: secretaria HTTP, transações e integridade PostgreSQL', () =>
     expect(b.tem_proxima).toBe(false);
     expect([...a.itens, ...b.itens].map(item => item.documento_id)).toEqual(esperadas.map(v => v.documento_id));
     expect((await listarMotivadores(0, 'gestor')).body.itens).toEqual([]);
+
+    const outro = await p.documento.create({ data: { ...escopo, perfil: 'ATA_PADRAO', tipo: 'OUTRO' } });
+    const filtrarTipo = (tipo: string, pagina = 0) => get('documentos/consulta', 'outra')
+      .query({ contexto: contextoOutra, visao: 'todos', tipo, pagina }).expect(200);
+    const atas = (await filtrarTipo('ATA')).body;
+    expect(atas.tem_proxima).toBe(true);
+    expect(atas.itens.map(d => d.id)).toEqual(esperadas.slice(0, 30).map(v => v.documento_id));
+    expect((await filtrarTipo('ATA', 1)).body).toMatchObject({ itens: [{ id: esperadas[30].documento_id }], tem_proxima: false });
+    expect((await filtrarTipo('OUTRO')).body).toMatchObject({ itens: [{ id: outro.id }], tem_proxima: false });
   });
 
   it('registra reunião e mesa sem duplicar pessoa; detecta conflito e rejeita presença cruzada', async () => {

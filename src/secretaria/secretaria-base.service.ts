@@ -29,7 +29,7 @@ export class SecretariaBaseService {
       if (conta.perfil !== 'COMUM') throw new ForbiddenException('Perfil da conta alterado.');
     }
     const u = await tx.usuarios.findFirst({ where: { id: ator.sub, igreja_id: ator.igreja_id, ativo: true } });
-    if (!u || (!consultarAtas && !['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', 'AUDITOR', 'COMUM'].includes(u.perfil))) throw new ForbiddenException('Operador não autorizado.');
+    if (!u) throw new ForbiddenException('Operador não autorizado.');
     return u;
   }
 
@@ -43,7 +43,16 @@ export class SecretariaBaseService {
     return transacaoComRetentativa(this.prisma, async tx => {
       const operador = await this.operador(tx, ator, operacao === 'SIGILO_ATA');
       if (operador.perfil === 'AUDITOR' && operacao !== 'SIGILO_ATA') throw new ForbiddenException('Perfil de consulta não pode executar comandos.');
-      if (operacao.startsWith('CAMPO_') && !['SECRETARIO', 'ADMINISTRADOR'].includes(operador.perfil)) throw new ForbiddenException('Cadastro de campos reservado à Secretaria.');
+      if ((operacao.startsWith('CAMPO_') || operacao.startsWith('LOCAL_')) && !await this.podeGerirCadastros(tx, operador)) throw new ForbiddenException('Cadastro de campos reservado à Secretaria.');
+      if (['CRIAR_MODELO', 'EDITAR_MODELO', 'SALVAR_RASCUNHO_MODELO', 'PUBLICAR_MODELO', 'VERSIONAR_MODELO'].includes(operacao)) {
+        const contextoId = operacao === 'CRIAR_MODELO' ? alvo : (await tx.modelo_documento.findFirst({
+          where: { id: alvo ?? '', igreja_id: ator.igreja_id }, select: { contexto_id: true },
+        }))?.contexto_id;
+        if (!contextoId) throw new NotFoundException('Modelo não encontrado.');
+        const contexto = await this.contextoAtivo(tx, ator, contextoId);
+        if (operador.perfil !== 'ADMINISTRADOR' && !await this.podeEditarAtaLegada(tx, contexto, operador))
+          throw new ForbiddenException('Gestão de modelos reservada à administração ou à secretaria em exercício neste contexto.');
+      }
       await autorizar?.(tx);
       const chave = dados.idempotencia.toLowerCase(), hash = hashAto({ operacao, alvo, dados });
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${ator.igreja_id + ':secretaria:' + chave}, 0))`;
@@ -64,7 +73,7 @@ export class SecretariaBaseService {
           const documentoId = ['CRIAR_DOCUMENTO', 'CRIAR_DOCUMENTO_LEGADO'].includes(operacao) ? resultado.id : alvo;
           if (typeof documentoId !== 'string') throw new ConflictException('Resultado anterior indisponível.');
           const documento = await this.documento(tx, ator, documentoId);
-          if (operacao === 'EDITAR_DOCUMENTO_LEGADO') this.exigirSecretario(operador);
+          if (operacao === 'EDITAR_DOCUMENTO_LEGADO') await this.exigirEdicaoAtaLegada(tx, ator, documento.contexto_id);
           else if (['CRIAR_DOCUMENTO', 'EDITAR_DOCUMENTO', 'ENCAMINHAR'].includes(operacao)) {
             const modelo = documento.versoes.find(v => v.numero === documento.versao_atual)?.modelo;
             if (!modelo) throw new ConflictException('Modelo anterior indisponível.');
@@ -113,7 +122,6 @@ export class SecretariaBaseService {
   async contextoVisivel(tx: Tx, contexto: Parameters<AtuacaoModeloService['papeis']>[1] & {
     orgao: { tipo: string; ativo: boolean; tipo_padrao: string | null; gestao_presidencial: boolean };
   }, conta: Conta) {
-    if (conta.perfil === 'OPERADOR' || conta.perfil === 'TESOUREIRO') return false;
     const juvenil = sociedadeJuvenil(contexto.orgao.tipo_padrao);
     if (conta.perfil !== 'COMUM' && !juvenil) return true;
     const dia = await hojeDaIgreja(tx, contexto.igreja_id);
@@ -153,14 +161,36 @@ export class SecretariaBaseService {
     return conta ? this.competenciasDaConta(tx, conta, await hojeDaIgreja(tx, ator.igreja_id), contexto) : [];
   }
 
-  exigirSecretario(operador: { perfil: usuarios_perfil }) {
-    if (operador.perfil !== 'SECRETARIO') throw new ForbiddenException('Edição de ata legada reservada ao secretário.');
+  async podeEditarAtaLegada(tx: Tx, contexto: Parameters<AtuacaoModeloService['papeis']>[1], conta: Conta) {
+    if (!conta.ativo || contexto.orgao?.ativo !== true) return false;
+    if (conta.perfil !== 'COMUM' || !conta.conta_atuacao || !conta.pessoa_id) return false;
+    const papeis = await this.papeisContextuais(tx, contexto, conta);
+    if (!papeis.size) return false;
+    return !!await tx.cargo_orgao.findFirst({ where: {
+      igreja_id: conta.igreja_id, id: { in: [...papeis] }, ativo: true,
+      OR: [{ funcao: 'SECRETARIO' }, { codigo: { in: ['SECRETARIO', 'PRIMEIRO_SECRETARIO', 'SEGUNDO_SECRETARIO'] } }],
+    }, select: { id: true } });
+  }
+
+  async podeGerirCadastros(tx: Tx, conta: Conta) {
+    if (!conta.ativo) return false;
+    if (conta.perfil === 'ADMINISTRADOR') return true;
+    if (conta.perfil !== 'COMUM' || !conta.conta_atuacao) return false;
+    const contextos = await tx.contexto_secretaria.findMany({ where: { igreja_id: conta.igreja_id, orgao: { ativo: true } }, include: { orgao: true } });
+    for (const contexto of contextos) if (await this.podeEditarAtaLegada(tx, contexto, conta)) return true;
+    return false;
+  }
+
+  async exigirEdicaoAtaLegada(tx: Tx, ator: AtorSecretaria, contextoId: string) {
+    const conta = await this.operador(tx, ator);
+    const contexto = await this.contexto(tx, ator, contextoId);
+    if (!await this.podeEditarAtaLegada(tx, contexto, conta))
+      throw new ForbiddenException('Edição de ata legada reservada à secretaria em exercício neste contexto.');
   }
 
   async podePreparar(tx: Tx, ator: AtorSecretaria, contexto: string, u: { perfil: usuarios_perfil }) {
     if (u.perfil === 'COMUM') { await this.contexto(tx, ator, contexto); return true; }
-    return u.perfil === 'SECRETARIO' || u.perfil === 'GESTOR' ||
-      (u.perfil !== 'AUDITOR' && (await this.concessoes(tx, ator, contexto)).some(c => c.pode_aprovar || c.pode_deliberar));
+    return (u.perfil !== 'AUDITOR' && (await this.concessoes(tx, ator, contexto)).some(c => c.pode_aprovar || c.pode_deliberar));
   }
 
   async contextoAtivo(tx: Tx, ator: AtorSecretaria, contexto: string) {
@@ -181,7 +211,6 @@ export class SecretariaBaseService {
     const c = await this.contexto(tx, ator, contexto);
     const regra = configuracaoSchema.parse(configuracao).atuacao;
     if (!regra) {
-      if (existente && u.perfil !== 'COMUM') return;
       throw new ConflictException('Defina os cargos autorizados e publique uma nova versão deste modelo.');
     }
     if (u.perfil === 'COMUM') {

@@ -16,14 +16,15 @@ ensaio('Ficha e mandato por ata', () => {
     await db.eventos_membresia.create({ data: { igreja_id, pessoa_id: p.id, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: datas('1999-02-01') } });
     return p.id;
   };
-  async function ata(contexto_id: string, data: string) {
+  async function ata(contexto_id: string, data: string, dataReuniao?: string) {
     const modelo = await db.modelo_documento.create({ data: { igreja_id: igreja, contexto_id, nome: 'Ata sintética' } });
     const m = await db.modelo_documento_versao.create({ data: { igreja_id: igreja, contexto_id, modelo_id: modelo.id, numero: 1, tipo: 'ATA', finalidade: 'Teste', configuracao: {} } });
     const d = await db.documento.create({ data: { igreja_id: igreja, contexto_id, tipo: 'ATA', estado: 'APROVADO', perfil: 'TESTE' } });
+    const reuniao = dataReuniao ? await db.reuniao.create({ data: { igreja_id: igreja, contexto_id, modalidade: 'AGE', data: datas(dataReuniao), dados: {} } }) : null;
     return (await db.documento_versao.create({ data: { igreja_id: igreja, contexto_id, documento_id: d.id, numero: 1,
-      modelo_versao_id: m.id, assunto: 'Eleição ou posse', data_documento: datas(data), conteudo: {} } })).id;
+      modelo_versao_id: m.id, assunto: 'Eleição ou posse', data_documento: datas(data), reuniao_id: reuniao?.id, conteudo: {} } })).id;
   }
-  async function usuario(id: string, igreja_id: string, perfil: 'ADMINISTRADOR' | 'GESTOR' = 'GESTOR') {
+  async function usuario(id: string, igreja_id: string, perfil: 'ADMINISTRADOR' | 'COMUM' = 'COMUM') {
     const pessoa_id = await pessoa(igreja_id, 'Operador');
     const u = await db.usuarios.create({ data: { id, igreja_id, pessoa_id, nome_usuario: 'Operador', perfil, email_login: id + '@example.invalid', senha_hash: 'teste' } });
     return { cookie: 'provisao_session=' + await app.get(SessionService).create(id, igreja_id, u.auth_version), pessoa_id };
@@ -31,8 +32,8 @@ ensaio('Ficha e mandato por ata', () => {
   const http = (metodo: 'get' | 'post' | 'patch', path: string, c = cookie) => request(app.getHttpServer())[metodo](path)
     .set('Cookie', c).set('Origin','http://localhost:3001').set('X-Provisao-Request','1');
   const membros = async (id: string, dia: string) => ((await http('get', '/orgaos/' + id).query({ data: dia }).expect(200)).body.composicao?.membros ?? []).map(m => m.pessoa_id);
-  const novo = async (p: string, eleicao: string, posse: string) => ({
-    pessoa_id: p, ata_eleicao: await ata(ag, eleicao), ata_posse: await ata(con, posse),
+  const novo = async (p: string, ataEleicao: string, ataPosse: string, dataAssembleia?: string) => ({
+    pessoa_id: p, ata_eleicao: await ata(ag, ataEleicao, dataAssembleia), ata_posse: await ata(con, ataPosse),
     idempotencia: randomUUID(),
   });
   beforeAll(async () => {
@@ -52,12 +53,16 @@ ensaio('Ficha e mandato por ata', () => {
   });
   afterAll(async () => { await app?.close(); });
 
-  it('registra ordenação e posse sem indicação, reaproveita o ofício e apura exercício por data', async () => {
-    const path = '/orgaos/' + conselho + '/mandatos', original = await novo(candidato, '2015-01-01', '2015-02-01');
+  it('conta o mandato da posse informada e usa a data da assembleia para a eleição', async () => {
+    const path = '/orgaos/' + conselho + '/mandatos', original = await novo(candidato, '2015-01-05', '2015-02-05', '2015-01-01');
     await http('post', path + '/previa').send(original).expect(400);
-    const dados = { ...original, ordenacao: { data: '2015-02-01', autoridade: 'Conselho' } };
-    await http('post', path + '/previa').send({ ...dados, data_posse: '2015-02-02' }).expect(400)
-      .expect(r => expect(r.body.message).toMatch(/data da posse deve ser a da ata/));
+    const dados = { ...original, data_posse: '2015-02-01', ordenacao: { data: '2015-02-01', autoridade: 'Conselho' } };
+    await http('get', '/oficiais/indicacoes/selecao-atas').query({ tipo: 'ASSEMBLEIA' }).expect(200)
+      .expect(r => expect(r.body.itens).toContainEqual(expect.objectContaining({ versao_id: dados.ata_eleicao, data_reuniao: '2015-01-01' })));
+    await http('post', path + '/previa').send({ ...dados, data_posse: '2015-02-06' }).expect(400)
+      .expect(r => expect(r.body.message).toMatch(/anterior à data da ata/));
+    await http('post', path + '/previa').send({ ...dados, data_posse: '2014-12-31' }).expect(400)
+      .expect(r => expect(r.body.message).toMatch(/posterior à eleição/));
     await http('post', path + '/previa').send({ ...dados, ata_posse: await ata(con, '2014-12-31') }).expect(400)
       .expect(r => expect(r.body.message).toMatch(/ata da posse antecede a eleição/));
     const previa = (await http('post', path + '/previa').send(dados).expect(201)).body;
@@ -102,8 +107,8 @@ ensaio('Ficha e mandato por ata', () => {
     expect(await membros(conselho,'2021-05-11')).toEqual([]);
   });
 
-  it('consulta o docente a partir do vínculo pastoral e conserva indicações sem ofício constituído', async () => {
-    const pastor = await pessoa(igreja, 'Docente'), indicado = await pessoa(igreja, 'Indicado');
+  it('consulta o docente a partir do vínculo pastoral', async () => {
+    const pastor = await pessoa(igreja, 'Docente');
     const of = await db.oficial.create({ data: { igreja_id: igreja, pessoa_id: pastor, tipo: 'PRESBITERO_DOCENTE' } });
     await db.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: of.id, tipo: 'ORDENACAO', data_efeito: datas('2010-01-01'), ordem: 1, autoridade: 'Presbitério', evidencia: 'Ato' } });
     await db.vinculo_pastoral.create({ data: { igreja_id: igreja, oficial_id: of.id, data_inicio: datas('2018-05-01'), data_fim: datas('2019-03-15'),
@@ -113,16 +118,9 @@ ensaio('Ficha e mandato por ata', () => {
     expect(await membros(conselho,'2019-03-16')).not.toContain(pastor);
     const docentes = await http('get','/orgaos/' + conselho + '/docentes').expect(200);
     expect(docentes.body.itens[0].vinculos_pastorais).toHaveLength(1);
-    const anterior = await ata(con,'2011-03-01');
-    await db.indicacao_eleicao_oficial.create({ data: { igreja_id: igreja, pessoa_id: indicado, oficio: 'DIACONO', ata_conselho_versao_id: anterior,
-      data_assembleia: datas('2011-04-01'), registrado_por_id: gestor } });
-    const h = await http('get','/oficiais/indicacoes/historico').expect(200);
-    expect(h.body.itens[0]).toMatchObject({ mandato: null, pessoa: { nome_completo: 'Indicado' }, ata_conselho: { id: anterior, contexto_id: con } });
-    await db.documento.updateMany({ where: { versoes: { some: { id: anterior } } }, data: { restrito: true } });
-    expect((await http('get','/oficiais/indicacoes/historico').expect(200)).body.itens).toHaveLength(0);
   });
 
-  it('vincula indicação histórica elegível preservando as duas atas exigidas', async () => {
+  it('registra mandato direto com as duas atas e preserva a indicação histórica existente', async () => {
     const p = await pessoa(igreja, 'Diácono indicado');
     const entrada = await novo(p, '2011-04-01', '2011-05-01');
     const i = await db.indicacao_eleicao_oficial.create({ data: {
@@ -130,21 +128,17 @@ ensaio('Ficha e mandato por ata', () => {
       ata_conselho_versao_id: await ata(con, '2011-03-01'), registrado_por_id: gestor,
     } });
     const rota = '/orgaos/' + junta + '/mandatos';
-    const filtros = { pessoa: p, ata: entrada.ata_eleicao };
-    await http('get', rota + '/indicacoes').query(filtros).expect(200)
-      .expect(r => expect(r.body).toMatchObject([{ id: i.id }]));
-    await http('get', '/orgaos/' + conselho + '/mandatos/indicacoes').query(filtros).expect(200, []);
-    await http('get', rota + '/indicacoes', estrangeiro).query(filtros).expect(403);
-    const dados = { ...entrada, indicacao_id: i.id, ordenacao: { data: '2011-05-01', autoridade: 'Conselho', evidencia: 'Livro I' } };
-    await http('post', rota + '/previa').send({ ...dados, indicacao_id: randomUUID() }).expect(404);
+    await http('get', rota + '/indicacoes').query({ pessoa: p, ata: entrada.ata_eleicao }).expect(404);
+    const dados = { ...entrada, ordenacao: { data: '2011-05-01', autoridade: 'Conselho', evidencia: 'Livro I' } };
+    await http('post', rota + '/previa').send({ ...dados, indicacao_id: i.id }).expect(400);
     const { body: previa } = await http('post', rota + '/previa').send(dados).expect(201);
-    expect(previa).toMatchObject({ indicacao_id: i.id, assunto_indicacao: 'Eleição ou posse' });
+    expect(previa).not.toHaveProperty('indicacao_id');
     const { body: mandato } = await http('post', rota).send({ ...dados, previa: previa.previa }).expect(201);
     await http('post', rota).send({ ...dados, previa: previa.previa }).expect(201, mandato);
     const salvo = await db.mandato_oficial.findUniqueOrThrow({ where: { id: mandato.id }, include: { referencias_ata: true } });
-    expect(salvo.indicacao_id).toBe(i.id);
+    expect(salvo.indicacao_id).toBeNull();
     expect(salvo.referencias_ata.map(a => a.ato).sort()).toEqual(['ELEICAO', 'POSSE']);
-    await http('get', rota + '/indicacoes').query(filtros).expect(200, []);
+    expect(await db.indicacao_eleicao_oficial.findUniqueOrThrow({ where: { id: i.id }, include: { mandato: true } })).toMatchObject({ mandato: null });
   });
 
   it('aplica contexto, sigilo, escopo da igreja e revogação até no reenvio e usa a data bissexta da ata de posse na Junta', async () => {
@@ -180,7 +174,6 @@ ensaio('Ficha e mandato por ata', () => {
     expect((await consulta()).pode_registrar).toBe(true);
     await http('get', '/oficiais/indicacoes/selecao-atas', admin.cookie).query({ tipo: 'ASSEMBLEIA' }).expect(200)
       .expect(r => expect(r.body.itens.some(v => v.versao_id === dados.ata_eleicao)).toBe(true));
-    await http('get', path + '/indicacoes', admin.cookie).query({ pessoa: admin.pessoa_id, ata: dados.ata_eleicao }).expect(200);
     await conferir(adminOutraIgreja.cookie).expect(404);
     const { body: previa } = await conferir(admin.cookie).expect(201);
     const escopo = { igreja_id: igreja, acao: 'MANDATOS_REGISTRAR' };

@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { bloquearRegrasMembresia } from '../regras-relacao-enum/parametros-membresia';
 import { createHash } from 'crypto';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
@@ -25,9 +26,7 @@ export class DecisaoRevisaoOrgaoService {
   constructor(private readonly prisma: PrismaService, private readonly data: CorrecaoMembresiaService, private readonly conteudo: CorrecaoConteudoService, private readonly insercao: InsercaoRetroativaService, private readonly ordem: OrdenacaoMembresiaService) {}
 
   private async autorizar(tx: Prisma.TransactionClient, igreja: string, usuario: string, modo: 'consultar' | 'registrar') {
-    const perfis: usuarios_perfil[] = [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO];
-    if (modo === 'consultar') perfis.push(usuarios_perfil.AUDITOR);
-    if (!await tx.usuarios.findFirst({ where: { id: usuario, igreja_id: igreja, ativo: true, perfil: { in: perfis } }, select: { id: true } })) throw new ForbiddenException('Operador não autorizado nesta igreja.');
+    await exigirServicoDoUsuario(tx, igreja, usuario, modo === 'consultar' ? 'HISTORICO_MEMBRESIA_CONSULTAR' : 'REVISOES_ELEITORAIS_DECIDIR');
     await exigirAcessoSensivel(tx, igreja, usuario, modo);
   }
 

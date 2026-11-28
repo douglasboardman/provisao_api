@@ -9,7 +9,7 @@ import { AuthGuard } from 'src/auth/auth.guard';
 import { RolesGuard, ALL_ROLES } from 'src/auth/guards/roles/roles.guard';
 
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO)
+@Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
 @Controller('acoes')
 export class AcoesController {
   constructor(private readonly acoesService: AcoesService) {}

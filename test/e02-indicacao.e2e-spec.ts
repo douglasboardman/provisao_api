@@ -9,12 +9,12 @@ import { PrismaService } from '../src/prisma/prisma.service';
 const integracao = process.env.E00_INTEGRATION === '1' ? describe : describe.skip;
 const civil = (data: string) => new Date(`${data}T00:00:00Z`);
 
-integracao('E02: indicação do Conselho e mandato por ata de Assembleia', () => {
+integracao('E02: seleção eleitoral e retirada da indicação', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let cookie: string;
   const igreja = randomUUID(), operador = randomUUID(), candidato = randomUUID(), menor = randomUUID(), foraDoRol = randomUUID();
-  let conselho: { id: string; documento_id: string }, assembleia: { id: string; documento_id: string }, outraAssembleia: { id: string; documento_id: string }, oficioAnterior: string;
+  let conselho: { id: string; documento_id: string }, assembleia: { id: string; documento_id: string };
   const antes = { governanca: process.env.FEATURE_GOVERNANCA, secretaria: process.env.FEATURE_SECRETARIA };
 
   const http = (metodo: 'get' | 'post', path: string) => request(app.getHttpServer())[metodo](path)
@@ -55,9 +55,8 @@ integracao('E02: indicação do Conselho e mandato por ata de Assembleia', () =>
     await prisma.eventos_membresia.create({ data: {
       igreja_id: igreja, pessoa_id: foraDoRol, tipo_evento: 'DEMISSAO', rol: 'EXCLUIDOS', motivacao_evento: 'EXCLUSAO_A_PEDIDO', data_evento: civil('2024-08-02'),
     } });
-    oficioAnterior = (await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: candidato, tipo: 'DIACONO', ativo: true } })).id;
     const usuario = await prisma.usuarios.create({
-      data: { id: operador, igreja_id: igreja, perfil: 'GESTOR', nome_usuario: 'Gestor sintético', email_login: `${operador}@example.invalid`, senha_hash: 'teste' },
+      data: { id: operador, igreja_id: igreja, perfil: 'COMUM', nome_usuario: 'Gestor sintético', email_login: `${operador}@example.invalid`, senha_hash: 'teste' },
     });
     cookie = `provisao_session=${await app.get(SessionService).create(operador, igreja, usuario.auth_version)}`;
     const orgao = await prisma.orgao_interno.create({ data: { igreja_id: igreja, tipo: 'CONSELHO', constituicao: 'OFICIAL',
@@ -70,7 +69,6 @@ integracao('E02: indicação do Conselho e mandato por ata de Assembleia', () =>
     ]);
     conselho = await criarAta(ctxConselho.id, '2024-08-01');
     assembleia = await criarAta(ctxAssembleia.id, '2024-09-01');
-    outraAssembleia = await criarAta(ctxAssembleia.id, '2024-10-01');
   });
 
   afterAll(async () => {
@@ -81,28 +79,24 @@ integracao('E02: indicação do Conselho e mandato por ata de Assembleia', () =>
     if (app) await app.close();
   });
 
-  it('limita a indicação à assembleia marcada e registra um mandato de cinco anos', async () => {
+  it('permite consultar atas e candidatos e encerra o fluxo de indicações', async () => {
     const inicio = '/oficiais/indicacoes';
     const atas = await http('get', `${inicio}/atas`).query({ tipo: 'CONSELHO' }).expect(200);
     expect(atas.body.map((a: { versao_id: string }) => a.versao_id)).toEqual([conselho.id]);
     const aptos = await http('get', `${inicio}/candidatos`).query({ ata: conselho.id }).expect(200);
     expect(aptos.body).toEqual([{ id: candidato, nome_completo: 'Candidato Sintético' }]);
-    const dados = { pessoa_id: candidato, oficio: 'PRESBITERO_REGENTE', ata_conselho_versao_id: conselho.id, data_assembleia: '2024-09-01' };
-    await http('post', inicio).send({ ...dados, pessoa_id: menor }).expect(400);
-    const indicacao = (await http('post', inicio).send(dados).expect(201)).body.id;
-    const abertas = await http('get', inicio).expect(200);
-    expect(abertas.body).toEqual([]);
-    const daAssembleia = await http('get', inicio).query({ assembleia: assembleia.id }).expect(200);
-    expect(daAssembleia.body).toMatchObject([{ id: indicacao }]);
-    const novo = { indicacao_id: indicacao, ata_assembleia_versao_id: assembleia.id, data_posse: '2024-09-08' };
-    await http('post', `${inicio}/mandatos`).send({ ...novo, ata_assembleia_versao_id: outraAssembleia.id }).expect(400);
-    const criados = await Promise.all([http('post', `${inicio}/mandatos`).send(novo), http('post', `${inicio}/mandatos`).send(novo)]);
-    expect(criados.map(r => r.status).sort()).toEqual([201, 409]);
-    const criado = criados.find(r => r.status === 201)!.body;
-    expect(await prisma.mandato_oficial.findUnique({ where: { id: criado.id }, include: { referencias_ata: true, oficial: true } })).toMatchObject({
-      indicacao_id: indicacao, data_eleicao: civil('2024-09-01'), data_posse: civil('2024-09-08'), termino_previsto: civil('2029-09-07'),
-      oficial: { tipo: 'PRESBITERO_REGENTE', ativo: true }, referencias_ata: [{ ato: 'ELEICAO', versao_id: assembleia.id, ata_documento_id: assembleia.documento_id }],
-    });
-    expect(await prisma.oficial.findUnique({ where: { id: oficioAnterior }, select: { ativo: true } })).toEqual({ ativo: false });
+
+    const dados = { pessoa_id: candidato, oficio: 'PRESBITERO_REGENTE' as const, ata_conselho_versao_id: conselho.id };
+    const existente = await prisma.indicacao_eleicao_oficial.create({ data: {
+      ...dados, igreja_id: igreja, registrado_por_id: operador, data_assembleia: civil('2024-09-01'),
+    } });
+    await http('post', inicio).send({ ...dados, data_assembleia: '2024-09-01' }).expect(404);
+    await http('get', `${inicio}/historico`).expect(404);
+    await http('post', `${inicio}/mandatos`).send({
+      indicacao_id: existente.id, ata_assembleia_versao_id: assembleia.id, data_posse: '2024-09-08',
+    }).expect(410);
+
+    expect(await prisma.indicacao_eleicao_oficial.count({ where: { igreja_id: igreja } })).toBe(1);
+    expect(await prisma.mandato_oficial.count({ where: { igreja_id: igreja } })).toBe(0);
   });
 });

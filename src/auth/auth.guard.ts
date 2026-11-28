@@ -20,8 +20,8 @@ export class AuthGuard implements CanActivate {
         (request.method === 'POST' && ['/auth/mfa/setup', '/auth/mfa/activate', '/auth/logout'].includes(request.path));
       if (!allowed) throw new ForbiddenException('Configure a autenticação em duas etapas para continuar.');
     }
-    if (user.perfil === 'COMUM' && !Reflect.getMetadata('aceita_conta_comum', context.getHandler()) &&
-        !Reflect.getMetadata('servico_em_comparacao', context.getHandler()) && !Reflect.getMetadata('servico_da_rota', context.getHandler())) {
+    if (user.perfil === 'COMUM' && !Reflect.getMetadata('aceita_conta_comum', context.getHandler()) && !Reflect.getMetadata('aceita_conta_comum', context.getClass()) &&
+        !Reflect.getMetadata('servico_em_comparacao', context.getHandler()) && !Reflect.getMetadata('servico_da_rota', context.getHandler()) && !Reflect.getMetadata('servico_da_rota', context.getClass())) {
       throw new ForbiddenException('Ação indisponível para a conta comum.');
     }
     request['user'] = { sub: user.id, igreja_id: user.igreja_id, perfil: user.perfil, auth_version: user.auth_version, username: user.nome_usuario, login: user.email_login, mfa_enrollment_required: user.mfa_enrollment_required, mfa_recovery_recent: user.mfa_recovery_recent, sessao_id: user.sessao_id };

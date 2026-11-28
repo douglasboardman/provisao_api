@@ -28,7 +28,7 @@ integration('E03: diretoria de unidade eleita', () => {
     if (process.env.DATABASE_URL !== 'postgresql://provisao_test:provisao_test@127.0.0.1:55439/provisao_test?schema=public') throw new Error('Exige banco descartável E00.');
     await prisma.$connect();
     for (const id of [pessoaGestor, comungante, naoComungante]) await prisma.pessoas.create({ data: { id, igreja_id: igreja, nome_completo: 'Pessoa sintética', data_nascimento: data('1980-01-01'), sexo: 'FEMININO' } });
-    await prisma.usuarios.create({ data: { id: gestor, igreja_id: igreja, pessoa_id: pessoaGestor, nome_usuario: 'Gestora sintética', email_login: `${gestor}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'GESTOR' } });
+    await prisma.usuarios.create({ data: { id: gestor, igreja_id: igreja, pessoa_id: pessoaGestor, nome_usuario: 'Gestora sintética', email_login: `${gestor}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'COMUM' } });
     process.env.FEATURE_GOVERNANCA = 'true'; process.env.FEATURE_ORGAOS = 'true'; process.env.FEATURE_ORGAOS_GESTAO = 'true';
     app = (await Test.createTestingModule({ imports: [AppModule] }).compile()).createNestApplication();
     await app.init();
@@ -58,7 +58,7 @@ integration('E03: diretoria de unidade eleita', () => {
     const regra = { versao: '1', fonte: 'Norma sintética', autoridade: 'Órgão competente', evidencia: 'Ato sintético', inicio: '2020-01-01', fim: '2090-12-31', prazo_maximo_meses: 12, idempotencia: randomUUID() };
     await expect(politicas.registrar(outra, gestor, orgao, regra)).rejects.toThrow();
     politicaId = (await politicas.registrar(igreja, gestor, orgao, regra)).id;
-    const controller = new OrgaosController(prisma, new ComposicaoService(prisma));
+    const controller = app.get(OrgaosController);
     const detalhe = await controller.detalhe({ user: { igreja_id: igreja } }, orgao, hoje);
     expect(detalhe.politicas).toEqual([expect.objectContaining({ id: politicaId, versao: '1', prazo_maximo_meses: 12 })]);
     expect(JSON.stringify(detalhe)).not.toContain('Ato sintético');

@@ -9,7 +9,7 @@ import { AssembleiasService } from './assembleias.service';
 
 @Controller('secretaria/reunioes/:id/assembleia')
 @UseGuards(AuthGuard, RolesGuard, SecretariaGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 export class AssembleiasController {
   constructor(private readonly assembleias: AssembleiasService) {}
 
@@ -35,6 +35,7 @@ export class AssembleiasController {
     return this.assembleias.gerar(req.user,id,dados);
   }
 
+  @OperacaoContextual()
   @Post('mesa')
   instalar(@Request() req: { user: AtorSecretaria }, @Param('id', ParseUUIDPipe) id: string, @Body() dados: unknown) {
     return this.assembleias.instalar(req.user,id,dados);

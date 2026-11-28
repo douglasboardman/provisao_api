@@ -1,3 +1,5 @@
+import { reatribuicaoAtosSchema } from './referencias-ata.dto';
+import { rascunhoEfetivos, retratoModeloReuniao } from './regras-modelo-reuniao';
 import { camposNumeracao } from './numeracao-campos';
 import { camposDataHoraReuniao } from './data-reuniao';
 import { BadRequestException } from '@nestjs/common';
@@ -66,22 +68,25 @@ export const modeloVersaoSchema = z.object({ ...chave, ...revisao, nome: nome.op
 const participante = z.object({ pessoa_id: z.uuid(), presente: z.boolean(), papeis: z.array(codigo).min(1).max(20), pode_propor: z.boolean().optional() }).strict();
 export const modalidadeReuniaoSchema = z.enum(['ORDINARIA', 'EXTRAORDINARIA', 'REGULAR', 'AGO', 'AGE']);
 const dadosReuniao = z.strictObject({
+  modelo_reuniao_id: z.uuid().optional(), modelo_reuniao: retratoModeloReuniao.optional(),
+  formato: z.enum(['Presencial','Virtual','Híbrida']).optional(), carater: z.enum(['Regular','Urgente']).optional(),
+  convocacao: z.enum(['Primeira','Segunda']).optional(), primeira_reuniao_id: z.uuid().nullable().optional(),
+  total_presentes: z.number().int().nonnegative().nullable().optional(), local_efetivo: z.string().max(255).optional(),
   restrito: z.boolean(), modalidade: modalidadeReuniaoSchema, data: dia,
-  situacao: z.enum(['AGENDADA', 'EM_ANDAMENTO', 'ENCERRADA', 'ADIADA', 'CANCELADA']).optional(),
+  situacao: z.enum(['AGENDADA', 'EM_ANDAMENTO', 'ENCERRADA', 'ADIADA', 'CANCELADA','NAO_INSTALADA']).optional(),
   horario_previsto: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
   local: nome, inicio: z.iso.datetime({ offset: true }).nullable().default(null), fim: z.iso.datetime({ offset: true }).nullable().default(null),
   pauta: z.string().trim().min(1).max(20000), competencia: z.string().trim().max(1000).default(''),
   universo_informado: z.number().int().nonnegative().max(1000000), quorum_minimo: z.number().int().nonnegative().max(1000000),
-  quorum_conferido: z.boolean(), fundamento_quorum: z.string().trim().max(1000).default(''),
+  quorum_conferido: z.boolean().default(false), fundamento_quorum: z.string().trim().max(1500).default(''),
   resultado: z.string().trim().max(20000), participantes: z.array(participante).max(1000),
 });
 function conferirReuniao(v: Pick<z.infer<typeof dadosReuniao>, 'quorum_minimo' | 'universo_informado' | 'inicio' | 'fim' | 'situacao' | 'horario_previsto' | 'competencia' | 'fundamento_quorum' | 'quorum_conferido' | 'participantes' | 'resultado'>, ctx: z.RefinementCtx) {
   const invalidar = (message: string) => ctx.addIssue({ code: 'custom', message });
   if (v.situacao === 'AGENDADA' && !v.horario_previsto) invalidar('Informe o horário previsto.');
-  if (v.situacao === 'EM_ANDAMENTO' && (!v.inicio || v.fim)) invalidar('Informe a abertura e registre o fim ao encerrar.');
-  if (v.situacao === 'ENCERRADA' && (!v.inicio || !v.fim)) invalidar('Informe a abertura e o encerramento.');
+  if (v.situacao === 'EM_ANDAMENTO' && v.fim) invalidar('Informe a abertura e registre o fim ao encerrar.');
+
   if (v.situacao === 'AGENDADA' && (v.inicio || v.fim || v.quorum_conferido || v.resultado || v.participantes.some(p => p.presente))) invalidar('Altere a situação para registrar a realização da reunião.');
-  if (v.quorum_conferido && (!v.fundamento_quorum || !v.competencia)) invalidar('Informe o fundamento do quórum e a competência da pauta para conferir.');
   if (v.quorum_minimo > v.universo_informado) ctx.addIssue({ code: 'custom', message: 'Quórum maior que universo.' });
   if (v.inicio && v.fim && new Date(v.fim) < new Date(v.inicio)) ctx.addIssue({ code: 'custom', message: 'Horários inválidos.' });
 }
@@ -104,6 +109,7 @@ export const editarReuniaoSchema = z.object({ ...chave, ...revisao, local_id: z.
 const arrolado = z.object({ pessoa_id: z.uuid(), papeis: z.array(codigo).min(1).max(30), cargo_id: z.uuid().nullable().default(null), cargos_ids: z.array(z.uuid()).max(30).default([]), assina: z.boolean(), obrigatorio: z.boolean(), responsavel: z.boolean(), fundamento: z.string().trim().max(1000) }).strict().refine(v => !v.obrigatorio || v.assina, 'Obrigatório deve assinar.');
 export const conteudoSchema = z.object({
   autores_origem: z.strictObject({ preparador: z.uuid().nullable(), convocante: z.uuid().nullable() }).optional(),
+  efetivos: rascunhoEfetivos.optional(),
   planejamento_origem: z.string().length(64).optional(),
   redator_ata: z.strictObject({ pessoa_id: z.uuid(), nome: nome.optional() }).nullable().optional(),
   teor: z.string().max(200000), campos: z.record(codigo, z.string().max(10000)).refine(v => Object.values(v).reduce((s, t) => s + t.length, 0) <= 60000 && Object.keys(v).length <= 100, 'Campos excedem o limite permitido.'),
@@ -114,6 +120,7 @@ export const conteudoSchema = z.object({
 export const versaoSchema = z.object({ atualizar_fontes: z.string().length(64).optional(), confirmar_troca_livro: z.boolean().optional(), confirmar_troca_origem: z.boolean().optional(), modelo_versao_id: z.uuid(), livro_id: z.uuid().nullable().optional(), reuniao_id: z.uuid().nullable().default(null), motivador_id: z.uuid().nullable().default(null), assunto: nome, data_documento: dia, conteudo: conteudoSchema, resolucoes: resolucoesSchema.optional() }).strict();
 export const consultaDocumentosSchema = z.strictObject({
   contexto: z.uuid(), pagina: z.coerce.number().int().min(0).max(100000).default(0),
+  tipo: z.enum(['ATA', 'OUTRO']).optional(),
   visao: z.enum(['expedidos', 'andamento', 'todos']), busca: z.string().trim().max(255).optional(),
   modelo: z.uuid().optional(), de: dia.optional(), ate: dia.optional(),
   estado: z.enum(['EM_EDICAO', 'ENCAMINHADO', 'APROVADO', 'EXPEDIDO', 'ANULADO', 'CANCELADO', 'LEGADA_CONFERIDA']).optional(),
@@ -124,7 +131,7 @@ export const comandoSchema = z.object({ ...chave, ...revisao, autoridade: nome, 
 export const modalidadeAssinatura = z.enum(['ELETRONICA', 'FISICA']);
 export const aprovacaoSchema = comandoSchema.extend({ modalidade: modalidadeAssinatura.optional() }).strict();
 export const deliberacaoSchema = comandoSchema.extend({ reuniao_id: z.uuid(), resultado: z.enum(['APROVADA', 'REJEITADA', 'ADIADA']), data: dia }).strict();
-export const retificarSchema = comandoSchema.extend({ versao: versaoSchema }).strict();
+export const retificarSchema = comandoSchema.extend({ versao: versaoSchema, reatribuicao_atos: reatribuicaoAtosSchema.optional() }).strict();
 export function validar<T extends z.ZodType>(schema: T, dados: unknown): z.infer<T> {
   const v = schema.safeParse(dados);
   if (!v.success) throw new BadRequestException(v.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; '));

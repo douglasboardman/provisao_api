@@ -49,7 +49,7 @@ integration('Atuação institucional por modelo', () => {
         pessoa_id: pessoa.id,
         email_login: pessoa.email!,
         nome_usuario: nome,
-        perfil: comum ? 'COMUM' : 'SECRETARIO',
+        perfil: 'COMUM',
         conta_atuacao: comum,
         senha_hash: 'inutilizavel',
       },
@@ -151,7 +151,7 @@ integration('Atuação institucional por modelo', () => {
     }
     for (const [id, pessoa_id] of [[presidente, pPastor], [secretario, pSecretario]]) {
       await db.pessoas.create({ data: { id: pessoa_id, igreja_id: igreja, nome_completo: 'Pessoa ' + id, data_nascimento: new Date('1980-01-01'), sexo: 'MASCULINO' } });
-      await db.usuarios.create({ data: { id, pessoa_id, igreja_id: igreja, nome_usuario: 'Operador', email_login: id + '@example.invalid', perfil: 'SECRETARIO', senha_hash: 'inutilizavel' } });
+      await db.usuarios.create({ data: { id, pessoa_id, igreja_id: igreja, nome_usuario: 'Operador', email_login: id + '@example.invalid', perfil: 'COMUM', senha_hash: 'inutilizavel' } });
       cookies.set(id, 'provisao_session=' + await app.get(SessionService).create(id, igreja, 0));
     }
     const orgao = await db.orgao_interno.create({ data: { igreja_id: igreja, nome: 'Conselho', tipo: 'CONSELHO', constituicao: 'OFICIAL', finalidade: 'Conselho', data_criacao: inicio, criador_id: secretario } });
@@ -214,7 +214,7 @@ integration('Atuação institucional por modelo', () => {
       .query({ contexto: contextoConselho }).expect(200)).body.map(d => d.id);
     expect(await listar(semMandato.usuario)).not.toContain(documento.id);
     expect(await listar(secretario)).toContain(documento.id);
-    const conta = await db.usuarios.update({ where: { id: secretario }, data: { perfil: 'TESOUREIRO' } });
+    const conta = await db.usuarios.update({ where: { id: secretario }, data: { perfil: 'COMUM' } });
     const sessaoAnterior = cookies.get(secretario)!;
     try {
       cookies.set(secretario, 'provisao_session=' + await app.get(SessionService).create(conta.id, igreja, conta.auth_version));
@@ -227,7 +227,7 @@ integration('Atuação institucional por modelo', () => {
         .send({ restrito: false, revisao: documento.revisao + 1, idempotencia: randomUUID() }).expect(201);
       await chamada(semMandato.usuario, 'get', rota).expect(200);
     } finally {
-      await db.usuarios.update({ where: { id: secretario }, data: { perfil: 'SECRETARIO' } });
+      await db.usuarios.update({ where: { id: secretario }, data: { perfil: 'COMUM' } });
       cookies.set(secretario, sessaoAnterior);
     }
   });

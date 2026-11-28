@@ -40,7 +40,7 @@ export class EmergencyRecoveryService {
         await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${a.usuario_id} AND igreja_id = ${a.igreja_id} FOR UPDATE`;
         if (a.expira_em <= Math.floor(Date.now() / 1000)) throw new UnauthorizedException('Autorização inválida ou expirada.');
         if (await tx.mfa_recuperacao_emergencial.findUnique({ where: { nonce_hash: nonceHash } })) throw new ConflictException('Autorização já utilizada.');
-        const user = await tx.usuarios.findFirst({ where: { id: a.usuario_id, igreja_id: a.igreja_id, ativo: true, perfil: { in: ['ADMINISTRADOR', 'GESTOR'] } }, include: { mfa_credencial: true } });
+        const user = await tx.usuarios.findFirst({ where: { id: a.usuario_id, igreja_id: a.igreja_id, ativo: true, perfil: { in: ['ADMINISTRADOR', 'AUDITOR', 'COMUM'] } }, include: { mfa_credencial: true } });
         if (!user || user.mfa_credencial?.estado !== 'ATIVO') throw new BadRequestException('Conta ou MFA indisponível para recuperação.');
         const record = await tx.mfa_recuperacao_emergencial.create({ data: { igreja_id: a.igreja_id, usuario_id: a.usuario_id, nonce_hash: nonceHash, chave_fingerprint: fingerprint, autoridade_externa: a.autoridade, motivo: a.motivo } });
         await tx.mfa_recuperacao_pendente.deleteMany({ where: { usuario_id: user.id } });

@@ -31,7 +31,7 @@ export class AcessoSensivelService {
     return this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE igreja_id = ${igrejaId} AND id IN (${usuarioId}, ${v.usuario_id}) ORDER BY id FOR SHARE`;
       const admin = await this.administrador(tx, igrejaId, usuarioId);
-      const alvo = await tx.usuarios.findFirst({ where: { id: v.usuario_id, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO, usuarios_perfil.AUDITOR, usuarios_perfil.COMUM] } }, select: { id: true, perfil: true, pessoa_id: true } });
+      const alvo = await tx.usuarios.findFirst({ where: { id: v.usuario_id, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.AUDITOR, usuarios_perfil.COMUM] } }, select: { id: true, perfil: true, pessoa_id: true } });
       if (!alvo) throw new NotFoundException('Usuário elegível não encontrado nesta igreja.');
       if (admin.pessoa_id && admin.pessoa_id === alvo.pessoa_id) throw new ForbiddenException('Não é permitido conceder acesso a outra conta própria.');
       if (alvo.perfil === usuarios_perfil.AUDITOR && v.pode_registrar) throw new BadRequestException('Auditor pode receber somente acesso de consulta.');

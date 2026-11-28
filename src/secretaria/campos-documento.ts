@@ -6,7 +6,9 @@ import { textosDeliberacoes } from './deliberacoes';
 import { numeroPorExtenso } from '../core/numero-por-extenso';
 import { ocorrencias, valoresPaginaSchema, type ValoresPagina } from './composicao-pagina';
 import { camposEndereco } from './local-reuniao';
-import { horarioCivilPorExtenso } from './horario-reuniao';
+import { dataCivilNoFuso } from '../orgaos/relogio-igreja';
+import { dataReuniaoPorExtenso } from './data-reuniao';
+import { horariosDaReuniao, horarioCivilPorExtenso } from './horario-reuniao';
 import { validar, type ConfiguracaoModelo, type VersaoInput } from './secretaria.dto';
 import type { Tx } from './secretaria-base.service';
 import type { SecretariaCadastrosService } from './secretaria-cadastros.service';
@@ -40,6 +42,11 @@ export async function prepararCampos(tx: Tx, igreja_id: string, config: Configur
   const r = fontes.reuniao, l = fontes.livro;
   const dados = r?.dados as { data: string; horario_previsto?: string; local: string } | undefined;
   const endereco = (fontes.previsto ? r?.local_retrato : r?.local_efetivo_retrato ?? r?.local_retrato) as Record<string,string> | undefined;
+  const efetivos = fontes.previsto ? undefined : v.conteudo.efetivos;
+  const fuso = efetivos?.inicio || efetivos?.fim ? await tx.configuracao_fuso_igreja.findUnique({where:{igreja_id},select:{fuso_iana:true}}) : null;
+  const horarios = efetivos ? horariosDaReuniao(efetivos.inicio,efetivos.fim,fuso?.fuso_iana) : undefined;
+  const diaEfetivo = efetivos?.inicio ? (fuso ? dataCivilNoFuso(new Date(efetivos.inicio),fuso.fuso_iana) : efetivos.inicio.slice(0,10)) : undefined;
+  const diaExtenso = diaEfetivo ? dataReuniaoPorExtenso(new Date(diaEfetivo+'T00:00Z')) : undefined;
   const pessoas = r?.participantes.filter(p => p.presente) ?? [];
   const nome = (p: typeof pessoas[number]) => (p.retrato as {nome: string}).nome;
   function mesa(papel: string) {
@@ -50,12 +57,12 @@ export async function prepararCampos(tx: Tx, igreja_id: string, config: Configur
     'contexto.nome': fontes.contexto?.nome, 'contexto.sigla': fontes.contexto?.sigla,
     'documento.assunto': v.assunto, 'documento.data_documento': v.data_documento,
     'documento.numero': numero, 'documento.numero.por_extenso': numero === null ? null : numeroPorExtenso(numero),
-    'reuniao.data': dados?.data, 'reuniao.data.dia_por_extenso': r?.dia_reuniao_por_extenso,
-    'reuniao.data.mes_por_extenso': r?.mes_reuniao_por_extenso, 'reuniao.data.ano_por_extenso': r?.ano_reuniao_por_extenso,
+    'reuniao.data': dados?.data, 'reuniao.data.dia_por_extenso': diaExtenso?.dia_reuniao_por_extenso ?? r?.dia_reuniao_por_extenso,
+    'reuniao.data.mes_por_extenso': diaExtenso?.mes_reuniao_por_extenso ?? r?.mes_reuniao_por_extenso, 'reuniao.data.ano_por_extenso': diaExtenso?.ano_reuniao_por_extenso ?? r?.ano_reuniao_por_extenso,
     'reuniao.horario_previsto': dados?.horario_previsto, 'reuniao.horario_previsto.hora_por_extenso': horarioCivilPorExtenso(dados?.horario_previsto),
-    'reuniao.inicio.hora_local': r?.horario_inicio_reuniao, 'reuniao.inicio.hora_local_extenso': r?.horario_inicio_reuniao_por_extenso,
-    'reuniao.fim.hora_local': r?.horario_encerramento_reuniao, 'reuniao.fim.hora_local_extenso': r?.horario_encerramento_reuniao_por_extenso,
-    'reuniao.local': endereco?.descritivo ?? dados?.local,
+    'reuniao.inicio.hora_local': horarios?.horario_inicio_reuniao ?? r?.horario_inicio_reuniao, 'reuniao.inicio.hora_local_extenso': horarios?.horario_inicio_reuniao_por_extenso ?? r?.horario_inicio_reuniao_por_extenso,
+    'reuniao.fim.hora_local': horarios?.horario_encerramento_reuniao ?? r?.horario_encerramento_reuniao, 'reuniao.fim.hora_local_extenso': horarios?.horario_encerramento_reuniao_por_extenso ?? r?.horario_encerramento_reuniao_por_extenso,
+    'reuniao.local': efetivos?.local ?? endereco?.descritivo ?? dados?.local,
     'reuniao.itens_pauta.descricoes_em_ordem': r?.itens_pauta.map(i => i.descricao) ?? [],
     'reuniao.participantes.nomes_presentes': pessoas.map(nome),
     'mesa.presidente_mesa.nome': mesa('PRESIDENTE'), 'mesa.secretario_mesa.nome': mesa('SECRETARIO'),
@@ -119,7 +126,8 @@ export async function prepararCampos(tx: Tx, igreja_id: string, config: Configur
       (!anteriorCampo.origem.cadastro && ['reuniao','mesa'].includes(mapa.cadastro) && r?.id === anterior?.reuniao_id));
     const semValor = anteriorCampo?.valor == null || Array.isArray(anteriorCampo.valor) && !anteriorCampo.valor.length;
     const pendente = !fontes.previsto && semValor && (d.origem.startsWith('horario_') || mapa.cadastro === 'mesa' || d.origem === 'presentes');
-    if (mesmaFonte && !fontes.atualizar && mapa.cadastro !== 'documento' && !pendente) { saida[id] = anteriorCampo; continue; }
+    const campoEfetivo = efetivos && (['local_reuniao','dia_reuniao_por_extenso','mes_reuniao_por_extenso','ano_reuniao_por_extenso'].includes(d.origem) || d.origem.startsWith('horario_inicio') || d.origem.startsWith('horario_encerramento'));
+    if (!campoEfetivo && mesmaFonte && !fontes.atualizar && mapa.cadastro !== 'documento' && !pendente) { saida[id] = anteriorCampo; continue; }
     const chave = [mapa.cadastro, mapa.propriedade, mapa.transformacao].filter(Boolean).join('.');
     saida[id] = { tipo: d.tipo, multiplo: d.multiplo, valor: valoresFonte[chave] ?? (d.multiplo ? [] : null),
       origem: { tipo: 'sistema', chave: d.origem, ...(mapa.cadastro !== 'documento' && origem) }, ajustado_manualmente: false };

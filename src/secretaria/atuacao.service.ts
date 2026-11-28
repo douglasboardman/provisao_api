@@ -40,7 +40,7 @@ export class AtuacaoService {
   constructor(private readonly base: SecretariaBaseService) {}
 
   private async fonte(tx: Tx, ator: AtorSecretaria, f: Filtros) {
-    await this.base.operador(tx, ator);
+    const conta = await this.base.operador(tx, ator);
     if (f.contexto) await this.base.contexto(tx, ator, f.contexto);
     const restritos = (await this.base.concessoes(tx, ator, f.contexto))
       .filter((c) => c.pode_consultar_restritos)
@@ -55,6 +55,12 @@ export class AtuacaoService {
       visibilidadeDocumentosSql(restritos, atas),
     ];
     if (f.contexto) recorte.push(Prisma.sql`v.contexto_id = ${f.contexto}`);
+    if (conta.perfil === 'COMUM') {
+      const contextos = await tx.contexto_secretaria.findMany({ where: { igreja_id: ator.igreja_id }, include: { orgao: true } });
+      const visiveis: string[] = [];
+      for (const c of contextos) if (await this.base.contextoVisivel(tx, c, conta)) visiveis.push(c.id);
+      recorte.push(visiveis.length ? Prisma.sql`v.contexto_id IN (${Prisma.join(visiveis)})` : Prisma.sql`FALSE`);
+    }
     if (f.de) recorte.push(Prisma.sql`v.data_documento >= ${dataCivil(f.de)}::date`);
     if (f.ate) recorte.push(Prisma.sql`v.data_documento <= ${dataCivil(f.ate)}::date`);
     if (assunto && !resolucoes) recorte.push(Prisma.sql`v.assunto ILIKE ${assunto}`);

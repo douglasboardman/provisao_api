@@ -42,10 +42,10 @@ export async function revisarOrgaosNaAplicacao(tx: Prisma.TransactionClient, igr
   if (participacoes.length !== membros.length || cargos.length !== ocupacoes.length) throw new ConflictException('Os vínculos de órgão mudaram.');
   let competenciaId: string | null = null;
   if (participacoes.length || cargos.some(c => c.cargo.orgao.tipo === 'UNIDADE_MINISTERIAL')) {
-    const operador = await tx.usuarios.findFirst({ where: { id: usuario, igreja_id: igreja, ativo: true, perfil: 'GESTOR' }, select: { pessoa_id: true } });
+    const operador = await tx.usuarios.findFirst({ where: { id: usuario, igreja_id: igreja, ativo: true, perfil: 'COMUM' }, select: { pessoa_id: true } });
     const hoje = new Date(`${await hojeDaIgreja(tx, igreja)}T00:00:00Z`);
     const competencia = operador?.pessoa_id ? await tx.competencia_unidades.findFirst({ where: { igreja_id: igreja, usuario_id: usuario, pessoa_id: operador.pessoa_id, inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] }, select: { id: true } }) : null;
-    if (!competencia) throw new ForbiddenException('A aplicação da revisão de unidades exige gestor com competência institucional vigente.');
+    if (!competencia) throw new ForbiddenException('A aplicação da revisão de unidades exige responsável com competência institucional vigente.');
     competenciaId = competencia.id;
   }
   return { operador_id: usuario, competencia_id: competenciaId, hash_previa: previa.hash, hash_detalhes: hashDetalhes, decisoes: decisoes.map(d => ({ id: d.id, autoridade: d.autoridade, evidencia: d.evidencia, justificativa: d.justificativa, anotacoes: d.anotacoes_vinculos })), vinculos: detalhes, conferido_em: new Date().toISOString() } as Prisma.InputJsonObject;

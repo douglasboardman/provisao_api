@@ -6,6 +6,7 @@ import { dataCivilNoFuso } from '../orgaos/relogio-igreja';
 import { SecretariaBaseService, dataCivil, json, type AtorSecretaria, type Tx } from './secretaria-base.service';
 import { SecretariaCadastrosService } from './secretaria-cadastros.service';
 import * as dto from './secretaria.dto';
+import { quorumDoModelo } from './regras-modelo-reuniao';
 import { aplicarMesa, conferirVotacao, ehPapelMesa, escopoMesa, incluirOficialMesa, mesaVigente } from './mesa-assembleia';
 import { prepararCampos } from './campos-documento';
 
@@ -206,11 +207,18 @@ export class AssembleiasService {
       }
       const total = [...participantes.values()].filter(p => p.presente).length;
       if (v.universo < total) throw new BadRequestException('Confira o universo informado para esta assembleia.');
+      if (rd.modelo_reuniao) {
+        const apuracao = conferirVotacao({votantes_confirmados:votantes},[...participantes.values()],0,false);
+        const quorum = quorumDoModelo(rd,{universo:v.universo,habilitados_presentes:apuracao.votantes_presentes?.length ?? 0});
+        if (!quorum?.atingido) throw new BadRequestException('O quórum previsto para esta convocação ainda não foi atingido.');
+        v.quorum={minimo:quorum.minimo,competencia:rd.modelo_reuniao.finalidade,fundamento:rd.modelo_reuniao.configuracao.fundamentacao};
+      }
       if (v.quorum) conferirVotacao({ votantes_confirmados: votantes }, [...participantes.values()], v.quorum.minimo, true);
       const quorumPreservado = v.votantes_confirmados === undefined && rd.quorum_conferido && rd.universo_informado === v.universo && total === rd.participantes.filter(p => p.presente).length;
       const novos = dto.validar(dto.reuniaoDadosSchema, { ...rd, inicio: rd.inicio ?? desde.toISOString(), situacao: 'EM_ANDAMENTO',
         universo_informado: v.universo, quorum_conferido: !!v.quorum || quorumPreservado,
         ...(v.quorum && { quorum_minimo: v.quorum.minimo, competencia: v.quorum.competencia, fundamento_quorum: v.quorum.fundamento }), participantes: [...participantes.values()] });
+      await this.cadastros.conferirConvocacao(tx,a,r.contexto_id,novos,id,rd);
       await tx.reuniao.update({ where: { id }, data: { dados: json(novos), instalacao_formal: true, revisao: { increment: 1 } } });
       await this.cadastros.participantes(tx,a,r,novos);
       const mesa = await tx.mesa_assembleia.create({ data: { igreja_id: a.igreja_id, contexto_id: r.contexto_id, reuniao_id: id,

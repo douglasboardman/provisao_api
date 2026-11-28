@@ -9,16 +9,13 @@ export async function exigirServicoHistorico(tx: Tx, igreja_id: string, usuario:
   exigirOperacaoDisponivel(estado);
   const conta = await tx.usuarios.findFirst({ where: { id: usuario, igreja_id, ativo: true }, select: camposConta });
   if (!conta) throw new ForbiddenException('Operador não autorizado nesta igreja.');
-  if (estado === 'ATRIBUICAO' || conta.perfil === 'COMUM') {
-    if (!ator || ator.sub !== usuario || ator.igreja_id !== igreja_id)
-      throw new ForbiddenException('Sessão indisponível para esta operação.');
-    if (escrita) {
-      await exigirServicoNaTransacao(tx, ator, acao);
-    } else if (!(await decidirServico(tx, await contaDaSessao(tx, ator), acao)).permite) {
+  if (ator && (ator.sub !== usuario || ator.igreja_id !== igreja_id))
+    throw new ForbiddenException('Sessão indisponível para esta operação.');
+  if (ator) {
+    if (escrita) await exigirServicoNaTransacao(tx, ator, acao);
+    else if (!(await decidirServico(tx, await contaDaSessao(tx, ator), acao)).permite)
       throw new ForbiddenException('Atribuição vigente necessária.');
-    }
-    return;
+  } else if (!(await decidirServico(tx, conta, acao)).permite) {
+    throw new ForbiddenException('Atribuição vigente necessária.');
   }
-  const perfis = ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', ...(!escrita ? ['AUDITOR'] : [])];
-  if (!perfis.includes(conta.perfil)) throw new ForbiddenException('Operador não autorizado nesta igreja.');
 }

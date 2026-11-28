@@ -15,7 +15,7 @@ integration('E02: ordenação conferida de atos no mesmo dia', () => {
   beforeAll(async () => {
     if (process.env.DATABASE_URL !== 'postgresql://provisao_test:provisao_test@127.0.0.1:55439/provisao_test?schema=public') throw new Error('Exige banco descartável E00.');
     await p.$connect();
-    await p.usuarios.create({ data: { id: usuario, igreja_id: igreja, nome_usuario: 'Secretário sintético', email_login: `${usuario}@example.invalid`, senha_hash: 'sem-senha', perfil: 'SECRETARIO', ativo: true } });
+    await p.usuarios.create({ data: { id: usuario, igreja_id: igreja, nome_usuario: 'Secretário sintético', email_login: `${usuario}@example.invalid`, senha_hash: 'sem-senha', perfil: 'COMUM', ativo: true } });
     await p.pessoas.create({ data: { id: pessoa, igreja_id: igreja, nome_completo: 'Pessoa sintética', data_nascimento: new Date('1990-01-01'), sexo: 'MASCULINO' } });
     await p.pessoas.create({ data: { id: pessoaSemOficio, igreja_id: igreja, nome_completo: 'Outra pessoa sintética', data_nascimento: new Date('1990-01-01'), sexo: 'MASCULINO' } });
     await p.eventos_membresia.create({ data: { id: eventoIsolado, igreja_id: igreja, pessoa_id: pessoaSemOficio, tipo_evento: 'ADMISSAO', rol: 'NAO_COMUNGANTES', motivacao_evento: 'BATISMO_NA_INFANCIA', data_evento: new Date('2025-02-01') } });

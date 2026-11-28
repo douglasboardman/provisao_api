@@ -10,22 +10,22 @@ import { AuthGuard } from 'src/auth/auth.guard';
 
 /**
  * Controller responsável por gerir todas as operações relacionadas a Grupos Familiares.
- * Protegido por autenticação e restrito aos perfis de ADMIN, GESTOR e OPERADOR por padrão.
+ * Acesso conforme as atribuições de serviço da conta.
  */
 @Controller('grupos-familiares')
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.OPERADOR, Perfil.SECRETARIO, Perfil.TESOUREIRO, Perfil.AUDITOR)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 export class GruposFamiliaresController {
   constructor(private readonly gruposFamiliaresService: GruposFamiliaresService) {}
 
   /**
    * Cria um novo grupo familiar na mesma igreja do solicitante.
-   * Restrito a ADMIN e GESTOR.
+ * Acesso conforme as atribuições de serviço da conta.
    * Rota: POST /grupos-familiares
    */
   @ServicoDaRota('FAMILIAS_CADASTRAR')
   @Post()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   create(@Request() req, @Body() createGruposFamiliareDto: CreateGruposFamiliareDto) {
     return this.gruposFamiliaresService.create(req.user.igreja_id, createGruposFamiliareDto, req.user);
   }
@@ -52,12 +52,12 @@ export class GruposFamiliaresController {
 
   /**
    * Atualiza um grupo familiar da mesma igreja.
-   * Restrito a ADMIN e GESTOR.
+ * Acesso conforme as atribuições de serviço da conta.
    * Rota: PATCH /grupos-familiares/:id
    */
   @ServicoDaRota('FAMILIAS_EDITAR')
   @Patch(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   update(@Request() req, @Param('id') id: string, @Body() updateGruposFamiliareDto: UpdateGruposFamiliareDto) {
     return this.gruposFamiliaresService.update(id, req.user.igreja_id, updateGruposFamiliareDto, req.user);
   }
@@ -68,7 +68,7 @@ export class GruposFamiliaresController {
    */
   @ServicoDaRota('FAMILIAS_EXCLUIR')
   @Delete(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   remove(@Request() req, @Param('id') id: string) {
     return this.gruposFamiliaresService.remove(id, req.user.igreja_id, req.user);
   }

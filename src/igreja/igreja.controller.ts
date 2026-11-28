@@ -49,7 +49,7 @@ export class IgrejaController {
   @ServicoDaRota('IGREJA_EDITAR')
   @Patch('me')
   @UseGuards(AuthGuard, RolesGuard)
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   updateMe(@Request() req, @Body() dto: UpdateIgrejaDto) {
     return this.igrejaService.updateMe(req.user.igreja_id, dto, req.user);
   }
@@ -57,7 +57,7 @@ export class IgrejaController {
   @ServicoDaRota('IGREJA_EDITAR')
   @Patch('me/logo')
   @UseGuards(AuthGuard, RolesGuard)
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   @UseInterceptors(FileInterceptor('file'))
   updateLogo(@Request() req, @UploadedFile() file: Express.Multer.File) {
     return this.igrejaService.updateLogo(req.user.igreja_id, file, req.user);

@@ -34,7 +34,7 @@ integration('E03: conclusão funcional', () => {
     for (const key of ['FEATURE_GOVERNANCA', 'FEATURE_ORGAOS', 'FEATURE_ORGAOS_GESTAO']) process.env[key] = 'true';
     app = (await Test.createTestingModule({ imports: [AppModule] }).compile()).createNestApplication(); await app.init(); p = app.get(PrismaService);
     for (const id of [pessoaGestor, ...pessoas]) await p.pessoas.create({ data: { id, igreja_id: igreja, nome_completo: 'Pessoa original', sexo: 'FEMININO', data_nascimento: civil('1980-01-01') } });
-    await p.usuarios.create({ data: { id: gestor, igreja_id: igreja, pessoa_id: pessoaGestor, perfil: 'GESTOR', nome_usuario: 'Gestora original', email_login: `${gestor}@example.invalid`, senha_hash: 'inutilizavel', ativo: true } });
+    await p.usuarios.create({ data: { id: gestor, igreja_id: igreja, pessoa_id: pessoaGestor, perfil: 'COMUM', nome_usuario: 'Gestora original', email_login: `${gestor}@example.invalid`, senha_hash: 'inutilizavel', ativo: true } });
     for (const [id, tipo, constituicao] of [[unidade, 'UNIDADE_MINISTERIAL', 'DESIGNACAO'], [conselho, 'CONSELHO', 'OFICIAL']] as const) await p.orgao_interno.create({ data: { id, igreja_id: igreja, tipo, constituicao, nome: 'Órgão original', finalidade: 'Teste', data_criacao: civil('2020-01-01'), criador_id: admin, instituidor_id: pessoaGestor, evidencia_instituicao: 'Teste' } });
     for (const [i, pessoa] of pessoas.entries()) {
       await p.eventos_membresia.create({ data: { id: eventos[i], igreja_id: igreja, pessoa_id: pessoa, data_evento: civil('2020-01-01'), tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE' } });

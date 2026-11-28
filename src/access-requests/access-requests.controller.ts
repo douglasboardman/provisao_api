@@ -9,20 +9,11 @@ import { AccessAuthorityDto } from './access-authority.dto';
 import { AccessRequestsService } from './access-requests.service';
 @Controller('solicitacoes-acesso')
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR)
+@Roles(usuarios_perfil.ADMINISTRADOR, usuarios_perfil.COMUM)
 export class AccessRequestsController {
   constructor(private readonly service: AccessRequestsService, private readonly authority: AccessAuthorityService) {}
   @ServicoDaRota('ACESSO_CONSULTAR')
   @Get() list(@Request() req, @Query('pagina') pagina?: string) { return this.service.list(req.user.igreja_id, req.user.sub, pagina); }
-  @Get('competencias')
-  @Roles(usuarios_perfil.ADMINISTRADOR)
-  listAuthorities(@Request() req) { return this.authority.list(req.user.igreja_id); }
-  @Post('competencias')
-  @Roles(usuarios_perfil.ADMINISTRADOR)
-  grantAuthority(@Request() req, @Body() dto: AccessAuthorityDto) { return this.authority.grant(req.user.igreja_id, req.user.sub, dto.usuario_id, dto.referencia); }
-  @Patch('competencias/:id/revogar')
-  @Roles(usuarios_perfil.ADMINISTRADOR)
-  revokeAuthority(@Request() req, @Param('id') id: string) { return this.authority.revoke(req.user.igreja_id, req.user.sub, id); }
   @ServicoDaRota('ACESSO_ANALISAR')
   @Patch(':id/aprovar') approve(@Request() req, @Param('id') id: string) { return this.service.decide(id, req.user.igreja_id, req.user.sub, true, req.user); }
   @ServicoDaRota('ACESSO_ANALISAR')

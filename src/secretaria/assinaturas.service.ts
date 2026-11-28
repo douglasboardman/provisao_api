@@ -48,8 +48,7 @@ export class AssinaturasService {
   private async documentoParaAssinaturas(tx: Tx, ator: AtorSecretaria, id: string, consultarAtas: boolean) {
     const conta = await this.base.operador(tx, ator, consultarAtas);
     const documento = await this.base.documento(tx, ator, id);
-    if (documento.tipo !== 'ATA' && !['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', 'AUDITOR'].includes(conta.perfil))
-      throw new NotFoundException('Documento indisponível.');
+    if (documento.tipo !== 'ATA') await this.base.contexto(tx, ator, documento.contexto_id);
     return documento;
   }
 

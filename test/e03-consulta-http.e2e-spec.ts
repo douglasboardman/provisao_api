@@ -33,7 +33,7 @@ integration('E03: consulta HTTP protegida', () => {
     await p.membro_orgao.createMany({ data: dias.map(d => ({ igreja_id: igrejaA, orgao_id: orgao, pessoa_id: participante, ...d, fim_ordem: 1 })) });
     await p.ocupacao_cargo.createMany({ data: dias.map(d => ({ igreja_id: igrejaA, orgao_id: orgao, cargo_id: cargo, pessoa_id: participante, ...d, fim_ordem: 1 })) });
     await p.ato_orgao.createMany({ data: Array.from({ length: 31 }, () => ({ igreja_id: igrejaA, orgao_id: orgao, operador_id: adminA, tipo: 'DESIGNACAO', data_efeito: new Date('2026-01-01'), criado_em: new Date('2026-01-01T12:00:00Z'), autoridade: 'Autoridade reservada', evidencia: 'Evidência reservada', detalhes: { motivo: 'Motivo reservado' } })) });
-    await p.usuarios.create({ data: { id: operador, igreja_id: igrejaA, nome_usuario: 'Operador sintético', email_login: `${operador}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'OPERADOR', ativo: true } });
+    await p.usuarios.create({ data: { id: operador, igreja_id: igrejaA, nome_usuario: 'Operador sintético', email_login: `${operador}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'COMUM', ativo: true } });
     for (const [id, igreja, salvar] of [[adminA, igrejaA, (s: string) => { cookieA = s; }], [adminB, igrejaB, (s: string) => { cookieB = s; }], [operador, igrejaA, (s: string) => { cookieOperador = s; }]] as const) {
       const user = await p.usuarios.findUniqueOrThrow({ where: { id } });
       salvar(`provisao_session=${await app.get(SessionService).create(id, igreja, user.auth_version)}`);

@@ -1,7 +1,8 @@
+import { podeServico } from '../autorizacao/operacao-atual';
 import { AtuacaoModeloService } from '../secretaria/atuacao-modelo.service';
 import { orgaosDeAtuacao, orgaosOficiaisDaConta, presidenciaSociedades } from './acesso-sociedades';
 import { cabeNaFaixa, configuracaoOrgao, diaCivilOrgao, faixaCivil, regrasSociedade, sociedadeJuvenil } from './sociedades-regras';
-import { ContaComum, ServicoDaRota, ServicoEmContexto, contaDaSessao, decidirServico } from '../autorizacao/politica';
+import { ContaComum, ServicoDaRota, ServicoEmContexto, contaDaSessao } from '../autorizacao/politica';
 import { z } from 'zod';
 import { MandatoDiretoService } from './mandato-direto.service';
 import { permissaoMandato } from './permissao-mandato';
@@ -23,7 +24,7 @@ const contextoComCargos = (tipo: string) => tipo === 'CONSELHO' || tipo === 'JUN
 
 @Controller('orgaos')
 @UseGuards(AuthGuard, RolesGuard, OrgaosGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 export class OrgaosController {
   constructor(private readonly prisma: PrismaService, private readonly composicao: ComposicaoService, private readonly mandatos: MandatoDiretoService, private readonly atuacao: AtuacaoModeloService) {}
 
@@ -55,16 +56,23 @@ export class OrgaosController {
     const conta = await contaDaSessao(tx, req.user);
     const dia = await hojeDaIgreja(tx, conta.igreja_id);
     const poder = await presidenciaSociedades(tx, conta, dia);
-    const geral = conta.perfil === 'COMUM' && (await Promise.all((['ORGAOS_CONSULTAR','MANDATOS_REGISTRAR','CARGOS_REGISTRAR'] as const)
-      .map(acao => decidirServico(tx, conta, acao)))).some(d => d.permite);
+    const geral = conta.perfil === 'COMUM' && (await Promise.all((['ORGAOS_CONSULTAR','ORGAOS_CONFIGURAR','MANDATOS_REGISTRAR','CARGOS_REGISTRAR'] as const)
+      .map(acao => podeServico(tx, conta, acao)))).some(Boolean);
     const oficiais = conta.perfil === 'COMUM' && !geral ? await orgaosOficiaisDaConta(tx, conta, dia, this.atuacao) : [];
-    return { conta, dia, poder, geral, oficiais, orgaos: poder ? [] : await orgaosDeAtuacao(tx, conta, dia) };
+    const competencia = conta.perfil === 'COMUM' && conta.pessoa_id && await tx.competencia_unidades.findFirst({ where: {
+      igreja_id: conta.igreja_id, usuario_id: conta.id, pessoa_id: conta.pessoa_id,
+      inicio: { lte: new Date(dia) }, OR: [{ fim: null }, { fim: { gt: new Date(dia) } }],
+    }, select: { id: true } });
+    const unidades = competencia ? await tx.orgao_interno.findMany({ where: {
+      igreja_id: conta.igreja_id, tipo: 'UNIDADE_MINISTERIAL', gestao_presidencial: false,
+    }, select: { id: true } }) : [];
+    return { conta, dia, poder, geral, oficiais, unidades: unidades.map(u => u.id), orgaos: poder ? [] : await orgaosDeAtuacao(tx, conta, dia) };
   }
 
   private async conferirFicha(tx: Prisma.TransactionClient, req, orgao: { id: string; tipo: string; tipo_padrao: string | null; gestao_presidencial: boolean }) {
     if (!sociedadeJuvenil(orgao.tipo_padrao) && req.user.perfil !== 'COMUM') return true;
     const acesso = await this.acessoInstitucional(tx, req);
-    if (!sociedadeJuvenil(orgao.tipo_padrao) && (acesso.geral || acesso.oficiais.includes(orgao.id))) return true;
+    if (!sociedadeJuvenil(orgao.tipo_padrao) && (acesso.geral || acesso.oficiais.includes(orgao.id) || acesso.unidades.includes(orgao.id))) return true;
     const contextual = orgao.tipo === 'SOCIEDADE_INTERNA' || orgao.gestao_presidencial;
     const pode = contextual && (!!acesso.poder || acesso.orgaos.includes(orgao.id));
     if (!pode && req.user.perfil === 'COMUM') throw new NotFoundException('Órgão indisponível para esta conta.');
@@ -73,7 +81,7 @@ export class OrgaosController {
 
   @Get('relogio')
   @ContaComum()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR, Perfil.COMUM)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   async relogio(@Request() req) {
     const config = await this.prisma.configuracao_fuso_igreja.findUnique({ where: { igreja_id: req.user.igreja_id }, select: { fuso_iana: true } });
@@ -89,7 +97,7 @@ export class OrgaosController {
   @Get()
   @ServicoEmContexto('ORGAOS_CONSULTAR')
   @ContaComum()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR, Perfil.COMUM)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   async listar(@Request() req, @Query('cursor') cursor?: string, @Query('data') dia?: string) {
     const igrejaId = req.user.igreja_id;
@@ -97,7 +105,7 @@ export class OrgaosController {
     return this.prisma.$transaction(async tx => {
       const acesso = await this.acessoInstitucional(tx, req);
       const scope: Prisma.orgao_internoWhereInput = { igreja_id: igrejaId, ...(req.user.perfil === 'COMUM' && !acesso.geral && {
-        OR: [{ id: { in: [...acesso.orgaos, ...acesso.oficiais] } },
+        OR: [{ id: { in: [...acesso.orgaos, ...acesso.oficiais, ...acesso.unidades] } },
           ...(acesso.poder ? [{ tipo: 'SOCIEDADE_INTERNA' as const }, { gestao_presidencial: true }] : [])],
       }) };
       if (cursor && (!z.uuid().safeParse(cursor).success || !await tx.orgao_interno.findFirst({ where: { AND: [scope, { id: cursor }] }, select: { id: true } })))
@@ -150,23 +158,14 @@ export class OrgaosController {
 
   @Post(':id/mandatos/previa')
   @ServicoDaRota('MANDATOS_REGISTRAR')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   previaMandato(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: unknown) {
     return this.mandatos.executar(req.user, id, dados, false);
   }
 
-  @Get(':id/mandatos/indicacoes')
-  @ServicoDaRota('MANDATOS_REGISTRAR')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
-  @Header('Cache-Control', 'private, no-store')
-  indicacoesMandato(@Request() req, @Param('id', ParseUUIDPipe) id: string,
-    @Query('pessoa', ParseUUIDPipe) pessoa: string, @Query('ata', ParseUUIDPipe) ata: string) {
-    return this.mandatos.indicacoes(req.user, id, pessoa, ata);
-  }
-
   @Post(':id/mandatos')
   @ServicoDaRota('MANDATOS_REGISTRAR')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   registrarMandato(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: unknown) {
     return this.mandatos.executar(req.user, id, dados, true);
   }
@@ -174,7 +173,7 @@ export class OrgaosController {
   @Get(':id/mandatos')
   @ServicoEmContexto('ORGAOS_CONSULTAR')
   @ContaComum()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR, Perfil.COMUM)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   periodos(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Query('cursor') cursor?: string) {
     const igreja_id = req.user.igreja_id;
@@ -198,9 +197,7 @@ export class OrgaosController {
       const nomes = new Map(autores.map(a => [a.id, a.nome_usuario]));
       const porMandato = new Map(registros.map(r => [r.recurso_id, { operador: nomes.get(r.operador_id), instante: r.instante }]));
       const itens = periodos.slice(0, 30).map(m => {
-        const exigeAtribuicao = !!m.orgao_id || estado === 'ATRIBUICAO' || req.user.perfil === 'COMUM';
-        const autorizado = exigeAtribuicao ? !!poder && poder.pessoa !== m.oficial.pessoa.id
-          : ['GESTOR','ADMINISTRADOR','SECRETARIO'].includes(req.user.perfil);
+        const autorizado = !!poder && poder.pessoa !== m.oficial.pessoa.id;
         return { ...m, registro: porMandato.get(m.id) ?? null,
           pode_encerrar: estado !== 'PAUSADO' && !m.termino_efetivo && autorizado };
       });
@@ -212,7 +209,7 @@ export class OrgaosController {
   @Get(':id/docentes')
   @ServicoEmContexto('ORGAOS_CONSULTAR')
   @ContaComum()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR, Perfil.COMUM)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   async docentes(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Query('cursor') cursor?: string) {
     const igreja_id = req.user.igreja_id;
@@ -230,7 +227,7 @@ export class OrgaosController {
   @Get(':id/atos')
   @ServicoEmContexto('ORGAOS_CONSULTAR')
   @ContaComum()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR, Perfil.COMUM)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   async listarAtos(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Query('cursor') cursor?: string) {
     const igrejaId = req.user.igreja_id;
@@ -251,7 +248,7 @@ export class OrgaosController {
   @Get(':id/atos/:ato')
   @ServicoEmContexto('ORGAOS_CONSULTAR')
   @ContaComum()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR, Perfil.COMUM)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   async detalheAto(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Param('ato', ParseUUIDPipe) ato: string) {
     return this.prisma.$transaction(async tx => {
@@ -267,7 +264,7 @@ export class OrgaosController {
   @Get(':id')
   @ServicoEmContexto('ORGAOS_CONSULTAR')
   @ContaComum()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR, Perfil.COMUM)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   async detalhe(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Query('data') dia: string, @Query('cursor_ocupacao') cursorOcupacao?: string, @Query('cursor_participacao') cursorParticipacao?: string, @Query('inativos') inativos?: string, @Query('cursor_inativo') cursorInativo?: string) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dia ?? '')) throw new BadRequestException('Data inválida.');
@@ -328,7 +325,7 @@ export class OrgaosController {
       const contaRegistro = orgao.ativo && contextoComCargos(orgao.tipo) &&
         recursoDaIgreja('orgaos_gestao', igrejaId) && recursoDaIgreja('secretaria', igrejaId) &&
         req.user.perfil !== 'AUDITOR' ? await contaDaSessao(tx, req.user) : null;
-      const podeRegistrarCargos = !!contaRegistro?.pessoa_id && (await decidirServico(tx, contaRegistro, 'CARGOS_REGISTRAR')).permite;
+      const podeRegistrarCargos = !!contaRegistro?.pessoa_id && await podeServico(tx, contaRegistro, 'CARGOS_REGISTRAR');
       const preparoRegistro = contaRegistro?.perfil === 'ADMINISTRADOR' && !contaRegistro.pessoa_id ? 'VINCULAR_PESSOA' : null;
       const cargosNaData = vigenteNaData && nominal ? await tx.cargo_orgao.findMany({ where: { igreja_id: igrejaId, orgao_id: id, ativo: true }, select: {
         id: true, nome: true, ocupacoes: { where: { inicio: { lte: data }, OR: [{ fim: null }, { fim: { gt: data } }],
@@ -340,7 +337,7 @@ export class OrgaosController {
         WHERE igreja_id = ${igrejaId} AND orgao_id = ${id} AND tipo IN ('ELEICAO_CARGO', 'ELEICAO_CARGO_UNIDADE')
           AND detalhes->>'ocupacao_id' IN (${Prisma.join(idsOcupacoes)})` : [];
       const atosDePosse = new Map(registrosCargos.map(r => [r.ocupacao, r.id]));
-      const contexto = nominal && recursoDaIgreja('secretaria', igrejaId) ? await tx.contexto_secretaria.findUnique({ where: { orgao_id: id }, select: { id: true } }) : null;
+      const contexto = (nominal || req.user.perfil==='ADMINISTRADOR') && recursoDaIgreja('secretaria', igrejaId) ? await tx.contexto_secretaria.findUnique({ where: { orgao_id: id }, select: { id: true } }) : null;
       const versao = await tx.versao_orgao.findFirst({ where: { orgao_id: id, igreja_id: igrejaId, inicio: { lte: data }, OR: [{ fim: null }, { fim: { gt: data } }] }, select: { numero: true, fonte: true, configuracao: true } });
       const podeConfigurar = nominal && recursoDaIgreja('orgaos_gestao', igrejaId) &&
         (req.user.perfil === Perfil.ADMINISTRADOR ||
@@ -363,7 +360,7 @@ export class OrgaosController {
       return { orgao, consulta_nominal: nominal, pode_configurar: podeConfigurar,
         prazo_sugerido_cargos: typeof prazoSugerido === 'number' ? prazoSugerido : null,
         fora_da_composicao: foraDaComposicao.slice(0,30), proximo_cursor_inativo: foraDaComposicao.length > 30 ? foraDaComposicao[29].id : null,
-        cargos_na_data: cargosNaData.map(c => ({ id: c.id, nome: c.nome, titulares: c.ocupacoes.map(o => o.pessoa), ocupacoes: c.ocupacoes.map(o => ({ ...o, ato_id: atosDePosse.get(o.id) ?? null })) })), pode_registrar_cargos: podeRegistrarCargos, preparo_registro_cargos: preparoRegistro, contexto_id: contexto?.id ?? null, versao: versao && { numero: versao.numero, fonte: versao.fonte }, data_referencia: dia, vigente_na_data: vigenteNaData, composicao, cargos_configurados: cargosConfigurados.slice(0, 100), cargos_limitados: cargosConfigurados.length > 100, politicas: politicas.slice(0, 100), politicas_limitadas: politicas.length > 100, ultima_ordem_designacao: ultimaOrdem, ordem_designacao_indeterminada: ordemIndeterminada, ocupacoes: ocupacoes.map(o => ({ ...o, pessoa: { ...o.pessoa, nome_completo: (o.retrato as { pessoa?: { nome?: string } } | null)?.pessoa?.nome ?? o.pessoa.nome_completo }, cargo: { nome: (o.retrato as { cargo?: { nome?: string } } | null)?.cargo?.nome ?? o.cargo.nome }, situacao_membresia: orgao.tipo === 'UNIDADE_MINISTERIAL' && ativa(o) && (!o.termino_previsto || o.termino_previsto >= data) ? situacao(o.pessoa.id, true) : null })), ocupacoes_limitadas: cargos.length > 100, proximo_cursor_ocupacao: cargos.length > 100 ? ocupacoes[ocupacoes.length - 1].id : null, participacoes: participacoes.map(({ pessoa, ...m }) => ({ ...m, pessoa: { id: pessoa.id, nome_completo: (m.retrato as { pessoa?: { nome?: string } } | null)?.pessoa?.nome ?? pessoa.nome_completo },
+        cargos_na_data: cargosNaData.map(c => ({ id: c.id, nome: c.nome, titulares: c.ocupacoes.map(o => o.pessoa), ocupacoes: c.ocupacoes.map(o => ({ ...o, ato_id: atosDePosse.get(o.id) ?? null })) })), pode_registrar_cargos: podeRegistrarCargos, preparo_registro_cargos: preparoRegistro, contexto_modelos_reuniao_id: contexto?.id ?? null, contexto_id: nominal ? contexto?.id ?? null : null, versao: versao && { numero: versao.numero, fonte: versao.fonte }, data_referencia: dia, vigente_na_data: vigenteNaData, composicao, cargos_configurados: cargosConfigurados.slice(0, 100), cargos_limitados: cargosConfigurados.length > 100, politicas: politicas.slice(0, 100), politicas_limitadas: politicas.length > 100, ultima_ordem_designacao: ultimaOrdem, ordem_designacao_indeterminada: ordemIndeterminada, ocupacoes: ocupacoes.map(o => ({ ...o, pessoa: { ...o.pessoa, nome_completo: (o.retrato as { pessoa?: { nome?: string } } | null)?.pessoa?.nome ?? o.pessoa.nome_completo }, cargo: { nome: (o.retrato as { cargo?: { nome?: string } } | null)?.cargo?.nome ?? o.cargo.nome }, situacao_membresia: orgao.tipo === 'UNIDADE_MINISTERIAL' && ativa(o) && (!o.termino_previsto || o.termino_previsto >= data) ? situacao(o.pessoa.id, true) : null })), ocupacoes_limitadas: cargos.length > 100, proximo_cursor_ocupacao: cargos.length > 100 ? ocupacoes[ocupacoes.length - 1].id : null, participacoes: participacoes.map(({ pessoa, ...m }) => ({ ...m, pessoa: { id: pessoa.id, nome_completo: (m.retrato as { pessoa?: { nome?: string } } | null)?.pessoa?.nome ?? pessoa.nome_completo },
           revisao_faixa: revisaoEtaria({ ...m, pessoa }),
           direito_voto: direitoVoto({ ...m, pessoa }),
           situacao_membresia: orgao.tipo === 'UNIDADE_MINISTERIAL' && ativa(m) ? situacao(pessoa.id, false) : null })), participacoes_limitadas: membros.length > 100, proximo_cursor_participacao: membros.length > 100 ? participacoes[participacoes.length - 1].id : null };

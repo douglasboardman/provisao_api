@@ -17,16 +17,6 @@ export class AutorizacaoController {
   @ContaComum() @Get('navegacao') @Header('Cache-Control', 'private, no-store')
   navegacao(@Request() req) { return this.contas.navegacao(req.user); }
 
-  @Post('contas/:id/conversao/previa')
-  previaConversao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() body: unknown) {
-    return this.contas.converter(req.user, id, body, false);
-  }
-
-  @Post('contas/:id/conversao')
-  converter(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() body: unknown) {
-    return this.contas.converter(req.user, id, body, true);
-  }
-
   @Get('contas/:id') @Header('Cache-Control', 'private, no-store')
   consultar(@Request() req, @Param('id', ParseUUIDPipe) id: string) { return this.contas.consultar(req.user, id); }
 

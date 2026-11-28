@@ -12,7 +12,8 @@ import { entradaResolucoes, incluirResolucoes, salvarResolucoes, validarResoluco
 import { resolucoesSchema } from './resolucoes.dto';
 import { ocorrencias, paginaTextoSchema, valoresPaginaSchema } from './composicao-pagina';
 import { prepararCampos } from './campos-documento';
-import { pendenciasConteudo, pendenciasMesa, pendenciasAssinaturasReuniao } from './pendencias-tramitacao';
+import { quorumDoModelo } from './regras-modelo-reuniao';
+import { dadosConsolidadosAta, pendenciasConteudo, pendenciasMesa, pendenciasAssinaturasReuniao } from './pendencias-tramitacao';
 import { conferirCargaDeImagem } from './imagens-documentais';
 import { numerarAta } from './numeracao-ata-livro';
 
@@ -33,7 +34,7 @@ const presenca = z.strictObject({
     .max(1000),
   universo: z.number().int().nonnegative(),
   minimo: z.number().int().nonnegative(),
-  conferir: z.boolean(),
+  conferir: z.boolean().optional(),
   competencia: z.string().trim().max(1000),
   fundamento: z.string().trim().max(1000),
 });
@@ -144,7 +145,7 @@ export class MinhaAssembleiaService {
           revisao_reuniao: r.revisao,
           titulo: ata.assunto,
           data: dados.data,
-          local: dados.local,
+          local: dados.local_efetivo ?? (r.local_efetivo_retrato as {descritivo?:string} | null)?.descritivo ?? dados.local,
           presidente: g.mesa.presidente_nome,
           secretario: g.mesa.secretario_nome,
           titulares: [g.mesa.oficial.pessoa_id, g.mesa.secretario_id],
@@ -369,15 +370,20 @@ export class MinhaAssembleiaService {
         presente: p.presente,
         pode_propor: p.pode_propor,
       }));
-      conferirVotacao(g.mesa, participantes, v.minimo, v.conferir);
+      const apuracao = conferirVotacao(g.mesa,participantes,0,false);
+      const habilitados=apuracao.votantes_presentes?.length ?? apuracao.presentes;
+      const minimo = dados.modelo_reuniao ? quorumDoModelo(dados,{universo:v.universo,habilitados_presentes:habilitados})?.minimo : v.minimo;
+      const fundamento=dados.modelo_reuniao?.configuracao.fundamentacao ?? v.fundamento;
+      const competencia=dados.modelo_reuniao?.finalidade ?? v.competencia;
+      const atingido = minimo !== undefined && minimo > 0 && habilitados >= minimo && !!fundamento && !!competencia;
       const novos = dto.validar(dto.reuniaoDadosSchema, {
         ...dados,
         participantes,
         universo_informado: v.universo,
-        quorum_minimo: v.minimo,
-        quorum_conferido: v.conferir,
-        competencia: v.competencia,
-        fundamento_quorum: v.fundamento,
+        quorum_minimo: minimo ?? 0,
+        quorum_conferido: atingido,
+        competencia,
+        fundamento_quorum: fundamento,
       });
       const rs = entradaResolucoes(ata.resolucoes);
       conferirApuracoes(g.mesa, participantes, rs);
@@ -466,7 +472,7 @@ export class MinhaAssembleiaService {
   }
 
   prepararLeitura(c: CredencialAssembleia, body: unknown) {
-    const v = dto.validar(z.strictObject({ ...revisoes, fim: z.iso.datetime({ offset: true }) }), body);
+    const v = dto.validar(z.strictObject({ ...revisoes, local: z.string().trim().min(1).max(255), presentes: z.number().int().min(1), fim: z.iso.datetime({ offset: true }) }), body);
     return transacaoSerializavel(this.acesso.db, async (tx) => {
       const s = await this.carregar(tx, c);
       this.conferir(s, v);
@@ -477,7 +483,11 @@ export class MinhaAssembleiaService {
         (dados.fim && new Date(dados.fim).getTime() !== new Date(v.fim).getTime())
       )
         throw new BadRequestException('Confira a hora de encerramento da sessão.');
-      const encerrada = dto.validar(dto.reuniaoDadosSchema, { ...dados, fim: v.fim, situacao: 'ENCERRADA' });
+      const votos = conferirVotacao(g.mesa,s.r.participantes,0,false);
+      if (v.presentes < votos.presentes) throw new BadRequestException('O total da lista precisa incluir os participantes registrados como presentes.');
+      conteudo.efetivos={inicio:dados.inicio ?? undefined,fim:v.fim,local:v.local,presentes:v.presentes,
+        universo:dados.universo_informado,habilitados_presentes:votos.votantes_presentes?.length ?? votos.presentes};
+      const encerrada = dto.validar(dto.reuniaoDadosSchema,dadosConsolidadosAta(dados,conteudo));
       await tx.reuniao.update({ where: { id: s.r.id }, data: { dados: json(encerrada), revisao: { increment: 1 } } });
       s.r = await this.cadastros.carregarReuniao(tx, g.igreja_id, g.reuniao_id);
       const contexto = await tx.contexto_secretaria.findUniqueOrThrow({ where: { id: g.contexto_id } });

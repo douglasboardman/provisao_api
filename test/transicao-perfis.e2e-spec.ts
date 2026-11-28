@@ -11,8 +11,8 @@ import type { usuarios_perfil } from '@prisma/client';
 
 const integration = process.env.E00_INTEGRATION === '1' ? describe : describe.skip;
 
-integration('Transição de perfis', () => {
-  let app: INestApplication, db: PrismaService, admin: string, secretaria: string, comum: string;
+integration('Atribuições de serviço', () => {
+  let app: INestApplication, db: PrismaService, admin: string, comum: string;
   let igreja: string, outra: string;
   const cookies = new Map<string, string>();
   const novoCadastro = { nome_completo: 'Pessoa de ensaio', sexo: 'FEMININO', data_nascimento: '1990-04-20' };
@@ -46,7 +46,6 @@ integration('Transição de perfis', () => {
     igreja = (await db.igreja.create({ data: { nome: 'Igreja da transição', mfa_obrigatorio: false } })).id;
     outra = (await db.igreja.create({ data: { nome: 'Outra igreja' } })).id;
     admin = await conta('ADMINISTRADOR');
-    secretaria = await conta('SECRETARIO');
     comum = await conta('COMUM');
     await db.$executeRaw`SELECT instalar_estrutura_institucional(${igreja})`;
   });
@@ -63,75 +62,6 @@ integration('Transição de perfis', () => {
     }
   });
 
-  it('converte apenas os serviços revistos, invalida a sessão e conserva a conta institucional escolhida', async () => {
-    const prefixo = '/autorizacao/contas/' + secretaria + '/conversao';
-    const alvo = await db.usuarios.findUniqueOrThrow({ where: { id: secretaria } });
-    await http(admin, 'patch', '/usuarios/' + secretaria).send({ perfil: 'COMUM' }).expect(400);
-    const acoes = ['PESSOAS_CONSULTAR', 'PESSOAS_CADASTRAR'];
-    const antigo = (await http(admin, 'post', prefixo + '/previa').send({ acoes }).expect(201)).body;
-    const fim = new Date(Date.now() + 60_000).toISOString();
-    await dar(secretaria, 'PESSOAS_CONSULTAR', fim).expect(201);
-    await http(admin, 'post', prefixo).send({ acoes, fundamento, previa: antigo.previa }).expect(409);
-    await db.usuarios.update({ where: { id: secretaria }, data: { conta_atuacao: true } });
-    const contexto = await db.contexto_secretaria.findFirstOrThrow({ where: { igreja_id: igreja, orgao: { tipo_padrao: 'CONSELHO' } } });
-    const outroContexto = await db.contexto_secretaria.findFirstOrThrow({ where: { igreja_id: igreja, orgao: { tipo_padrao: 'JUNTA' } } });
-    const competencia = await db.competencia_secretaria.create({ data: {
-      igreja_id: igreja, contexto_id: contexto.id, usuario_id: secretaria, pessoa_id: alvo.pessoa_id!, registrado_por_id: admin,
-      inicio: new Date('2025-01-01'), autoridade: 'Conselho', evidencia: fundamento, pode_aprovar: true,
-      pode_consultar_restritos: false, pode_deliberar: false, pode_instalar_mesa: false,
-    } });
-    const competencias = [competencia.id];
-    const nova = (await http(admin, 'post', prefixo + '/previa').send({ acoes, competencias }).expect(201)).body;
-    expect(nova.rotas).toContainEqual(expect.objectContaining({ rota: 'PATCH /pessoas/:id', antes: true, depois: false }));
-    await http(admin, 'post', prefixo).send({ acoes, competencias, fundamento, previa: nova.previa }).expect(201);
-    await http(secretaria, 'get', '/auth/profile').expect(401);
-    await abrirSessao(secretaria);
-    const visual = (await http(secretaria, 'get', '/autorizacao/navegacao').expect(200)).body.permissoes;
-    expect(visual.pessoas.sort()).toEqual(['create', 'view']);
-    expect(visual.lancamentos).toEqual([]);
-    expect(visual.secretaria).toEqual(['view']);
-    await http(secretaria, 'get', '/secretaria/contextos/' + contexto.id + '/resumo').expect(200);
-    await http(secretaria, 'get', '/secretaria/contextos/' + outroContexto.id + '/resumo').expect(404);
-    expect(await db.usuarios.findUnique({ where: { id: secretaria } })).toMatchObject({ perfil: 'COMUM', conta_atuacao: true,
-      pessoa_id: alvo.pessoa_id, geracao_vinculo: alvo.geracao_vinculo + 1 });
-    expect(await db.atribuicao_servico.findFirst({ where: { usuario_id: secretaria, acao: 'PESSOAS_CONSULTAR',
-      geracao_vinculo: alvo.geracao_vinculo + 1 } })).toMatchObject({ fim: new Date(fim) });
-    await http(secretaria, 'post', '/pessoas').send(novoCadastro).expect(201);
-    await http(secretaria, 'get', '/pessoas').expect(200);
-    await http(secretaria, 'patch', '/pessoas/' + alvo.pessoa_id).send({ nome_completo: 'Sem permissão' }).expect(403);
-    await http(secretaria, 'get', '/lancamentos/balanco').expect(403);
-  });
-
-  it('permite a conversão em homologação somente para o par indicado', async () => {
-    const chave = 'PROVISAO_HOMOLOGACAO_CONVERSAO_CONTA';
-    const configuracaoAnterior = process.env[chave];
-    const titular = await db.usuarios.findUniqueOrThrow({ where: { id: admin } });
-    const trabalho = await conta('SECRETARIO');
-    await db.usuarios.update({ where: { id: trabalho }, data: { pessoa_id: titular.pessoa_id } });
-    const prefixo = `/autorizacao/contas/${trabalho}/conversao`;
-    const entrada = { acoes: ['PESSOAS_CONSULTAR'] };
-    try {
-      delete process.env[chave];
-      await http(admin, 'post', `${prefixo}/previa`).send(entrada).expect(403);
-      process.env[chave] = `${igreja}:${admin}:${randomUUID()}`;
-      await http(admin, 'post', `${prefixo}/previa`).send(entrada).expect(403);
-      process.env[chave] = `${igreja}:${admin}:${trabalho}`;
-      await dar(trabalho, 'PESSOAS_CONSULTAR').expect(403);
-      const { previa } = (await http(admin, 'post', `${prefixo}/previa`).send(entrada).expect(201)).body;
-      delete process.env[chave];
-      await http(admin, 'post', prefixo).send({ ...entrada, previa, fundamento }).expect(403);
-      process.env[chave] = `${igreja}:${admin}:${trabalho}`;
-      await http(admin, 'post', prefixo).send({ ...entrada, previa, fundamento }).expect(201);
-      expect(await db.usuarios.findUnique({ where: { id: trabalho } })).toMatchObject({ perfil: 'COMUM' });
-      expect(await db.usuarios.findUnique({ where: { id: admin } })).toMatchObject({ perfil: 'ADMINISTRADOR' });
-      expect(await db.evento_autorizacao.findFirstOrThrow({ where: { igreja_id: igreja, acao: 'CONVERTER_CONTA', recurso_id: trabalho } }))
-        .toMatchObject({ operador_id: admin, dados: { conversao_homologacao: true } });
-    } finally {
-      if (configuracaoAnterior === undefined) delete process.env[chave];
-      else process.env[chave] = configuracaoAnterior;
-    }
-  });
-
   it('consulta e aprova pedidos por serviços separados, criando conta comum', async () => {
     const pedido = await db.solicitacao_acesso.create({ data: { igreja_id: igreja, nome_usuario: 'Nova conta',
       email_login: randomUUID() + '@example.invalid', estado: 'EM_ANALISE' } });
@@ -144,20 +74,6 @@ integration('Transição de perfis', () => {
     expect(await db.usuarios.findUnique({ where: { id: aprovado.usuario_id! } })).toMatchObject({ perfil: 'COMUM', pessoa_id: null });
   });
 
-  it('isola a conta financeira e efetiva revogação na sessão aberta', async () => {
-    const r = await dar(comum, 'LANCAMENTOS_REGISTRAR').expect(201);
-    await dar(comum, 'BALANCO_CONSULTAR').expect(201);
-    const local = await db.contas.create({ data: { igreja_id: igreja, descricao: 'Caixa local', tipo_conta: 'CAIXA' } });
-    const externa = await db.contas.create({ data: { igreja_id: outra, descricao: 'Caixa externa', tipo_conta: 'CAIXA' } });
-    const dados = { data_transacao: '2026-11-20', valor: 10, tipo_transacao: 'RECEITA' };
-    await http(comum, 'post', '/lancamentos').send({ ...dados, conta_id: externa.id }).expect(400);
-    await http(comum, 'post', '/lancamentos').send({ ...dados, conta_id: local.id }).expect(201);
-    await http(comum, 'get', '/lancamentos/balanco?mes=11&ano=2026').expect(200);
-    await http(comum, 'get', '/lancamentos').expect(403);
-    await http(admin, 'post', '/autorizacao/atribuicoes/' + r.body.id + '/revogar').send({ fundamento }).expect(201);
-    await http(comum, 'post', '/lancamentos').send({ ...dados, conta_id: local.id }).expect(403);
-    expect(await db.lancamentos.count({ where: { igreja_id: igreja } })).toBe(1);
-  });
   it('retira a Secretaria e a ficha de órgão da navegação ao terminar o cargo', async () => {
     const usuario = await conta('COMUM');
     const pessoa_id = (await db.usuarios.update({ where: { id: usuario }, data: { conta_atuacao: true } })).pessoa_id!;
@@ -182,137 +98,5 @@ integration('Transição de perfis', () => {
     await db.ocupacao_cargo.update({ where: { id: ocupacao.id }, data: { fim: hoje, fim_ordem: 1 } });
     expect((await navegar()).body.permissoes).toMatchObject({ secretaria: [], orgaos: [] });
     await http(usuario, 'get', rota).expect(404);
-  });
-
-  it('libera uma escrita na igreja escolhida e suspende sem restaurar a permissão por perfil', async () => {
-    const acao = 'PESSOAS_CADASTRAR';
-    const rota = '/autorizacao/liberacoes/' + acao;
-    const legada = await conta('SECRETARIO');
-    const operacional = await conta('COMUM');
-    const externa = await conta('SECRETARIO', outra);
-    const previa = async () => (await http(admin, 'get', rota + '/previa').expect(200)).body;
-    const registrar = (id: string) => http(id, 'post', '/pessoas').send(novoCadastro);
-    const atualizar = (estado: string, revisao: number, previa?: string) =>
-      http(admin, 'patch', rota).send({ estado, revisao, previa, fundamento });
-
-    await http(legada, 'get', rota + '/previa').expect(403);
-    await registrar(legada).expect(201);
-    const anterior = await previa();
-    expect(anterior.diferencas).toContainEqual(expect.objectContaining({
-      usuario_id: legada, rota: 'POST /pessoas', antes: true, depois: false,
-    }));
-    expect(anterior.diferencas.some(d => d.usuario_id === externa)).toBe(false);
-    const atribuicao = (await dar(operacional, acao).expect(201)).body.id;
-    await atualizar('ATRIBUICAO', 0, anterior.previa).expect(409);
-    const atual = await previa();
-    await atualizar('ATRIBUICAO', 0, atual.previa).expect(200);
-    await registrar(legada).expect(403);
-    await registrar(operacional).expect(201);
-    await registrar(externa).expect(201);
-    await http(legada, 'get', '/pessoas').expect(200);
-    expect((await http(legada, 'get', '/autorizacao/navegacao').expect(200)).body.permissoes.pessoas).not.toContain('create');
-
-    await atualizar('PAUSADO', 0).expect(409);
-    await atualizar('PAUSADO', 1).expect(200);
-    await registrar(operacional).expect(403);
-    await http(legada, 'get', '/pessoas').expect(200);
-    await http(admin, 'patch', '/autorizacao/liberacoes/PESSOAS_CONSULTAR')
-      .send({ estado: 'PAUSADO', revisao: 0, fundamento }).expect(400);
-    await http(admin, 'post', '/autorizacao/atribuicoes/' + atribuicao + '/revogar').send({ fundamento }).expect(201);
-    const retomada = await previa();
-    await atualizar('ATRIBUICAO', 2, retomada.previa).expect(200);
-    await registrar(legada).expect(403);
-    await registrar(operacional).expect(403);
-    await expect(db.liberacao_servico.delete({ where: { igreja_id_acao: { igreja_id: igreja, acao } } })).rejects.toThrow();
-    const trilha = await db.evento_autorizacao.findMany({ where: { igreja_id: igreja, acao: 'LIBERAR_SERVICO', recurso_id: acao } });
-    expect(trilha).toHaveLength(3);
-    expect(trilha.every(e => e.operador_id === admin && e.fundamento === fundamento)).toBe(true);
-  });
-
-  it('retira as duas rotas duplicadas de mandato e conserva a consulta após suspensão', async () => {
-    const rota = '/autorizacao/liberacoes/MANDATOS_REGISTRAR';
-    const legada = await conta('SECRETARIO');
-    const conselho = await db.orgao_interno.findFirstOrThrow({ where: { igreja_id: igreja, tipo_padrao: 'CONSELHO' } });
-    const { previa, revisao, diferencas } = (await http(admin, 'get', rota + '/previa').expect(200)).body;
-    expect(new Set(diferencas.filter(d => d.usuario_id === legada).map(d => d.rota))).toEqual(new Set([
-      'POST /oficiais/:id/mandatos', 'POST /oficiais/indicacoes/mandatos', 'PATCH /oficiais/mandatos/:id/encerrar',
-    ]));
-    await http(admin, 'patch', rota).send({ estado: 'ATRIBUICAO', revisao, previa, fundamento }).expect(200);
-    for (const path of ['/oficiais/' + randomUUID() + '/mandatos', '/oficiais/indicacoes/mandatos'])
-      await http(legada, 'post', path).send({}).expect(410);
-    const usoLegado = await db.evento_autorizacao.findMany({ where: { igreja_id: igreja, operador_id: legada,
-      acao: 'USO_ROTA_LEGADA', recurso_id: 'MANDATOS_REGISTRAR' } });
-    expect(usoLegado.map(e => e.dados)).toEqual(expect.arrayContaining([
-      { operacao: 'mandato', estado: 'ATRIBUICAO' }, { operacao: 'registrarMandatoPorIndicacao', estado: 'ATRIBUICAO' },
-    ]));
-    const ficha = '/orgaos/' + conselho.id + '/mandatos';
-    await http(legada, 'post', ficha).send({}).expect(403);
-    await http(legada, 'get', ficha).expect(200);
-    expect((await http(legada, 'get', '/autorizacao/navegacao').expect(200)).body.mandatos_legados).toBe(false);
-    await dar(legada, 'MANDATOS_REGISTRAR').expect(201);
-    await http(legada, 'post', ficha).send({}).expect(400);
-    await http(admin, 'patch', rota).send({ estado: 'PAUSADO', revisao: revisao + 1, fundamento }).expect(200);
-    await http(legada, 'post', ficha).send({}).expect(403);
-    await http(legada, 'patch', '/oficiais/mandatos/' + randomUUID() + '/encerrar').send({
-      data_efeito: '2026-11-25', motivo: fundamento, autoridade: fundamento, evidencia: fundamento,
-    }).expect(403);
-    expect((await http(legada, 'get', ficha).expect(200)).body.pode_registrar).toBe(false);
-  });
-
-  it('migra cadastros financeiros com atribuição e mantém o acervo com sua concessão específica', async () => {
-    const legada = await conta('ADMINISTRADOR');
-    const operacional = await conta('COMUM');
-    const ativar = async (acao: string) => {
-      const rota = '/autorizacao/liberacoes/' + acao;
-      const { previa, revisao } = (await http(admin, 'get', rota + '/previa').expect(200)).body;
-      await http(admin, 'patch', rota).send({ estado: 'ATRIBUICAO', previa, revisao, fundamento }).expect(200);
-    };
-    const banco = { descricao: 'Caixa operacional', tipo_conta: 'CAIXA', saldo_inicial: 0 };
-    await http(legada, 'post', '/contas').send(banco).expect(201);
-    await dar(operacional, 'CONTAS_CADASTRAR').expect(201);
-    await ativar('CONTAS_CADASTRAR');
-    await http(legada, 'post', '/contas').send(banco).expect(403);
-    await http(operacional, 'post', '/contas').send(banco).expect(201);
-    await http(legada, 'get', '/contas').expect(200);
-
-    const pessoa = (await db.usuarios.findUniqueOrThrow({ where: { id: legada } })).pessoa_id!;
-    const oficial = await db.oficial.create({ data: { igreja_id: igreja, pessoa_id: pessoa, tipo: 'DIACONO' } });
-    const registro = { tipo: 'ELEICAO', data_evento: '2019-12-01', data_descricao: null,
-      situacao_documental: 'EXTERNO_CONFERIDO', referencia_externa: 'Livro do ensaio', autoridade: 'Conselho',
-      idempotencia: randomUUID() };
-    await dar(operacional, 'HISTORICO_OFICIAIS_REGISTRAR').expect(201);
-    await dar(operacional, 'HISTORICO_OFICIAIS_CONSULTAR').expect(201);
-    await ativar('HISTORICO_OFICIAIS_REGISTRAR');
-    await ativar('HISTORICO_OFICIAIS_CONSULTAR');
-    const rota = '/oficiais/' + oficial.id + '/acervo-historico';
-    await http(legada, 'post', rota).send(registro).expect(403);
-    const { id } = (await http(operacional, 'post', rota).send(registro).expect(201)).body;
-    await http(operacional, 'get', rota).expect(200);
-    const detalhe = '/oficiais/acervo-historico/' + id + '/detalhe';
-    await http(operacional, 'get', detalhe).expect(403);
-    await http(admin, 'post', '/oficiais/acessos-sensiveis')
-      .send({ usuario_id: operacional, pode_consultar: true, pode_registrar: false, fundamento }).expect(201);
-    await http(operacional, 'get', detalhe).expect(200);
-    await http(operacional, 'get', '/oficiais/pessoas/' + pessoa + '/correcoes-data').expect(403);
-  });
-
-  it('migra a análise de solicitações e preserva a consulta e o cadastro técnico', async () => {
-    const responsavel = await conta('GESTOR');
-    const outro = await conta('GESTOR');
-    const rota = '/autorizacao/liberacoes/ACESSO_ANALISAR';
-    const pedido = await db.solicitacao_acesso.create({ data: { igreja_id: igreja, nome_usuario: 'Candidato',
-      email_login: randomUUID() + '@example.invalid', estado: 'EM_ANALISE' } });
-    await http(responsavel, 'get', '/solicitacoes-acesso').expect(403);
-    await dar(responsavel, 'ACESSO_ANALISAR').expect(201);
-    const { previa, revisao, diferencas } = (await http(admin, 'get', rota + '/previa').expect(200)).body;
-    expect(diferencas).toContainEqual(expect.objectContaining({ usuario_id: responsavel, antes: false, depois: true }));
-    expect(diferencas.some(d => d.usuario_id === outro)).toBe(false);
-    await http(admin, 'patch', rota).send({ estado: 'ATRIBUICAO', revisao, previa, fundamento }).expect(200);
-    const caminho = '/solicitacoes-acesso/' + pedido.id + '/rejeitar';
-    await http(admin, 'patch', caminho).expect(403);
-    await http(admin, 'get', '/solicitacoes-acesso').expect(200);
-    await http(responsavel, 'get', '/solicitacoes-acesso').expect(403);
-    await http(responsavel, 'patch', caminho).expect(200);
-    expect((await http(responsavel, 'get', '/autorizacao/navegacao').expect(200)).body.permissoes['solicitacoes-acesso']).toEqual(['edit']);
   });
 });

@@ -114,8 +114,8 @@ integration('E06: livros e paginação no PostgreSQL', () => {
       },
     });
     for (const [key, perfil] of [
-      ['secretario', 'SECRETARIO'],
-      ['gestor', 'GESTOR'],
+      ['secretario', 'COMUM'],
+      ['gestor', 'COMUM'],
       ['admin', 'ADMINISTRADOR'],
       ['outra', 'ADMINISTRADOR'],
     ] as const) {

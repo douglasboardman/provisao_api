@@ -16,7 +16,7 @@ export class LancamentosController {
 
   @ServicoDaRota('LANCAMENTOS_REGISTRAR')
   @Post()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO, Perfil.OPERADOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   create(@Request() req, @Body() dto: CreateLancamentoDto) {
     return this.lancamentosService.create(req.user.igreja_id, req.user.sub, dto, req.user);
   }
@@ -60,14 +60,14 @@ export class LancamentosController {
 
   @ServicoDaRota('LANCAMENTOS_EDITAR')
   @Patch(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO, Perfil.OPERADOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   update(@Request() req, @Param('id') id: string, @Body() dto: UpdateLancamentoDto) {
     return this.lancamentosService.update(id, req.user.igreja_id, dto, req.user);
   }
 
   @ServicoDaRota('LANCAMENTOS_EXCLUIR')
   @Delete(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   remove(@Request() req, @Param('id') id: string) {
     return this.lancamentosService.remove(id, req.user.igreja_id, req.user);
   }

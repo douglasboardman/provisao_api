@@ -40,7 +40,7 @@ export class LiberacoesService {
       const registradas = await tx.liberacao_servico.findMany({ where: { igreja_id: ator.igreja_id } });
       const porAcao = new Map(registradas.map(r => [r.acao, r]));
       return servicosLiberaveis.map(acao => ({ acao, rotulo: rotulosServico[acao], permite_pausar: !servicosDeConsulta.has(acao),
-        estado: porAcao.get(acao)?.estado ?? 'LEGADO', revisao: porAcao.get(acao)?.revisao ?? 0,
+        estado: porAcao.get(acao)?.estado ?? 'ATRIBUICAO', revisao: porAcao.get(acao)?.revisao ?? 0,
       }));
     });
   }
@@ -65,13 +65,7 @@ export class LiberacoesService {
       const concessoes = await filtrarAtribuicoesDeModelos(tx, conta, atribuidas.filter(r => r.usuario_id === conta.id), agora);
       const decisao = decisaoAtribuicoes(conta, acao, concessoes, agora);
       const podePorAtribuicao = decisao.permite && (acao !== 'MANDATOS_REGISTRAR' || !!conta.pessoa_id);
-      const legitimado = !acesso || conta.perfil === 'ADMINISTRADOR' ||
-        !!competencias?.some(c => c.usuario_id === conta.id && c.pessoa_id === conta.pessoa_id);
-      const antesPorRota = (perfis: string[], legada: boolean, contextual = false) => registro
-        ? registro.estado === 'ATRIBUICAO' && !legada && podePorAtribuicao
-        : conta.perfil === 'COMUM' ? !legada && podePorAtribuicao
-          : perfis.includes(conta.perfil) && legitimado &&
-            (acao !== 'MANDATOS_REGISTRAR' || legada || contextual || podePorAtribuicao);
+      const antesPorRota = (_perfis: string[], retirada: boolean, _contextual = false) => !retirada && registro?.estado !== 'PAUSADO' && podePorAtribuicao;
       return [
         ...rotas.map(r => {
           const ordenacao = r.rota === 'POST /oficiais/:id/eventos';
@@ -130,7 +124,7 @@ export class LiberacoesService {
         create: { igreja_id, acao, estado: pedido.estado, revisao }, update: { estado: pedido.estado, revisao } });
       await tx.evento_autorizacao.create({ data: { igreja_id, operador_id: operador.id, operador_pessoa_id: operador.pessoa_id,
         acao: 'LIBERAR_SERVICO', recurso_id: acao, fundamento: pedido.fundamento,
-        dados: { anterior: atual?.estado ?? 'LEGADO', estado: pedido.estado, revisao, previa: pedido.previa ?? null },
+        dados: { anterior: atual?.estado ?? 'ATRIBUICAO', estado: pedido.estado, revisao, previa: pedido.previa ?? null },
       } });
       return r;
     });

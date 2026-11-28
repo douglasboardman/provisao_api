@@ -1,3 +1,4 @@
+import { ContaComum } from '../autorizacao/politica';
 import { contextosDasAtasRestritas, filtroVisibilidadeDocumentos } from './visibilidade-documentos';
 import { Controller, Get, Header, Request, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
@@ -9,6 +10,7 @@ import { SecretariaBaseService, type AtorSecretaria } from './secretaria-base.se
 export class PerfilController {
   constructor(private readonly base: SecretariaBaseService) {}
 
+  @ContaComum()
   @Get()
   @Header('Cache-Control', 'private, no-store')
   consultar(@Request() req: { user: AtorSecretaria }) {
@@ -38,17 +40,22 @@ export class PerfilController {
         if (!pessoa) return { igreja: conta.igreja.nome, pessoa: null };
         const pessoa_id = pessoa.id;
         const recursos = recursosDaSessao(igreja_id);
-        const institucional = ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', 'AUDITOR'].includes(ator.perfil);
+        const contextos = await tx.contexto_secretaria.findMany({ where: { igreja_id }, include: { orgao: true } });
+        const operador = await this.base.operador(tx, ator);
+        const permitidos: string[] = [];
+        for (const c of contextos) if (await this.base.contextoVisivel(tx, c, operador)) permitidos.push(c.id);
+        const institucional = permitidos.length > 0;
         const secretaria = institucional && recursos.secretaria;
         const concessoes = secretaria ? await this.base.concessoes(tx, ator) : [];
         const visibilidade = {
+          contexto_id: { in: permitidos },
           OR: [
             { restrito: false },
             { contexto_id: { in: concessoes.filter((c) => c.pode_consultar_restritos).map((c) => c.contexto_id) } },
           ],
         };
-        const documentosVisiveis = secretaria ? filtroVisibilidadeDocumentos(concessoes.filter(c => c.pode_consultar_restritos).map(c => c.contexto_id),
-          await contextosDasAtasRestritas(tx, igreja_id, ator.sub)) : {};
+        const documentosVisiveis = secretaria ? { contexto_id: { in: permitidos }, ...filtroVisibilidadeDocumentos(concessoes.filter(c => c.pode_consultar_restritos).map(c => c.contexto_id),
+          await contextosDasAtasRestritas(tx, igreja_id, ator.sub)) } : {};
         const [familia, eventos, contribuicoes, mandatos, reunioes, proposicoes] = await Promise.all([
           pessoa.grupo_familiar_id
             ? tx.grupos_familiares.findFirst({

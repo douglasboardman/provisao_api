@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { logs_atividades_acao, membresia_rol, Prisma, usuarios_perfil } from '@prisma/client';
 import { z } from 'zod';
@@ -47,7 +48,7 @@ export class ConferenciaEleicaoService {
       const [pessoa, politica, usuario, eventos] = await Promise.all([
         tx.pessoas.findFirst({ where: { id: entrada.pessoa_id, igreja_id: igrejaId }, select: { id: true, data_nascimento: true, sexo: true } }),
         tx.politica_eleicao_oficial.findFirst({ where: { id: entrada.politica_id, igreja_id: igrejaId, vigente_desde: { lte: eleicao }, OR: [{ vigente_ate: null }, { vigente_ate: { gte: eleicao } }] } }),
-        tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.SECRETARIO, usuarios_perfil.GESTOR] } }, select: { id: true } }),
+        exigirServicoDoUsuario(tx, igrejaId, usuarioId, 'MANDATOS_REGISTRAR'),
         tx.eventos_membresia.findMany({ where: { igreja_id: igrejaId, pessoa_id: entrada.pessoa_id, data_evento: { lte: eleicao } }, select: camposEventoRecepcao }),
       ]);
       if (!pessoa || !politica || !usuario) throw new NotFoundException('Pessoa, política vigente ou operador não encontrado nesta igreja.');

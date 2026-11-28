@@ -25,7 +25,7 @@ integration('E03: gestão HTTP protegida', () => {
     const p = app.get(PrismaService);
     for (const id of [pessoaGestor, participante, pessoaDocente]) await p.pessoas.create({ data: { id, igreja_id: igreja, nome_completo: 'Pessoa HTTP sintética', data_nascimento: new Date('1980-01-01'), sexo: id === pessoaDocente ? 'MASCULINO' : 'FEMININO' } });
     await p.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: participante, tipo_evento: 'ADMISSAO', rol: 'NAO_COMUNGANTES', motivacao_evento: 'BATISMO_NA_INFANCIA', data_evento: new Date('2020-01-01') } });
-    await p.usuarios.create({ data: { id: gestor, igreja_id: igreja, pessoa_id: pessoaGestor, nome_usuario: 'Gestor HTTP', email_login: `${gestor}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'GESTOR', ativo: true } });
+    await p.usuarios.create({ data: { id: gestor, igreja_id: igreja, pessoa_id: pessoaGestor, nome_usuario: 'Gestor HTTP', email_login: `${gestor}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'COMUM', ativo: true } });
     await p.usuarios.create({ data: { id: auditor, igreja_id: igreja, nome_usuario: 'Auditor HTTP', email_login: `${auditor}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'AUDITOR', ativo: true } });
     await p.oficial.create({ data: { id: oficial, igreja_id: igreja, pessoa_id: pessoaDocente, tipo: 'PRESBITERO_DOCENTE' } });
     await p.oficial.create({ data: { id: oficialFeminino, igreja_id: igreja, pessoa_id: pessoaGestor, tipo: 'PRESBITERO_DOCENTE' } });

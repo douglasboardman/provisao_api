@@ -35,7 +35,7 @@ integration('Sociedades e ministérios', () => {
     return p.id;
   }
 
-  async function login(igreja_id: string, perfil: 'SECRETARIO' | 'COMUM' | 'GESTOR' | 'TESOUREIRO', pessoa_id?: string, conta_atuacao = false) {
+  async function login(igreja_id: string, perfil: 'COMUM', pessoa_id?: string, conta_atuacao = false) {
     const u = await db.usuarios.create({ data: { igreja_id, perfil, pessoa_id, conta_atuacao,
       nome_usuario: randomUUID(), email_login: randomUUID() + '@example.invalid', senha_hash: 'inutilizavel' } });
     sessao.set(u.id, 'provisao_session=' + await app.get(SessionService).create(u.id, igreja_id, 0));
@@ -58,8 +58,8 @@ integration('Sociedades e ministérios', () => {
     await db.$executeRaw`SELECT instalar_estrutura_institucional(${igreja})`;
     pastor = await pessoa('Pastor do ensaio', data('1980-06-01'), 'MASCULINO');
     presidente = await login(igreja, 'COMUM', pastor, true);
-    secretario = await login(igreja, 'SECRETARIO');
-    secretariaExterna = await login(outraIgreja, 'SECRETARIO');
+    secretario = await login(igreja, 'COMUM');
+    secretariaExterna = await login(outraIgreja, 'COMUM');
     const oficial = await db.oficial.create({ data: { pessoa_id: pastor, igreja_id: igreja, tipo: 'PRESBITERO_DOCENTE' } });
     await db.vinculo_pastoral.create({ data: { oficial_id: oficial.id, igreja_id: igreja, modalidade: 'Pastor',
       concilio: 'Presbitério', ato: 'Posse', evidencia: 'Registro', data_inicio: data(inicio), exercicio_institucional: true } });
@@ -100,8 +100,8 @@ integration('Sociedades e ministérios', () => {
     expect(pessoas.body.map(p => p.id).sort()).toEqual([pastor, presidenteSaf].sort());
     const tesoureira = await pessoa('Tesoureira da SAF', data('1985-01-01'));
     const socia = await pessoa('Sócia da SAF sem cargo', data('1985-01-01'));
-    const contaTesoureira = await login(igreja, 'TESOUREIRO', tesoureira);
-    const contaSocia = await login(igreja, 'SECRETARIO', socia);
+    const contaTesoureira = await login(igreja, 'COMUM', tesoureira);
+    const contaSocia = await login(igreja, 'COMUM', socia);
     for (const id of [tesoureira, socia])
       await ato(saf.id, { tipo: 'PARTICIPACAO_INCLUSAO', pessoa_id: id, desde: '2022-04-01' }).expect(201);
     const tesouraria = saf.cargos.find(c => c.codigo === 'TESOUREIRO')!;

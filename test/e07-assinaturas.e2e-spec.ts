@@ -105,9 +105,9 @@ integration('E07: assinatura e expedição por versão', () => {
       });
     }
     for (const [id, papel, tenant, pessoa] of [
-      [gestor, 'GESTOR', igreja, gestor],
-      [vinculado, 'OPERADOR', igreja, vinculado],
-      [secretario, 'SECRETARIO', igreja, null],
+      [gestor, 'COMUM', igreja, gestor],
+      [vinculado, 'COMUM', igreja, vinculado],
+      [secretario, 'COMUM', igreja, null],
       [admin, 'ADMINISTRADOR', igreja, null],
       [outraConta, 'ADMINISTRADOR', outraIgreja, null],
     ] as const) {

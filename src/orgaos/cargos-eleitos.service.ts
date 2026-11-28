@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { contextosDasAtasRestritas } from '../secretaria/visibilidade-documentos';
 import { contaDaSessao, decidirServico, type Ator, type Tx } from '../autorizacao/politica';
 import { recursoDaIgreja } from '../feature-flags/feature-flags';
@@ -135,7 +136,7 @@ export class CargosEleitosService {
     const hash = hashAto({ operacao: 'ELEICAO_CARGO', orgaoId, cargoId, dados: v });
     return transacaoComRetentativa(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', ...(v.comprovacao && ator?.perfil === 'COMUM' ? ['COMUM' as const] : [])] } }, select: { id: true, pessoa_id: true } });
+      const operador = await exigirServicoDoUsuario(tx, igrejaId, usuarioId, 'CARGOS_REGISTRAR');
       if (!operador) throw new ForbiddenException('Operador não autorizado.');
       const poder = v.comprovacao ? await this.poder(tx, igrejaId, usuarioId, ator) : null;
       if (operador.pessoa_id === v.pessoa_id && !poder?.podeRegistrarParaSi) throw new ForbiddenException('O titular exige registro por outra pessoa.');
@@ -254,7 +255,7 @@ export class CargosEleitosService {
     const efeito = data(v.data_efeito);
     return transacaoSerializavel(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      if (!await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', ...(v.comprovacao && ator?.perfil === 'COMUM' ? ['COMUM' as const] : [])] } }, select: { id: true } })) throw new ForbiddenException('Operador não autorizado.');
+      if (!await exigirServicoDoUsuario(tx, igrejaId, usuarioId, 'CARGOS_REGISTRAR')) throw new ForbiddenException('Operador não autorizado.');
       const hoje = await hojeDaIgreja(tx, igrejaId);
       const poder = v.comprovacao ? await this.poder(tx, igrejaId, usuarioId, ator) : null;
       const anterior = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, orgao: orgaoId, idempotencia, tipo: 'ENCERRAMENTO_CARGO', hash }, 'ocupacao_id');

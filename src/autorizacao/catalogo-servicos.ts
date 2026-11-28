@@ -20,8 +20,8 @@ export const gruposServico = {
   lancamentos: { view: 'LANCAMENTOS_CONSULTAR', create: 'LANCAMENTOS_REGISTRAR', edit: 'LANCAMENTOS_EDITAR', delete: 'LANCAMENTOS_EXCLUIR' },
   'balanco-mensal': { view: 'BALANCO_CONSULTAR' },
   'autorizacoes-financeiras': { view: 'AUTORIZACOES_FINANCEIRAS_CONSULTAR', create: 'AUTORIZACOES_FINANCEIRAS_REGISTRAR' },
-  oficiais: { view: 'OFICIAIS_CONSULTAR' },
-  orgaos: { view: 'ORGAOS_CONSULTAR' },
+  oficiais: { view: 'OFICIAIS_CONSULTAR', create: 'OFICIAIS_REGISTRAR', edit: 'OFICIAIS_REGISTRAR' },
+  orgaos: { view: 'ORGAOS_CONSULTAR', create: 'ORGAOS_CONFIGURAR', edit: 'ORGAOS_CONFIGURAR' },
 } as const;
 
 export const servicosInstitucionais = ['PRESIDENCIA_CONFERIR', 'MANDATOS_REGISTRAR', 'CARGOS_REGISTRAR'] as const;
@@ -68,10 +68,10 @@ export const servicosDeConsulta = new Set<Servico>([
   ...Object.values(gruposServico).map(g => g.view), 'VINCULOS_DOCUMENTAIS_CONSULTAR',
   'HISTORICO_MEMBRESIA_CONSULTAR', 'HISTORICO_OFICIAIS_CONSULTAR',
 ]);
-export const codigosServico = [
+export const codigosServico = [...new Set([
   ...Object.values(gruposServico).flatMap(g => Object.values(g)),
   ...servicosInstitucionais, ...servicosAdicionais,
-] as Servico[];
+])] as Servico[];
 
 const titulos: Record<keyof typeof gruposServico, string> = {
   pessoas: 'pessoas', 'grupos-familiares': 'famílias', 'eventos-membresia': 'membresia',

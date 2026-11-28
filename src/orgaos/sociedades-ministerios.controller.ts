@@ -10,7 +10,7 @@ import { SociedadesMinisteriosService } from './sociedades-ministerios.service';
 
 @Controller('orgaos/institucional')
 @UseGuards(AuthGuard, RolesGuard, OrgaosGuard, OrgaosGestaoGuard)
-@Roles(Perfil.COMUM, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.OPERADOR, Perfil.TESOUREIRO)
+@Roles(Perfil.COMUM)
 export class SociedadesMinisteriosController {
   constructor(private readonly service: SociedadesMinisteriosService) {}
 

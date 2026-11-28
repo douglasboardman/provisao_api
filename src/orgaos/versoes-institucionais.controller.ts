@@ -10,7 +10,7 @@ import { VersoesInstitucionaisService } from './versoes-institucionais.service';
 
 @Controller('orgaos/:id/configuracao')
 @UseGuards(AuthGuard, RolesGuard, OrgaosGuard, OrgaosGestaoGuard)
-@Roles(Perfil.COMUM, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.OPERADOR, Perfil.TESOUREIRO, Perfil.ADMINISTRADOR)
+@Roles(Perfil.COMUM, Perfil.ADMINISTRADOR)
 export class VersoesInstitucionaisController {
   constructor(private readonly versoes: VersoesInstitucionaisService) {}
 

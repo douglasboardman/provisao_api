@@ -1,3 +1,4 @@
+import { ContaComum as ContaContextual } from '../autorizacao/politica';
 import {
   BadRequestException,
   Body,
@@ -28,9 +29,10 @@ import { codigo, validar } from './secretaria.dto';
 
 type RequestSecretaria = { user: AtorSecretaria };
 
+@ContaContextual()
 @Controller('secretaria/livros')
 @UseGuards(AuthGuard, RolesGuard, SecretariaGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 export class LivrosController {
   constructor(private readonly livros: LivrosService) {}
 

@@ -900,6 +900,7 @@ model eventos_membresia {
   ordem_dia        Int?
   igreja_origem    String?                    @db.VarChar(255)
   igreja_destino   String?                    @db.VarChar(255)
+  referencia_documental String?                @db.VarChar(1000)
   observacoes      String?
   created_at       DateTime                   @default(now())
   updated_at       DateTime                   @updatedAt
@@ -1034,11 +1035,7 @@ enum lancamentos_tipo_transacao {
 enum usuarios_perfil {
   COMUM
   ADMINISTRADOR
-  GESTOR
-  TESOUREIRO
-  OPERADOR
   AUDITOR
-  SECRETARIO
 }
 
 enum pessoas_sexo {
@@ -1633,6 +1630,7 @@ enum documento_estado {
   LEGADA_CONFERIDA
 }
 model contexto_secretaria {
+  modelos_reuniao modelo_reuniao[]
   id String @id @default(uuid())
   igreja_id String
   tipo contexto_secretaria_tipo
@@ -2563,4 +2561,15 @@ model concessao_modelo_atuacao {
 
   @@unique([id, igreja_id])
   @@index([igreja_id, modelo_id, usuario_id])
+}
+
+model modelo_reuniao {
+  id String @id @default(dbgenerated("(gen_random_uuid())::text"))
+  igreja_id String
+  contexto_id String
+  finalidade String
+  configuracao Json
+  revisao Int @default(1)
+  contexto contexto_secretaria @relation(fields: [contexto_id, igreja_id], references: [id, igreja_id], onDelete: Cascade)
+  @@unique([contexto_id, finalidade])
 }

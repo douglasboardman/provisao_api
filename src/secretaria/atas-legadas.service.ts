@@ -1,3 +1,4 @@
+import { ReferenciasAtaService } from './referencias-ata.service';
 import {
   BadRequestException,
   ConflictException,
@@ -24,6 +25,7 @@ type FonteLegada = { numero: string | null; legado: { sha256: string; arquivo_id
 @Injectable()
 export class AtasLegadasService {
   constructor(
+    private readonly referencias: ReferenciasAtaService,
     private readonly base: SecretariaBaseService,
     private readonly cadastros: SecretariaCadastrosService,
     private readonly documentos: DocumentosService,
@@ -228,9 +230,8 @@ export class AtasLegadasService {
   editar(a: AtorSecretaria, id: string, dados: unknown) {
     const v = validar(editarAtaLegadaSchema, dados);
     return this.base.comando(a, 'EDITAR_DOCUMENTO_LEGADO', id, v, async tx => {
-      const operador = await this.base.operador(tx, a);
-      this.base.exigirSecretario(operador);
       const d = await this.base.documento(tx, a, id);
+      await this.base.exigirEdicaoAtaLegada(tx, a, d.contexto_id);
       this.base.conferirRevisao(d.revisao, v.revisao);
       const atual = d.versoes.find(r => r.numero === d.versao_atual);
       if (d.estado !== 'LEGADA_CONFERIDA' || !atual || atual.modelo_versao_id !== null)
@@ -262,6 +263,7 @@ export class AtasLegadasService {
       await this.documentos.salvarArroladosAnexos(tx, a, nova.id, d.contexto_id, conteudo);
       await salvarResolucoes(tx, { ...escopo, versao_id: nova.id }, v.resolucoes);
       await tx.documento_versao.update({ where: { id: nova.id }, data: { congelado_em: agora } });
+      await this.referencias.reatribuirNaEdicao(tx, a, id, id, nova.id, v.reatribuicao_atos);
       const doc = await tx.documento.update({ where: { id }, data: { versao_atual: nova.numero, revisao: { increment: 1 } } });
       return { id, revisao: doc.revisao, versao_id: nova.id };
     }).catch((erro: unknown) => {

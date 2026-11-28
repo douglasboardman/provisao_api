@@ -133,7 +133,8 @@ export class ExpedicaoWorkerService {
           AND reserva_id = ${lease} AND reserva_ate > NOW() FOR UPDATE`;
         if (!trabalho) return;
         const d = e.versao.documento;
-        const ator = { igreja_id: e.igreja_id, sub: e.operador_id, perfil: 'SECRETARIO' as const };
+        const operador = await tx.usuarios.findFirstOrThrow({ where: { id: e.operador_id, igreja_id: e.igreja_id }, select: { perfil: true } });
+        const ator = { igreja_id: e.igreja_id, sub: e.operador_id, perfil: operador.perfil };
         const arquivo = await this.arquivos.storage.saveArtifact(tx, ator, e.id, pdf.final, LIMITE_ARTEFATO_EXPEDICAO);
         await this.arquivos.storage.readVerified(arquivo);
         let faces: Expedicao['arquivo_livro'] = null;

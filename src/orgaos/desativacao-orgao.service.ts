@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { ordemDoAto } from './ordem-ato';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { logs_atividades_acao } from '@prisma/client';
@@ -19,14 +20,14 @@ export class DesativacaoOrgaoService {
     const hash = hashAto({ operacao: 'DESATIVACAO', orgaoId, dados: v });
     return transacaoSerializavel(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO'] } }, select: { perfil: true, pessoa_id: true } });
+      const operador = await exigirServicoDoUsuario(tx, igrejaId, usuarioId, 'ORGAOS_CONFIGURAR');
       if (!operador) throw new ForbiddenException('Operador não autorizado.');
       const hoje = await hojeDaIgreja(tx, igrejaId), efeito = new Date(`${hoje}T00:00:00Z`);
       await bloquearChave(tx, igrejaId, idempotencia);
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;
       const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, gestao_presidencial: false, tipo: { in: ['CONSELHO', 'JUNTA', 'UNIDADE_MINISTERIAL'] } }, select: { tipo: true, ativo: true, data_criacao: true } });
       if (!orgao) throw new NotFoundException('Órgão não encontrado nesta igreja.');
-      if (orgao.tipo === 'UNIDADE_MINISTERIAL' && (operador.perfil !== 'GESTOR' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: operador.pessoa_id, inicio: { lte: efeito }, OR: [{ fim: null }, { fim: { gt: efeito } }] }, select: { id: true } }))) throw new ForbiddenException('Competência institucional não comprovada.');
+      if (orgao.tipo === 'UNIDADE_MINISTERIAL' && (operador.perfil !== 'COMUM' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: operador.pessoa_id, inicio: { lte: efeito }, OR: [{ fim: null }, { fim: { gt: efeito } }] }, select: { id: true } }))) throw new ForbiddenException('Competência institucional não comprovada.');
       const repetido = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, orgao: orgaoId, idempotencia, tipo: 'DESATIVACAO', hash }, 'orgao_id');
       if (repetido) {
         if (repetido.ocupacao_id !== orgaoId) throw new BadRequestException('Resultado anterior indisponível para conferência.');

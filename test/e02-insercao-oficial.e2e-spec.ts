@@ -12,7 +12,7 @@ integration('E02: evento retroativo de oficial', () => {
   beforeAll(async () => {
     if (process.env.DATABASE_URL !== 'postgresql://provisao_test:provisao_test@127.0.0.1:55439/provisao_test?schema=public') throw new Error('Exige banco descartável E00.');
     await p.$connect();
-    await p.usuarios.create({ data: { id: usuario, igreja_id: igreja, nome_usuario: 'Secretário sintético', email_login: `${usuario}@example.invalid`, senha_hash: 'sem-senha', perfil: 'SECRETARIO', ativo: true } });
+    await p.usuarios.create({ data: { id: usuario, igreja_id: igreja, nome_usuario: 'Secretário sintético', email_login: `${usuario}@example.invalid`, senha_hash: 'sem-senha', perfil: 'COMUM', ativo: true } });
     await p.pessoas.create({ data: { id: pessoa, igreja_id: igreja, nome_completo: 'Pessoa sintética', data_nascimento: new Date('1990-01-01'), sexo: 'MASCULINO' } });
     await p.oficial.create({ data: { id: oficial, igreja_id: igreja, pessoa_id: pessoa, tipo: 'DIACONO' } });
     await p.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: oficial, tipo: 'ORDENACAO', data_efeito: new Date('2020-01-01'), ordem: 1, autoridade: 'Conselho', evidencia: 'Livro' } });

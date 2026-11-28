@@ -24,7 +24,7 @@ export class PoliticaUnidadeService {
     const hash = hashAto({ operacao: 'POLITICA_UNIDADE', orgaoId, dados: v });
     return transacaoSerializavel(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const gestor = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: 'GESTOR' }, select: { pessoa_id: true } });
+      const gestor = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: 'COMUM' }, select: { pessoa_id: true } });
       const hoje = data(await hojeDaIgreja(tx, igrejaId));
       if (!gestor?.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: gestor.pessoa_id, inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] }, select: { id: true } })) throw new ForbiddenException('Competência institucional não comprovada.');
       const repetido = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, orgao: orgaoId, idempotencia, tipo: 'POLITICA_UNIDADE', hash }, 'politica_id');

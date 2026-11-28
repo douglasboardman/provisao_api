@@ -15,12 +15,12 @@ const encerramento = z.object({ data_efeito: dia, autoridade: z.string().trim().
 export class PresidenciaService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async registrar(igrejaId: string, usuarioId: string, dados: z.infer<typeof entrada>) {
+  async registrar(igrejaId: string, usuarioId: string, dados: z.infer<typeof entrada>, transacao?: Prisma.TransactionClient) {
     const parsed = entrada.safeParse(dados);
     if (!parsed.success) throw new BadRequestException('Dados da presidência inválidos.');
     const { idempotencia: chave, ...v } = parsed.data, idempotencia = chave.toLowerCase(), data = new Date(`${v.inicio}T00:00:00.000Z`);
     const contexto = { igreja: igrejaId, usuario: usuarioId, idempotencia, tipo: 'PRESIDENCIA_CONSELHO', hash: hashAto({ operacao: 'PRESIDENCIA_CONSELHO', dados: v }) };
-    return transacaoComRetentativa(this.prisma, async tx => {
+    const executar = async (tx: Prisma.TransactionClient) => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
       const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: 'ADMINISTRADOR' }, select: { id: true } });
       if (!operador) throw new ForbiddenException('Operador não autorizado.');
@@ -43,7 +43,8 @@ export class PresidenciaService {
       await tx.logs_atividades.create({ data: { igreja_id: igrejaId, usuario_id: usuarioId, acao: logs_atividades_acao.CRIACAO, tabela_afetada: 'presidencia_conselho', registro_id: registro.id, dados_novos: { oficial_id: oficial.id, inicio: v.inicio, evidencia: v.evidencia } } });
       await registrarRequisicao(tx, contexto, { id: registro.id });
       return { id: registro.id };
-    }, Prisma.TransactionIsolationLevel.ReadCommitted);
+    };
+    return transacao ? executar(transacao) : transacaoComRetentativa(this.prisma, executar, Prisma.TransactionIsolationLevel.ReadCommitted);
   }
 
   async encerrar(igrejaId: string, usuarioId: string, id: string, dados: z.infer<typeof encerramento>) {

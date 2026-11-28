@@ -186,8 +186,8 @@ integration('E08: resoluções, integridade e consulta de atuação', () => {
     await prisma.vinculo_pastoral.create({ data: { igreja_id: igreja, oficial_id: oficial.id, data_inicio: inicio, exercicio_institucional: true,
       modalidade: 'Pastor', concilio: 'Presbitério', ato: 'Posse', evidencia: 'Registro de posse' } });
     for (const [chave, perfil, igreja_id, pessoa_id] of [
-      ['gestor', 'GESTOR', igreja, lider],
-      ['conselheiro', 'GESTOR', igreja, conselheiro],
+      ['gestor', 'COMUM', igreja, lider],
+      ['conselheiro', 'COMUM', igreja, conselheiro],
       ['auditor', 'AUDITOR', igreja, null],
       ['outra', 'AUDITOR', outraIgreja, null],
     ] as const) {

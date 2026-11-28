@@ -12,7 +12,7 @@ describe('identificação por igreja', () => {
   beforeEach(() => { jest.clearAllMocks(); });
   it('consulta login pela chave composta da igreja e e-mail', async () => {
     prisma.$queryRaw.mockResolvedValue([{ id: 'u' }]);
-    prisma.usuarios.findUnique.mockResolvedValue({ id: 'u', igreja_id: 'igreja-b', email_login: 'igual@example.invalid', nome_usuario: 'Teste', perfil: 'OPERADOR', ativo: true, senha_hash: 'hash' });
+    prisma.usuarios.findUnique.mockResolvedValue({ id: 'u', igreja_id: 'igreja-b', email_login: 'igual@example.invalid', nome_usuario: 'Teste', perfil: 'COMUM', ativo: true, senha_hash: 'hash' });
     (bcrypt.compare as jest.Mock).mockResolvedValue(true);
     await expect(service.signIn('igual@example.invalid', 'senha', 'igreja-b')).resolves.toEqual({ access_token: 'token' });
     expect(prisma.$queryRaw).toHaveBeenCalledWith(expect.anything(), 'igreja-b', 'igual@example.invalid');

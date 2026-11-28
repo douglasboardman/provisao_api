@@ -1,3 +1,4 @@
+import { ContaComum as ContaContextual } from '../autorizacao/politica';
 import {
   BadRequestException,
   Body,
@@ -44,9 +45,10 @@ const arquivos = (res: Response, arquivo: { bytes: Buffer; nome: string }) => {
   res.send(arquivo.bytes);
 };
 
+@ContaContextual()
 @Controller('secretaria/documentos/:id/assinaturas')
 @UseGuards(AuthGuard, RolesGuard, SecretariaGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 export class AssinaturasController {
   constructor(private readonly servico: AssinaturasService) {}
 

@@ -8,6 +8,13 @@ export const tabelasDocumentais = Prisma.sql`
   JOIN documento d ON d.id = v.documento_id AND d.igreja_id = v.igreja_id
   JOIN contexto_secretaria c ON c.id = d.contexto_id AND c.igreja_id = d.igreja_id`;
 
+export const dataReuniaoAta = Prisma.sql`CASE WHEN d.tipo = 'ATA' THEN
+  CASE WHEN v.reuniao_id IS NULL THEN
+    CASE WHEN (v.fonte_congelada #>> '{legado,reuniao,data}') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+      THEN v.fonte_congelada #>> '{legado,reuniao,data}' END
+  ELSE (SELECT to_char(r.data, 'YYYY-MM-DD') FROM reuniao r WHERE r.id = v.reuniao_id AND r.igreja_id = d.igreja_id
+    AND r.contexto_id = d.contexto_id AND (NOT r.restrito OR d.restrito)) END END`;
+
 const numeroFormatado = Prisma.sql`coalesce(v.numero_original, v.fonte_congelada->>'numero', d.identificacao_livro,
     CASE WHEN d.numero IS NOT NULL THEN concat_ws('/', lpad(d.numero::text, greatest(3, length(d.numero::text)), '0'), d.ano, d.sigla) END)`;
 
@@ -42,7 +49,8 @@ export async function selecionarDocumentos(tx: Tx, escopo: Prisma.Sql, parametro
   const tamanho = 30;
   const itens = await tx.$queryRaw<unknown[]>`
     SELECT d.id AS documento_id, v.id AS versao_id, v.numero AS versao, ${reconvocacao} AS reconvocacao, v.assunto, d.numero, d.ano, d.sigla,
-      d.estado, v.data_documento AS data, c.nome AS contexto, c.id AS contexto_id, ${numeroFormatado} AS numero_formatado,
+      d.estado, v.data_documento AS data, ${dataReuniaoAta} AS data_reuniao,
+      c.nome AS contexto, c.id AS contexto_id, ${numeroFormatado} AS numero_formatado,
       ${pauta} AS pauta, ARRAY(SELECT a.retrato->>'nome' FROM arrolado_documento a WHERE a.versao_id = v.id ORDER BY 1, a.id) AS arrolados,
       coalesce((SELECT jsonb_agg(jsonb_build_object('assunto', r.assunto, 'texto', r.texto_deliberado, 'resultado', r.resultado)
         ORDER BY r.ordem) FROM resolucao r WHERE r.versao_id = v.id), '[]'::jsonb) AS resolucoes

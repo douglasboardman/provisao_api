@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { logs_atividades_acao, oficial_evento_tipo, oficio_tipo, Prisma, usuarios_perfil } from '@prisma/client';
 import { z } from 'zod';
@@ -30,7 +31,7 @@ export class OficiaisService {
   constructor(private readonly prisma: PrismaService) {}
 
   private async autorizar(tx: Tx, igrejaId: string, usuarioId: string) {
-    const usuario = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO] } }, select: { id: true } });
+    const usuario = await exigirServicoDoUsuario(tx, igrejaId, usuarioId, 'OFICIAIS_REGISTRAR');
     if (!usuario) throw new ForbiddenException('Operador não autorizado nesta igreja.');
   }
   private async oficialBloqueado(tx: Tx, igrejaId: string, oficialId: string) {

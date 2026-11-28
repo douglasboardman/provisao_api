@@ -83,3 +83,12 @@ export const autorizacaoFinanceira = z
     if (d.tipo === 'CONTA_SIGNATARIOS' && !d.conta_id)
       ctx.addIssue({ code: 'custom', message: 'Informe a conta existente.' });
   });
+
+// IDs das revisões exibidas no modal, para detectar mudanças concorrentes.
+export const reatribuicaoAtosSchema = z.object({
+  vistas: z.array(uuid).max(5000),
+  selecionadas: z.array(uuid).max(5000),
+}).strict().refine(v => new Set(v.vistas).size === v.vistas.length &&
+  new Set(v.selecionadas).size === v.selecionadas.length &&
+  v.selecionadas.every(id => v.vistas.includes(id)), 'Seleção de atos inválida.');
+export type ReatribuicaoAtos = z.infer<typeof reatribuicaoAtosSchema>;

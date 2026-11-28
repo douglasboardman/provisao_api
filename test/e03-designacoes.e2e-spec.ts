@@ -25,7 +25,7 @@ integration('E03: designações e dispensa', () => {
     if (process.env.DATABASE_URL !== 'postgresql://provisao_test:provisao_test@127.0.0.1:55439/provisao_test?schema=public') throw new Error('Exige banco descartável E00.');
     await prisma.$connect();
     for (const id of [pastor, membro, membro2, naoComungante]) await prisma.pessoas.create({ data: { id, igreja_id: igreja, nome_completo: 'Pessoa sintética', data_nascimento: date('1980-01-01'), sexo: 'MASCULINO' } });
-    await prisma.usuarios.create({ data: { id: gestor, igreja_id: igreja, pessoa_id: pastor, nome_usuario: 'Pastor sintético', email_login: `${gestor}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'GESTOR' } });
+    await prisma.usuarios.create({ data: { id: gestor, igreja_id: igreja, pessoa_id: pastor, nome_usuario: 'Pastor sintético', email_login: `${gestor}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'COMUM' } });
     process.env.FEATURE_GOVERNANCA = 'true'; process.env.FEATURE_ORGAOS = 'true'; process.env.FEATURE_ORGAOS_GESTAO = 'true';
     app = (await Test.createTestingModule({ imports: [AppModule] }).compile()).createNestApplication();
     await app.init();

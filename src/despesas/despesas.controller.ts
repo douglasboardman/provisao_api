@@ -9,7 +9,7 @@ import { RolesGuard } from 'src/auth/guards/roles/roles.guard';
 import { Roles } from 'src/auth/decorators/roles.decorator';
 
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO, Perfil.OPERADOR, Perfil.AUDITOR, Perfil.SECRETARIO)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 @Controller('despesas')
 export class DespesasController {
   constructor(private readonly despesasService: DespesasService) {}
@@ -20,7 +20,7 @@ export class DespesasController {
    */
   @ServicoDaRota('DESPESAS_CADASTRAR')
   @Post()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO, Perfil.OPERADOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   create(@Request() req, @Body() createDespesaDto: CreateDespesaDto) {
     return this.despesasService.create(req.user.igreja_id, createDespesaDto, req.user);
   }
@@ -51,7 +51,7 @@ export class DespesasController {
    */
   @ServicoDaRota('DESPESAS_EDITAR')
   @Patch(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO, Perfil.OPERADOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   update(@Request() req, @Param('id', ParseIntPipe) id: number, @Body() updateDespesaDto: UpdateDespesaDto) {
     return this.despesasService.update(id, req.user.igreja_id, updateDespesaDto, req.user);
   }
@@ -62,7 +62,7 @@ export class DespesasController {
    */
   @ServicoDaRota('DESPESAS_EXCLUIR')
   @Delete(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   remove(@Request() req, @Param('id', ParseIntPipe) id: number) {
     return this.despesasService.remove(id, req.user.igreja_id, req.user);
   }

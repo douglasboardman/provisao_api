@@ -93,6 +93,18 @@ integracao('E09 – referências documentais', () => {
     return { contexto: c.id, orgao: orgao.id };
   }
 
+  async function planejamento(contexto_id: string) {
+    const modelo = await prisma.modelo_reuniao.create({ data: {
+      igreja_id: igreja, contexto_id, finalidade: 'Reunião de teste ' + randomUUID(),
+      configuracao: { tipo: 'Ordinária', natureza: 'Mista', obrigatoria: false,
+        periodicidade: 'Conforme a necessidade', referencia: 'Integrantes do órgão/unidade',
+        orgaos_participantes: [], primeira: 'Qualquer número', segunda: 'Não prevista',
+        antecedencia_dias: null, intervalo_minutos: null, minimo_anual: null,
+        colegiado: 'Colegiado', fundamentacao: 'Configuração de teste', observacao: '' },
+    } });
+    return { modelo_reuniao_id: modelo.id, formato: 'Presencial', carater: 'Regular', convocacao: 'Primeira' };
+  }
+
   async function documento(
     contexto_id: string,
     tipo: documento_tipo,
@@ -178,15 +190,15 @@ integracao('E09 – referências documentais', () => {
       })),
     });
     for (const [nome, perfil, igreja_id, id] of [
-      ['gestor', 'GESTOR', igreja, gestor],
-      ['conselheiro', 'GESTOR', igreja, conselheiro],
+      ['gestor', 'COMUM', igreja, gestor],
+      ['conselheiro', 'COMUM', igreja, conselheiro],
       ['concedente', 'ADMINISTRADOR', igreja, concedente],
       ['auditor', 'AUDITOR', igreja, randomUUID()],
-      ['secretario', 'SECRETARIO', igreja, randomUUID()],
-      ['secretarioOutra', 'SECRETARIO', outraIgreja, randomUUID()],
-      ['tesoureiro', 'TESOUREIRO', igreja, randomUUID()],
-      ['operador', 'OPERADOR', igreja, randomUUID()],
-      ['outra', 'GESTOR', outraIgreja, randomUUID()],
+      ['secretario', 'COMUM', igreja, randomUUID()],
+      ['secretarioOutra', 'COMUM', outraIgreja, randomUUID()],
+      ['tesoureiro', 'COMUM', igreja, randomUUID()],
+      ['operador', 'COMUM', igreja, randomUUID()],
+      ['outra', 'COMUM', outraIgreja, randomUUID()],
     ] as const) {
       const u = await prisma.usuarios.create({
         data: {
@@ -251,7 +263,7 @@ integracao('E09 – referências documentais', () => {
     ).id;
     const of = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: pessoa, tipo: 'DIACONO' } });
     const secretarioJunta = await prisma.pessoas.create({ data: { igreja_id: igreja, nome_completo: 'Secretário da Junta', sexo: 'MASCULINO', data_nascimento: new Date('1980-01-01') } });
-    await prisma.usuarios.updateMany({ where: { igreja_id: igreja, perfil: 'SECRETARIO' }, data: { pessoa_id: secretarioJunta.id } });
+    await prisma.usuarios.updateMany({ where: { igreja_id: igreja, nome_usuario: 'secretario' }, data: { pessoa_id: secretarioJunta.id } });
     const diacono = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: secretarioJunta.id, tipo: 'DIACONO' } });
     await prisma.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: secretarioJunta.id, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: dia } });
     await prisma.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: diacono.id, tipo: 'ORDENACAO', data_efeito: dia, ordem: 1, autoridade: 'Conselho', evidencia: 'Ato conferido' } });
@@ -592,6 +604,7 @@ integracao('E09 – referências documentais', () => {
         contexto_id: assembleia,
         idempotencia: randomUUID(),
         dados: {
+          ...await planejamento(assembleia),
           restrito: false,
           modalidade: 'AGO',
           data,
@@ -620,6 +633,7 @@ integracao('E09 – referências documentais', () => {
           data_documento: data,
           conteudo: {
             teor: 'Deliberação registrada.',
+            efetivos: { inicio: '2026-01-10T12:00:00Z', fim: '2026-01-10T13:00:00Z', local: 'Templo', presentes: 1, habilitados_presentes: 1, universo: 1 },
             campos: {},
             anexos: [],
             arrolados: [
@@ -693,6 +707,20 @@ integracao('E09 – referências documentais', () => {
     expect((await http('get', path).expect(200)).body.situacao).toBe('FORMALIZADA');
     const pendencias = await http('get', '/secretaria/pendencias-documentais?grupo=MANDATO').expect(200);
     expect(pendencias.body.itens.some((a) => a.alvo_id === mandato && a.etapa === 'ELEICAO')).toBe(false);
+    // Retificar uma ata expedida cria outro documento e também oferece reatribuição.
+    const expedida = (await http('get', `/secretaria/documentos/${id}`).expect(200)).body;
+    const atos = (await http('get', `/secretaria/documentos/${id}/atos-para-reatribuir`).expect(200)).body;
+    const retificacao = { ...comando(expedida.revisao),
+      reatribuicao_atos: { vistas: atos.map(a => a.referencia_id), selecionadas: atos.map(a => a.referencia_id) },
+      versao: { modelo_versao_id: versao.modelo_versao_id, assunto: 'Ata retificada', data_documento: data,
+        reuniao_id: reuniao.body.id, motivador_id: null, livro_id: null, conteudo: versao.conteudo },
+    };
+    const nova = (await http('post', `/secretaria/documentos/${id}/retificar`).send(retificacao).expect(201)).body;
+    expect(nova.id).not.toBe(id);
+    const revisoes = (await http('get', path).expect(200)).body.itens;
+    expect(revisoes[0].ata_documento_id).toBe(nova.id);
+    expect(revisoes[1].versao_id).toBe(versao.id);
+
   });
 
   it('mantém um rascunho por modelo e bloqueia a criação durante toda a edição', async () => {
@@ -785,6 +813,7 @@ integracao('E09 – referências documentais', () => {
       { descricao: 'Planejamento do encontro', proponente_id: null },
     ];
     const dados = {
+      ...await planejamento(contexto_id),
       restrito: false, modalidade: 'REGULAR', data, local: 'Templo', competencia: nome,
       universo_informado: 0, quorum_minimo: 0, quorum_conferido: false, fundamento_quorum: 'Cadastro',
       resultado: '', participantes: [], itens_pauta: itens,
@@ -833,6 +862,7 @@ integracao('E09 – referências documentais', () => {
     expect((await http('get', '/secretaria/locais', 'outra').expect(200)).body).not.toContainEqual(expect.objectContaining({ id: cadastro.id }));
     const localOutra = (await http('post', '/secretaria/locais', 'outra').send(pedido).expect(201)).body;
     const dados = {
+      ...await planejamento(conselho),
       restrito: false, modalidade: 'REGULAR', data: '2025-12-01', inicio: '2025-12-01T22:30:00Z', fim: '2025-12-02T01:01:00Z', competencia: 'Conselho', pauta: 'Visitas',
       universo_informado: 0, quorum_minimo: 0, quorum_conferido: false, fundamento_quorum: 'Cadastro',
       resultado: '', participantes: [],
@@ -881,11 +911,12 @@ integracao('E09 – referências documentais', () => {
     expect((await http('get', urlAta).expect(200)).body.versoes[0].conteudo.valores[campoRedator.id].valor).toBeNull();
   });
 
-  it('vincula uma reunião regular do Conselho à ata legada e preserva sua referência', async () => {
+  it('vincula uma reunião ordinária do Conselho à ata legada e preserva sua referência', async () => {
     const caminho = '/secretaria/atas-legadas';
     const dadosReuniao = {
+      ...await planejamento(conselho),
       restrito: false,
-      modalidade: 'REGULAR',
+      modalidade: 'ORDINARIA',
       data,
       local: 'Templo',
       pauta: 'Deliberação do Conselho',
@@ -904,7 +935,7 @@ integracao('E09 – referências documentais', () => {
       .send({ contexto_id: conselho, idempotencia: randomUUID(), dados: dadosReuniao })
       .expect(201);
     expect(await prisma.reuniao.findUnique({ where: { id: reuniao.body.id } })).toMatchObject({
-      contexto_id: conselho, modalidade: 'REGULAR', dados: { modalidade: 'REGULAR' },
+      contexto_id: conselho, modalidade: 'ORDINARIA', dados: { modalidade: 'ORDINARIA' },
     });
     const pdf = await PDFDocument.create();
     pdf.addPage().drawText('Teor do documento historico');
@@ -935,7 +966,7 @@ integracao('E09 – referências documentais', () => {
       data_documento: data,
       restrito: false,
       reuniao_id: reuniao.body.id,
-      reuniao: { data, local: 'Templo', modalidade: 'REGULAR', inicio: null, fim: null, pauta: dadosReuniao.pauta },
+      reuniao: { data, local: 'Templo', modalidade: 'ORDINARIA', inicio: null, fim: null, pauta: dadosReuniao.pauta },
       teor: 'Teor conferido do documento histórico.',
       pdf: { arquivo_id, nome: 'ata-legada.pdf' },
       arrolados: [{ pessoa_id: pessoa, papeis: ['SECRETARIO'], fundamento: 'Assinatura no original' }],
@@ -981,7 +1012,7 @@ integracao('E09 – referências documentais', () => {
           livro_id: null,
           conteudo: { teor: entrada.teor },
           reuniao_id: reuniao.body.id,
-          fonte_congelada: { legado: { reuniao: { local: 'Templo', modalidade: 'REGULAR' }, sha256: sha256(bytes) } },
+          fonte_congelada: { legado: { reuniao: { local: 'Templo', modalidade: 'ORDINARIA' }, sha256: sha256(bytes) } },
           arrolados: [{ pessoa_id: pessoa, papeis: ['SECRETARIO'] }],
           resolucoes: [{ assunto: 'Admissão', proponentes: [{ arrolado: { pessoa_id: pessoa } }] }],
         },
@@ -1069,6 +1100,10 @@ integracao('E09 – referências documentais', () => {
       ata_documento_id: id, versao_id: versao, ata: { numero_formatado: '004 bis' },
     });
 
+    const referenciaMandato = ref('MANDATO', mandato, 'POSSE');
+    const anteriorMandato = (await http('get', referenciaMandato).expect(200)).body.itens[0]?.id ?? null;
+    const refMandato = (await http('post', referenciaMandato).send(ligacao({ documento: id, versao }, anteriorMandato)).expect(201)).body.id;
+
     const edicao = { idempotencia: randomUUID(), revisao: (await http('get', documento)).body.revisao,
       assunto: 'Ata revisada', numero_original: entrada.numero_original, data_documento: data,
       reuniao_id: reuniao.body.id, reuniao: { ...entrada.reuniao, local: 'Salão', pauta: 'Pauta corrigida' },
@@ -1084,8 +1119,22 @@ integracao('E09 – referências documentais', () => {
       .send({ ...edicao, revisao: (await http('get', '/secretaria/documentos/' + ataConselho.documento, 'secretario')).body.revisao }).expect(400);
     await editar('secretario', { pdf: entrada.pdf }).expect(400);
     await editar('secretario', { resolucoes: [{ ...edicao.resolucoes[0], proponentes_pessoas_ids: [randomUUID()] }] }).expect(400);
-    const salva = (await editar('secretario').expect(200)).body;
-    expect((await editar('secretario').expect(200)).body).toEqual(salva);
+    // A consulta e a decisão são obrigatórias quando há atos vinculados.
+    await editar('secretario').expect(409);
+    let modal = (await http('get', documento + '/atos-para-reatribuir', 'secretario').expect(200)).body;
+    expect(modal).toHaveLength(2);
+    expect(modal.find(a => a.grupo === 'MEMBRESIA')).toMatchObject({ alvo_id: evento, pode_reatribuir: true });
+    await http('get', documento + '/atos-para-reatribuir', 'secretarioOutra').expect(404);
+    await editar('secretario', { reatribuicao_atos: { vistas: [randomUUID()], selecionadas: [] } }).expect(409);
+    // Um vínculo mudado enquanto o modal está aberto invalida a decisão inteira.
+    const membroAntes = modal.find(a => a.grupo === 'MEMBRESIA').referencia_id;
+    await http('post', referenciaLegada).send(ligacao({ documento: id, versao }, membroAntes)).expect(201);
+    await editar('secretario', { reatribuicao_atos: { vistas: modal.map(a => a.referencia_id), selecionadas: [membroAntes] } }).expect(409);
+    expect((await http('get', documento).expect(200)).body.versao_atual).toBe(1);
+    modal = (await http('get', documento + '/atos-para-reatribuir', 'secretario').expect(200)).body;
+    const decisao = { reatribuicao_atos: { vistas: modal.map(a => a.referencia_id), selecionadas: [modal.find(a => a.grupo === 'MEMBRESIA').referencia_id] } };
+    const salva = (await editar('secretario', decisao).expect(200)).body;
+    expect((await editar('secretario', decisao).expect(200)).body).toEqual(salva);
     await editar('secretario', { idempotencia: randomUUID() }).expect(409);
     const corrigida = (await http('get', documento, 'secretario').expect(200)).body;
     expect(corrigida.versao_atual).toBe(2);
@@ -1100,7 +1149,54 @@ integracao('E09 – referências documentais', () => {
     expect((await http('get', '/secretaria/reunioes/' + reuniao.body.id, 'secretario').expect(200)).body.dados)
       .toMatchObject({ local: 'Salão', pauta: 'Pauta corrigida' });
     expect((await http('get', '/secretaria/livros/' + livro).expect(200)).body.atas_legadas).toHaveLength(1);
-    expect((await http('get', referenciaLegada).expect(200)).body.itens[0].versao_id).toBe(versao);
-    await editar('secretario', { revisao: salva.revisao, numero_original: '005', idempotencia: randomUUID() }).expect(200);
+    expect((await http('get', referenciaMandato).expect(200)).body.itens[0]).toMatchObject({ id: refMandato, versao_id: versao, situacao: 'SUPERADA' });
+    const transferida = (await http('get', referenciaLegada).expect(200)).body;
+    expect(transferida.itens[0].versao_id).toBe(corrigida.versoes[1].id);
+    expect(transferida.itens[1].versao_id).toBe(versao);
+    expect(transferida.itens[1].situacao).toBe('SUPERADA');
+    const novaLista = (await http('get', documento + '/atos-para-reatribuir', 'secretario').expect(200)).body;
+    // NÃO cria a versão, mas mantém o ato na referência anterior.
+    await editar('secretario', { revisao: salva.revisao, numero_original: '005', idempotencia: randomUUID(),
+      reatribuicao_atos: { vistas: novaLista.map(a => a.referencia_id), selecionadas: [] } }).expect(200);
+    const mantida = (await http('get', referenciaLegada).expect(200)).body;
+    expect(mantida.itens[0].id).toBe(transferida.itens[0].id);
+    expect(mantida.situacao).toBe('SUPERADA');
+
+    // Conta institucional: cargo vigente de secretário, com perfil COMUM.
+    const institucional = await prisma.pessoas.create({ data: { igreja_id: igreja, nome_completo: 'Secretaria institucional',
+      sexo: 'MASCULINO', data_nascimento: new Date('1980-01-01') } });
+    const conta = await prisma.usuarios.create({ data: { igreja_id: igreja, pessoa_id: institucional.id,
+      nome_usuario: 'Secretaria institucional', email_login: randomUUID() + '@example.invalid', senha_hash: 'inutilizavel',
+      perfil: 'COMUM', conta_atuacao: true } });
+    cookies.set('secretariaInstitucional', 'provisao_session=' + await app.get(SessionService).create(conta.id, igreja, conta.auth_version));
+    const oficialSecretario = await prisma.oficial.create({ data: { igreja_id: igreja, pessoa_id: institucional.id, tipo: 'PRESBITERO_REGENTE' } });
+    await prisma.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: institucional.id, tipo_evento: 'ADMISSAO',
+      rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: dia, referencia_documental: 'Registro de teste' } });
+    await prisma.evento_oficial.create({ data: { igreja_id: igreja, oficial_id: oficialSecretario.id, tipo: 'ORDENACAO',
+      data_efeito: dia, ordem: 1, autoridade: 'Concílio', evidencia: 'Registro' } });
+    await prisma.mandato_oficial.create({ data: { igreja_id: igreja, oficial_id: oficialSecretario.id, data_eleicao: dia,
+      data_posse: dia, termino_previsto: new Date('2031-01-09'), autoridade: 'Assembleia', evidencia: 'Ata', avaliacao_eleicao: {} } });
+    const orgao = (await prisma.contexto_secretaria.findUniqueOrThrow({ where: { id: conselho } })).orgao_id;
+    const cargo = await prisma.cargo_orgao.create({ data: { igreja_id: igreja, orgao_id: orgao,
+      codigo: 'SECRETARIO', funcao: 'SECRETARIO', nome: 'Secretário do Conselho' } });
+    const ocupacao = await prisma.ocupacao_cargo.create({ data: { igreja_id: igreja, orgao_id: orgao, cargo_id: cargo.id,
+      pessoa_id: institucional.id, inicio: dia, termino_previsto: new Date('2031-01-09') } });
+    for (const acao of ['VINCULOS_DOCUMENTAIS_CONSULTAR', 'VINCULOS_DOCUMENTAIS_REGISTRAR'] as const)
+      await prisma.atribuicao_servico.create({ data: { igreja_id: igreja, usuario_id: conta.id, pessoa_id: institucional.id,
+        geracao_vinculo: conta.geracao_vinculo, acao, inicio: dia } });
+    const contextos = (await http('get', '/secretaria/contextos', 'secretariaInstitucional').expect(200)).body;
+    expect(contextos.find(c => c.id === conselho).pode_editar_ata_legada).toBe(true);
+    expect(contextos.find(c => c.id === assembleia).pode_editar_ata_legada).toBe(true);
+    expect(contextos.find(c => c.id === junta)?.pode_editar_ata_legada ?? false).toBe(false);
+    const listaInstitucional = (await http('get', documento + '/atos-para-reatribuir', 'secretariaInstitucional').expect(200)).body;
+    const pedidoInstitucional = { revisao: (await http('get', documento).expect(200)).body.revisao, idempotencia: randomUUID(),
+      reatribuicao_atos: { vistas: listaInstitucional.map(a => a.referencia_id), selecionadas: listaInstitucional.map(a => a.referencia_id) } };
+    await editar('secretariaInstitucional', pedidoInstitucional).expect(200);
+    await editar('secretariaInstitucional', pedidoInstitucional).expect(200);
+    await prisma.ocupacao_cargo.update({ where: { id: ocupacao.id }, data: { fim: new Date('2026-01-11'), fim_ordem: 1 } });
+    const semCargo = (await http('get', '/secretaria/contextos', 'secretariaInstitucional').expect(200)).body;
+    expect(semCargo.find(c => c.id === conselho)?.pode_editar_ata_legada ?? false).toBe(false);
+    await editar('secretariaInstitucional', pedidoInstitucional).expect(r => expect([403, 404]).toContain(r.status));
+
   });
 });

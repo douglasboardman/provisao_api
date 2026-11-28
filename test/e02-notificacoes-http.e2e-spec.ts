@@ -16,7 +16,7 @@ integration('E02: notificações HTTP', () => {
     process.env.FEATURE_GOVERNANCA = 'true';
     const mod = await Test.createTestingModule({ imports: [AppModule] }).compile(); app = mod.createNestApplication(); await app.init();
     const p = app.get(PrismaService), sessao = app.get(SessionService);
-    await p.usuarios.create({ data: { id: secretario, igreja_id: igreja, nome_usuario: 'Secretário sintético', email_login: `${secretario}@example.invalid`, senha_hash: 'sem-senha', perfil: 'SECRETARIO', ativo: true } });
+    await p.usuarios.create({ data: { id: secretario, igreja_id: igreja, nome_usuario: 'Secretário sintético', email_login: `${secretario}@example.invalid`, senha_hash: 'sem-senha', perfil: 'COMUM', ativo: true } });
     await p.pessoas.create({ data: { id: pessoa, igreja_id: igreja, nome_completo: 'Oficial sintético', data_nascimento: new Date('1990-01-01'), sexo: 'MASCULINO' } });
     await p.oficial.create({ data: { id: oficial, igreja_id: igreja, pessoa_id: pessoa, tipo: 'DIACONO' } });
     const hoje = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`), posse = new Date(hoje); posse.setUTCDate(posse.getUTCDate() - 30);

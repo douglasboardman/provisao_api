@@ -28,7 +28,7 @@ integration('E03: vínculos nas prévias da E02', () => {
     }
     await p.pessoas.create({ data: { id: pessoa, igreja_id: igreja, nome_completo: 'Pessoa sintética', data_nascimento: new Date('1980-01-01'), sexo: 'FEMININO' } });
     await p.oficial.create({ data: { id: oficial, igreja_id: igreja, pessoa_id: pessoa, tipo: 'DIACONO' } });
-    await p.usuarios.create({ data: { id: usuario, igreja_id: igreja, nome_usuario: 'Secretária sintética', email_login: `${usuario}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'SECRETARIO' } });
+    await p.usuarios.create({ data: { id: usuario, igreja_id: igreja, nome_usuario: 'Secretária sintética', email_login: `${usuario}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'COMUM' } });
     acessoId = (await acesso.conceder(igreja, admin, { usuario_id: usuario, pode_consultar: true, pode_registrar: true, fundamento: 'Teste' })).id;
     await p.eventos_membresia.create({ data: { id: evento, igreja_id: igreja, pessoa_id: pessoa, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: new Date('2020-01-01') } });
     await p.orgao_interno.create({ data: { id: orgao, igreja_id: igreja, tipo: 'UNIDADE_MINISTERIAL', constituicao: 'DESIGNACAO', nome: 'Unidade sintética', finalidade: 'Teste', data_criacao: new Date('2020-01-01'), criador_id: usuario, instituidor_id: pessoa, evidencia_instituicao: 'Teste' } });

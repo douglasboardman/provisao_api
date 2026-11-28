@@ -9,7 +9,7 @@ import { RolesGuard } from 'src/auth/guards/roles/roles.guard';
 import { Roles } from 'src/auth/decorators/roles.decorator';
 
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO, Perfil.OPERADOR, Perfil.AUDITOR, Perfil.SECRETARIO)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 @Controller('receitas')
 export class ReceitasController {
   constructor(private readonly receitasService: ReceitasService) {}
@@ -20,7 +20,7 @@ export class ReceitasController {
    */
   @ServicoDaRota('RECEITAS_CADASTRAR')
   @Post()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO, Perfil.OPERADOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   create(@Request() req, @Body() createReceitaDto: CreateReceitaDto) {
     return this.receitasService.create(req.user.igreja_id, createReceitaDto, req.user);
   }
@@ -51,7 +51,7 @@ export class ReceitasController {
    */
   @ServicoDaRota('RECEITAS_EDITAR')
   @Patch(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO, Perfil.OPERADOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   update(@Request() req, @Param('id', ParseIntPipe) id: number, @Body() updateReceitaDto: UpdateReceitaDto) {
     return this.receitasService.update(id, req.user.igreja_id, updateReceitaDto, req.user);
   }
@@ -62,7 +62,7 @@ export class ReceitasController {
    */
   @ServicoDaRota('RECEITAS_EXCLUIR')
   @Delete(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   remove(@Request() req, @Param('id', ParseIntPipe) id: number) {
     return this.receitasService.remove(id, req.user.igreja_id, req.user);
   }

@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { usuarios_perfil } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -11,7 +12,7 @@ export class ImpactoRetroativoService {
     const data = new Date(`${primeiraDataAfetada}T00:00:00.000Z`);
     if (!Number.isFinite(data.getTime()) || data.toISOString().slice(0, 10) !== primeiraDataAfetada) throw new BadRequestException('Data de referência inválida.');
     const [usuario, pessoa] = await Promise.all([
-      this.prisma.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO] } }, select: { id: true } }),
+      exigirServicoDoUsuario(this.prisma, igrejaId, usuarioId, 'HISTORICO_MEMBRESIA_CONSULTAR'),
       this.prisma.pessoas.findFirst({ where: { id: pessoaId, igreja_id: igrejaId }, select: { id: true } }),
     ]);
     if (!usuario) throw new ForbiddenException('Operador não autorizado nesta igreja.');

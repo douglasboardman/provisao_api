@@ -1,3 +1,4 @@
+import { ContaComum } from '../autorizacao/politica';
 import { ServicoDaRota } from '../autorizacao/politica';
 import { ManutencaoOrgaoService } from './manutencao-orgao.service';
 import { BadRequestException, Body, ConflictException, Controller, Get, Header, Param, ParseUUIDPipe, Patch, Post, Query, Request, UseGuards } from '@nestjs/common';
@@ -24,9 +25,10 @@ import { DecisaoRevisaoOrgaoService } from './decisao-revisao-orgao.service';
 const uuidValido = (valor: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(valor);
 
 /** A chave de escrita é independente da consulta e permanece fechada por padrão. */
+@ContaComum()
 @Controller('orgaos/gestao')
 @UseGuards(AuthGuard, RolesGuard, OrgaosGuard, OrgaosGestaoGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+@Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
 export class OrgaosGestaoController {
   constructor(
     private readonly manutencao: ManutencaoOrgaoService,
@@ -73,24 +75,28 @@ export class OrgaosGestaoController {
     return this.executar(() => this.fuso.registrar(req.user.igreja_id, req.user.sub, dados));
   }
 
-  @Get('pessoas/:pessoa/decisoes-orgaos') @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
+  @Get('pessoas/:pessoa/decisoes-orgaos') @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   decisoesPessoa(@Request() req, @Param('pessoa', ParseUUIDPipe) pessoa: string, @Query('cursor') cursor?: string) {
     return this.decisoes.listar(req.user.igreja_id, req.user.sub, pessoa, cursor);
   }
 
-  @Post('pessoas/:pessoa/previa-vinculos-orgaos') @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
+  @Post('pessoas/:pessoa/previa-vinculos-orgaos') @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   consultarVinculos(@Request() req, @Param('pessoa', ParseUUIDPipe) pessoa: string, @Body() dados: Parameters<DecisaoRevisaoOrgaoService['consultarVinculos']>[3]) {
     return this.executar(() => this.decisoes.consultarVinculos(req.user.igreja_id, req.user.sub, pessoa, dados));
   }
 
-  @Post('pessoas/:pessoa/conferencia-decisoes-orgaos') @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
+  @Post('pessoas/:pessoa/conferencia-decisoes-orgaos') @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   @Header('Cache-Control', 'private, no-store')
   consolidarDecisoes(@Request() req, @Param('pessoa', ParseUUIDPipe) pessoa: string, @Body() dados: Parameters<DecisaoRevisaoOrgaoService['consolidar']>[3]) {
     return this.executar(() => this.decisoes.consolidar(req.user.igreja_id, req.user.sub, pessoa, dados));
   }
 
+  @ServicoDaRota('REVISOES_ELEITORAIS_DECIDIR')
   @Post('pessoas/:pessoa/decisoes-orgaos')
   decisaoPessoa(@Request() req, @Param('pessoa', ParseUUIDPipe) pessoa: string, @Body() dados: Parameters<DecisaoRevisaoOrgaoService['registrar']>[3]) {
     return this.executar(() => this.decisoes.registrar(req.user.igreja_id, req.user.sub, pessoa, dados));
@@ -126,6 +132,7 @@ export class OrgaosGestaoController {
     return { itens, proximo_cursor: registros.length > 50 ? itens[itens.length - 1].id : null };
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('eventos-base-membresia')
   @Header('Cache-Control', 'private, no-store')
   async eventosBaseMembresia(@Request() req, @Query('pessoa', ParseUUIDPipe) pessoa: string, @Query('cursor') cursor?: string) {
@@ -139,6 +146,7 @@ export class OrgaosGestaoController {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 
+  @ServicoDaRota('HISTORICO_MEMBRESIA_CONSULTAR')
   @Get('impactos-membresia')
   @Header('Cache-Control', 'private, no-store')
   async impactosMembresia(@Request() req, @Query('pessoa', ParseUUIDPipe) pessoa: string, @Query('data') dia?: string, @Query('evento') eventoId?: string, @Query('cursor_participacao') cursorParticipacao?: string, @Query('cursor_ocupacao') cursorOcupacao?: string) {
@@ -162,12 +170,13 @@ export class OrgaosGestaoController {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 
+  @ServicoDaRota('ORGAOS_CONFIGURAR')
   @Post('oficiais')
   oficial(@Request() req, @Body() dados: Parameters<OrgaosOficiaisService['registrar']>[2]) {
     return this.executar(() => this.oficiais.registrar(req.user.igreja_id, req.user.sub, dados));
   }
 
-  @Post('unidades') @Roles(Perfil.GESTOR)
+  @Post('unidades') @Roles(Perfil.COMUM)
   unidade(@Request() req, @Body() dados: Parameters<UnidadesService['criar']>[2]) {
     return this.executar(() => this.unidades.criar(req.user.igreja_id, req.user.sub, dados));
   }
@@ -192,32 +201,34 @@ export class OrgaosGestaoController {
     return this.executar(() => this.presidencias.encerrar(req.user.igreja_id, req.user.sub, id, dados));
   }
 
+  @ServicoDaRota('ORGAOS_CONFIGURAR')
   @Post(':id/cargos')
   criarCargo(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<ConfiguracaoCargosService['criar']>[3]) {
     return this.executar(() => this.configuracao.criar(req.user.igreja_id, req.user.sub, id, dados));
   }
 
+  @ServicoDaRota('ORGAOS_CONFIGURAR')
   @Patch(':id/cargos/:cargo/acumulacao')
   acumulacao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Param('cargo', ParseUUIDPipe) cargo: string, @Body() dados: Parameters<ConfiguracaoCargosService['definirAcumulacao']>[4]) {
     return this.executar(() => this.configuracao.definirAcumulacao(req.user.igreja_id, req.user.sub, id, cargo, dados));
   }
 
-  @Post(':id/politicas') @Roles(Perfil.GESTOR)
+  @Post(':id/politicas') @Roles(Perfil.COMUM)
   politica(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<PoliticaUnidadeService['registrar']>[3]) {
     return this.executar(() => this.politicas.registrar(req.user.igreja_id, req.user.sub, id, dados));
   }
 
-  @Post(':id/participacoes/incluir') @Roles(Perfil.GESTOR)
+  @Post(':id/participacoes/incluir') @Roles(Perfil.COMUM)
   incluir(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<ParticipacaoService['alterar']>[4]) {
     return this.executar(() => this.participacoes.alterar(req.user.igreja_id, req.user.sub, id, 'INCLUSAO', dados));
   }
 
-  @Post(':id/participacoes/sair') @Roles(Perfil.GESTOR)
+  @Post(':id/participacoes/sair') @Roles(Perfil.COMUM)
   sair(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<ParticipacaoService['alterar']>[4]) {
     return this.executar(() => this.participacoes.alterar(req.user.igreja_id, req.user.sub, id, 'SAIDA', dados));
   }
 
-  @Post(':id/cargos/:cargo/designacoes') @Roles(Perfil.GESTOR)
+  @Post(':id/cargos/:cargo/designacoes') @Roles(Perfil.COMUM)
   designar(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Param('cargo', ParseUUIDPipe) cargo: string, @Body() dados: Parameters<DesignacoesService['substituir']>[4]) {
     return this.executar(() => this.designacoes.substituir(req.user.igreja_id, req.user.sub, id, cargo, dados));
   }
@@ -242,7 +253,7 @@ export class OrgaosGestaoController {
     return this.executar(() => this.eleitos.registrar(req.user.igreja_id, req.user.sub, id, cargo, dados, req.user));
   }
 
-  @Post(':id/cargos/:cargo/eleicao-unidade') @Roles(Perfil.GESTOR)
+  @Post(':id/cargos/:cargo/eleicao-unidade') @Roles(Perfil.COMUM)
   eleicaoUnidade(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Param('cargo', ParseUUIDPipe) cargo: string, @Body() dados: Parameters<CargosUnidadeEleitaService['registrar']>[4]) {
     return this.executar(() => this.eleitosUnidade.registrar(req.user.igreja_id, req.user.sub, id, cargo, dados));
   }
@@ -253,21 +264,24 @@ export class OrgaosGestaoController {
     return this.executar(() => this.eleitos.encerrar(req.user.igreja_id, req.user.sub, id, ocupacao, dados, req.user));
   }
 
-  @Patch(':id/ocupacoes/:ocupacao/encerrar-unidade') @Roles(Perfil.GESTOR)
+  @Patch(':id/ocupacoes/:ocupacao/encerrar-unidade') @Roles(Perfil.COMUM)
   encerrarUnidade(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Param('ocupacao', ParseUUIDPipe) ocupacao: string, @Body() dados: Parameters<CargosUnidadeEleitaService['encerrar']>[4]) {
     return this.executar(() => this.eleitosUnidade.encerrar(req.user.igreja_id, req.user.sub, id, ocupacao, dados));
   }
 
+  @ServicoDaRota('ORGAOS_CONFIGURAR')
   @Patch(':id/cadastro')
   manterCadastro(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<ManutencaoOrgaoService['alterar']>[3]) {
     return this.executar(() => this.manutencao.alterar(req.user.igreja_id, req.user.sub, id, dados));
   }
 
+  @ServicoDaRota('ORGAOS_CONFIGURAR')
   @Post(':id/conducoes-reuniao')
   conducao(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<ManutencaoOrgaoService['registrarConducao']>[3]) {
     return this.executar(() => this.manutencao.registrarConducao(req.user.igreja_id, req.user.sub, id, dados));
   }
 
+  @ServicoDaRota('ORGAOS_CONFIGURAR')
   @Patch(':id/desativar')
   desativar(@Request() req, @Param('id', ParseUUIDPipe) id: string, @Body() dados: Parameters<DesativacaoOrgaoService['desativar']>[3]) {
     return this.executar(() => this.desativacao.desativar(req.user.igreja_id, req.user.sub, id, dados));

@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { estadoDaLiberacao, exigirOperacaoDisponivel, exigirRotaLegada } from '../autorizacao/liberacao-servico';
 import type { Ator } from '../autorizacao/politica';
 import { permissaoMandato } from '../orgaos/permissao-mandato';
@@ -49,7 +50,7 @@ export class MandatoService {
       const estado = await estadoDaLiberacao(tx, igrejaId, 'MANDATOS_REGISTRAR', true);
       exigirOperacaoDisponivel(estado);
       const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true,
-        perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO, usuarios_perfil.COMUM] } },
+        perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.COMUM] } },
         select: { perfil: true } });
       if (!operador) throw new ForbiddenException('Operador não autorizado nesta igreja.');
       // Serializa o encerramento com prévias e inclusões de eventos do oficial.
@@ -110,7 +111,7 @@ export class MandatoService {
     const v = parsed.data, posse = data(v.data_posse);
     return this.prisma.$transaction(async tx => {
       exigirRotaLegada(await estadoDaLiberacao(tx, igrejaId, 'MANDATOS_REGISTRAR', true));
-      const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO] } }, select: { id: true } });
+      const operador = await exigirServicoDoUsuario(tx, igrejaId, usuarioId, 'MANDATOS_REGISTRAR');
       if (!operador) throw new ForbiddenException('Operador não autorizado nesta igreja.');
       // A mesma linha é bloqueada pelo trigger de alterações de membresia.
       const oficiais = await tx.$queryRaw<Array<{ id: string; pessoa_id: string; tipo: string; data_nascimento: Date; sexo: pessoas_sexo }>>`

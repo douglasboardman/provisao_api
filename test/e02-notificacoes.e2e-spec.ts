@@ -12,7 +12,7 @@ integration('E02: notificações operacionais de mandato', () => {
   beforeAll(async () => {
     if (process.env.DATABASE_URL !== 'postgresql://provisao_test:provisao_test@127.0.0.1:55439/provisao_test?schema=public') throw new Error('Exige banco descartável E00.');
     await p.$connect();
-    await p.usuarios.create({ data: { id: destinatario, igreja_id: igreja, nome_usuario: 'Secretário de teste', email_login: `${destinatario}@example.invalid`, senha_hash: 'sem-senha', perfil: 'SECRETARIO', ativo: true } });
+    await p.usuarios.create({ data: { id: destinatario, igreja_id: igreja, nome_usuario: 'Secretário de teste', email_login: `${destinatario}@example.invalid`, senha_hash: 'sem-senha', perfil: 'COMUM', ativo: true } });
     await p.pessoas.create({ data: { id: pessoa, igreja_id: igreja, nome_completo: 'Pessoa sintética alerta', data_nascimento: new Date('1990-01-01'), sexo: 'MASCULINO' } });
     await p.oficial.create({ data: { id: oficial, igreja_id: igreja, pessoa_id: pessoa, tipo: 'DIACONO' } });
     await p.mandato_oficial.create({ data: { id: mandato, igreja_id: igreja, oficial_id: oficial, data_eleicao: new Date('2025-12-01'), data_posse: new Date('2026-01-01'), termino_previsto: new Date('2030-12-31'), autoridade: 'Conselho', evidencia: 'Ata sintética', avaliacao_eleicao: {} } });

@@ -32,7 +32,7 @@ const mockPrisma = {
       ),
     }))),
   },
-  pessoas: { findFirst: jest.fn() },
+  $queryRaw: jest.fn(),
   eventos_membresia: {
     create: jest.fn(),
     findMany: jest.fn(),
@@ -55,9 +55,20 @@ describe('EventosMembresiaService', () => {
     }).compile();
     service = module.get(EventosMembresiaService);
     jest.clearAllMocks();
+    mockPrisma.$queryRaw.mockReset().mockResolvedValue([{ id: PESSOA_ID }]);
     mockPrisma.eventos_membresia.findFirst.mockReset();
     mockPrisma.eventos_membresia.findMany.mockReset().mockResolvedValue([]);
   });
+
+  const admissaoAnterior = {
+    data_evento: new Date('2024-01-01'),
+    tipo_evento: TipoEvento.ADMISSAO,
+    rol: MembresiaRol.COMUNGANTES,
+    ordem_dia: null,
+    referencia_documental: 'Ata de admissão nº 1/2024',
+    referencias_ata: [],
+    insercao_retroativa: null,
+  };
 
   describe('create', () => {
     const baseDto = {
@@ -66,17 +77,17 @@ describe('EventosMembresiaService', () => {
       rol: MembresiaRol.COMUNGANTES,
       motivacao_evento: MotivacaoEvento.PROFISSAO_DE_FE,
       data_evento: new Date('2025-01-15'),
+      referencia_documental: 'Ata nº 1/2025',
     };
 
     it('should reject if pessoa not in igreja', async () => {
-      mockPrisma.pessoas.findFirst.mockResolvedValue(null);
+      mockPrisma.$queryRaw.mockResolvedValue([]);
       await expect(service.create(IGREJA_ID, baseDto as any)).rejects.toThrow(
         BadRequestException,
       );
     });
 
     it('should reject admissão motivacao for DEMISSAO', async () => {
-      mockPrisma.pessoas.findFirst.mockResolvedValue({ id: PESSOA_ID });
       const dto = {
         ...baseDto,
         tipo_evento: TipoEvento.DEMISSAO,
@@ -88,7 +99,6 @@ describe('EventosMembresiaService', () => {
     });
 
     it('should reject demissão motivacao for ADMISSAO', async () => {
-      mockPrisma.pessoas.findFirst.mockResolvedValue({ id: PESSOA_ID });
       const dto = {
         ...baseDto,
         motivacao_evento: MotivacaoEvento.EXCLUSAO_POR_DISCIPLINA,
@@ -99,7 +109,7 @@ describe('EventosMembresiaService', () => {
     });
 
     it('should auto-assign EXCLUIDOS for EXCLUSAO_POR_DISCIPLINA', async () => {
-      mockPrisma.pessoas.findFirst.mockResolvedValue({ id: PESSOA_ID });
+      mockPrisma.eventos_membresia.findMany.mockResolvedValue([admissaoAnterior]);
       mockPrisma.eventos_membresia.create.mockResolvedValue({ id: 'new-id' });
       const dto = {
         ...baseDto,
@@ -115,7 +125,7 @@ describe('EventosMembresiaService', () => {
     });
 
     it('should auto-assign ROL_SEPARADO for FALECIMENTO', async () => {
-      mockPrisma.pessoas.findFirst.mockResolvedValue({ id: PESSOA_ID });
+      mockPrisma.eventos_membresia.findMany.mockResolvedValue([admissaoAnterior]);
       mockPrisma.eventos_membresia.create.mockResolvedValue({ id: 'new-id' });
       const dto = {
         ...baseDto,
@@ -131,22 +141,25 @@ describe('EventosMembresiaService', () => {
     });
 
     it('rejeita inclusão no mesmo dia sem sequência explícita', async () => {
-      mockPrisma.pessoas.findFirst.mockResolvedValue({ id: PESSOA_ID });
-      mockPrisma.eventos_membresia.findMany.mockResolvedValue([{ rol: MembresiaRol.COMUNGANTES, data_evento: baseDto.data_evento, ordem_dia: null }]);
-      await expect(service.create(IGREJA_ID, baseDto as any)).rejects.toThrow('ordem');
+      mockPrisma.eventos_membresia.findMany.mockResolvedValue([{ ...admissaoAnterior, data_evento: baseDto.data_evento }]);
+      await expect(service.create(IGREJA_ID, { ...baseDto, data_evento: new Date('2025-01-15T14:00:00Z') })).rejects.toThrow('ordem');
     });
 
     it('aceita ordem posterior ao último ato do mesmo dia', async () => {
-      mockPrisma.pessoas.findFirst.mockResolvedValue({ id: PESSOA_ID });
-      mockPrisma.eventos_membresia.findMany.mockResolvedValue([{ rol: MembresiaRol.COMUNGANTES, data_evento: baseDto.data_evento, ordem_dia: 1 }]);
+      mockPrisma.eventos_membresia.findMany.mockResolvedValue([{ ...admissaoAnterior, data_evento: baseDto.data_evento, ordem_dia: 1 }]);
       mockPrisma.eventos_membresia.create.mockResolvedValue({ id: 'new-id' });
       await service.create(IGREJA_ID, { ...baseDto, ordem_dia: 2 } as any);
       expect(mockPrisma.eventos_membresia.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ ordem_dia: 2 }) }));
     });
 
+    it('rejeita novo ato quando uma movimentação anterior carece de documento', async () => {
+      mockPrisma.eventos_membresia.findMany.mockResolvedValue([{ ...admissaoAnterior, referencia_documental: null }]);
+      await expect(service.create(IGREJA_ID, baseDto)).rejects.toThrow('documentação das movimentações anteriores');
+      expect(mockPrisma.eventos_membresia.create).not.toHaveBeenCalled();
+    });
+
     it('should reject EXCLUIDOS as rol for MUDANCA_DE_ROL', async () => {
-      mockPrisma.pessoas.findFirst.mockResolvedValue({ id: PESSOA_ID });
-      mockPrisma.eventos_membresia.findMany.mockResolvedValue([{ rol: MembresiaRol.COMUNGANTES, data_evento: new Date('2024-01-01'), ordem_dia: null }]);
+      mockPrisma.eventos_membresia.findMany.mockResolvedValue([admissaoAnterior]);
       const dto = {
         ...baseDto,
         tipo_evento: TipoEvento.MUDANCA_DE_ROL,
@@ -159,8 +172,7 @@ describe('EventosMembresiaService', () => {
     });
 
     it('should auto-fill rol_origem for MUDANCA_DE_ROL', async () => {
-      mockPrisma.pessoas.findFirst.mockResolvedValue({ id: PESSOA_ID });
-      mockPrisma.eventos_membresia.findMany.mockResolvedValue([{ rol: MembresiaRol.NAO_COMUNGANTES, data_evento: new Date('2024-01-01'), ordem_dia: null }]);
+      mockPrisma.eventos_membresia.findMany.mockResolvedValue([{ ...admissaoAnterior, rol: MembresiaRol.NAO_COMUNGANTES }]);
       mockPrisma.eventos_membresia.create.mockResolvedValue({ id: 'new-id' });
       const dto = {
         ...baseDto,
@@ -179,8 +191,7 @@ describe('EventosMembresiaService', () => {
     });
 
     it('should allow PARADEIRO_IGNORADO for MUDANCA_DE_ROL', async () => {
-      mockPrisma.pessoas.findFirst.mockResolvedValue({ id: PESSOA_ID });
-      mockPrisma.eventos_membresia.findMany.mockResolvedValue([{ rol: MembresiaRol.COMUNGANTES, data_evento: new Date('2024-01-01'), ordem_dia: null }]);
+      mockPrisma.eventos_membresia.findMany.mockResolvedValue([admissaoAnterior]);
       mockPrisma.eventos_membresia.create.mockResolvedValue({ id: 'new-id' });
       const dto = {
         ...baseDto,
@@ -193,9 +204,22 @@ describe('EventosMembresiaService', () => {
     });
   });
 
+  describe('update', () => {
+    it('rejeita a correção que desloca um ato para um dia sem ordem conferida', async () => {
+      const ultimo = { ...admissaoAnterior, id: 'recente', pessoa_id: PESSOA_ID, data_evento: new Date('2025-01-15') };
+      mockPrisma.eventos_membresia.findFirst.mockResolvedValue(ultimo);
+      mockPrisma.eventos_membresia.findMany.mockResolvedValue([ultimo, { ...admissaoAnterior, id: 'anterior' }]);
+      await expect(service.update(ultimo.id, IGREJA_ID, {
+        data_evento: new Date('2024-01-01T14:00:00Z'),
+        referencia_documental: 'Livro 3, folha 15',
+      })).rejects.toThrow('ordem');
+      expect(mockPrisma.eventos_membresia.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('remove', () => {
     it('should reject deleting non-last event', async () => {
-      mockPrisma.eventos_membresia.findFirst.mockResolvedValueOnce({ id: 'old-event', pessoa_id: PESSOA_ID });
+      mockPrisma.eventos_membresia.findFirst.mockResolvedValueOnce({ ...admissaoAnterior, id: 'old-event', pessoa_id: PESSOA_ID });
       mockPrisma.eventos_membresia.findMany.mockResolvedValue([{ id: 'newer-event', pessoa_id: PESSOA_ID, data_evento: new Date('2025-01-01'), ordem_dia: null }]);
       await expect(service.remove('old-event', IGREJA_ID)).rejects.toThrow(
         ForbiddenException,

@@ -23,8 +23,8 @@ export class DesignacoesService {
     const hash = hashAto({ operacao: tipo, orgaoId, cargoId, dados: v });
     return transacaoComRetentativa(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const usuario = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: 'GESTOR' }, select: { pessoa_id: true } });
-      if (!usuario?.pessoa_id) throw new ForbiddenException('Gestor institucional vinculado a pessoa é obrigatório.');
+      const usuario = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: 'COMUM' }, select: { pessoa_id: true } });
+      if (!usuario?.pessoa_id) throw new ForbiddenException('Responsável institucional vinculado a pessoa é obrigatório.');
       const hoje = await hojeDaIgreja(tx, igrejaId), data = new Date(`${hoje}T00:00:00.000Z`);
       await bloquearChave(tx, igrejaId, idempotencia);
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgaoId} AND igreja_id = ${igrejaId} FOR UPDATE`;

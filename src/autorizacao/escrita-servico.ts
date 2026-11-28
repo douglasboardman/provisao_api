@@ -12,8 +12,8 @@ export async function exigirServicoNaTransacao(tx: Tx, ator: Ator | undefined, a
   await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${ator.sub} AND igreja_id = ${ator.igreja_id} FOR SHARE`;
   await tx.$queryRaw`SELECT id FROM sessoes WHERE id = ${ator.sessao_id} AND usuario_id = ${ator.sub} FOR SHARE`;
   const conta = await contaDaSessao(tx, ator);
-  if (estado === 'LEGADO' && conta.perfil !== 'COMUM') return;
   const decisao = await decidirServico(tx, conta, acao);
+  if (decisao.permite && decisao.motivo === 'ADMINISTRACAO') return;
   if (!decisao.permite || !decisao.origem) throw new ForbiddenException('Atribuição vigente necessária.');
   const vigente = await tx.$queryRaw<{ id: string; concessao_modelo_id: string | null }[]>`
     SELECT id, concessao_modelo_id FROM atribuicao_servico

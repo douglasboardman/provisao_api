@@ -23,7 +23,7 @@ integration('E03: instituição de unidade', () => {
     await prisma.$connect();
     await prisma.pessoas.create({ data: { id: participante, igreja_id: igreja, nome_completo: 'Participante sintético', data_nascimento: new Date('2010-01-01'), sexo: 'FEMININO' } });
     await prisma.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: participante, tipo_evento: 'ADMISSAO', rol: 'NAO_COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: new Date('2020-01-01') } });
-    await prisma.usuarios.create({ data: { id: gestor, igreja_id: igreja, pessoa_id: pessoa, nome_usuario: 'Gestor sintético', email_login: `${gestor}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'GESTOR' } });
+    await prisma.usuarios.create({ data: { id: gestor, igreja_id: igreja, pessoa_id: pessoa, nome_usuario: 'Gestor sintético', email_login: `${gestor}@example.invalid`, senha_hash: 'inutilizavel', perfil: 'COMUM' } });
   });
   afterAll(async () => {
     if (orgaoId) {

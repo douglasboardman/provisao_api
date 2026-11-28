@@ -1,3 +1,4 @@
+import { reatribuicaoAtosSchema } from './referencias-ata.dto';
 import { z } from 'zod';
 import { resolucoesSchema } from './resolucoes.dto';
 import { codigo, modalidadeReuniaoSchema } from './secretaria.dto';
@@ -52,7 +53,7 @@ const mensagemData = 'A reunião deve ocorrer até a data da ata.';
 export const ataLegadaSchema = cadastro.refine(datasCoerentes, mensagemData);
 export const editarAtaLegadaSchema = cadastro.omit({
   contexto_id: true, restrito: true, pdf: true, autoridade: true, evidencia: true, conferida: true,
-}).extend({ revisao: z.number().int().positive(), reuniao_id: z.uuid().nullable(), resolucoes: resolucoesSchema }).refine(datasCoerentes, mensagemData);
+}).extend({ reatribuicao_atos: reatribuicaoAtosSchema.optional(), revisao: z.number().int().positive(), reuniao_id: z.uuid().nullable(), resolucoes: resolucoesSchema }).refine(datasCoerentes, mensagemData);
 export type CamposAtaLegada = z.infer<typeof editarAtaLegadaSchema>;
 
 export const teorAtaLegadaSchema = z.object({ contexto_id: z.uuid(), arquivo_id: z.uuid() }).strict();

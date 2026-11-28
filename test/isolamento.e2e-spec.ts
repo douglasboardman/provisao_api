@@ -107,7 +107,7 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
     try {
       const secretario = await prisma.usuarios.create({ data: {
         id: secretarioId, igreja_id: igreja, nome_usuario: 'Secretário de teste', email_login: `${secretarioId}@example.invalid`,
-        senha_hash: 'inutilizavel', perfil: 'SECRETARIO', ativo: true,
+        senha_hash: 'inutilizavel', perfil: 'COMUM', ativo: true,
       } });
       const outraConta = await prisma.usuarios.findUniqueOrThrow({ where: { id: 'e1000000-0000-4000-8000-000000000002' } });
       const sessao = await sessoes.create(secretario.id, igreja, secretario.auth_version);
@@ -130,13 +130,21 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
       await prisma.pessoas.create({ data: {
         id: pessoaId, igreja_id: igreja, nome_completo: 'Pessoa de teste', data_nascimento: new Date('1980-01-01'), sexo: 'MASCULINO',
       } });
-      const admissao = { pessoa_id: pessoaId, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: '2024-02-01' };
+      const admissao = { pessoa_id: pessoaId, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: '2024-02-01', referencia_documental: 'Ata nº 2/2024, folha 3' };
       const bloqueada = await http(sessao, 'post', '/eventos-membresia').send(admissao).expect(400);
       expect(bloqueada.body.message).toBe('Rol inválido para admissão.');
       await http(sessao, 'put', `${modulo}/${rols}/valores`).send({
         valores: [{ valor_classificador: 'ADMISSAO', valor_classificado: 'COMUNGANTES' }],
       }).expect(200);
-      await http(sessao, 'post', '/eventos-membresia').send(admissao).expect(201);
+      await http(sessao, 'post', '/eventos-membresia').send({
+        ...admissao, referencia_documental: '  ',
+      }).expect(400);
+      await expect(prisma.eventos_membresia.count({ where: { pessoa_id: pessoaId } })).resolves.toBe(0);
+      const criada = await http(sessao, 'post', '/eventos-membresia').send(admissao).expect(201);
+      const historico = await http(sessao, 'get', `/eventos-membresia/pessoa/${pessoaId}`).expect(200);
+      expect(historico.body).toEqual([expect.objectContaining({
+        id: criada.body.id, referencia_documental: admissao.referencia_documental, documentado: true,
+      })]);
       expect((await http(outraSessao, 'get', modulo).expect(200)).body).toEqual(padrao);
 
       const profissao = await http(sessao, 'post', '/profissoes').send({ nome: `Profissão ${secretarioId}` }).expect(201);
@@ -304,8 +312,8 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
     const patch = (body: object) => request(app.getHttpServer()).patch(`/usuarios/${id}`).set('Cookie', cookie).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send(body);
     try {
       await patch({ senha: 'senha-de-terceiro' }).expect(400);
-      await patch({ perfil: 'OPERADOR' }).expect(403);
-      await prisma.usuarios.update({ where: { id }, data: { perfil: 'GESTOR' } });
+      await patch({ perfil: 'COMUM' }).expect(403);
+      await prisma.usuarios.update({ where: { id }, data: { perfil: 'COMUM' } });
       await patch({ nome_usuario: 'Não autorizado' }).expect(403);
     } finally {
       await prisma.usuarios.update({ where: { id }, data: { perfil: user.perfil } });
@@ -318,7 +326,7 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
     const session = await app.get(SessionService).create(user.id, user.igreja_id, user.auth_version);
     const cookie = `provisao_session=${session}`;
     const write = (r: request.Test) => r.set('Cookie', cookie).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1');
-    const payload = { nome_usuario: 'Conta temporária', email_login: 'temporaria@example.invalid', perfil: 'OPERADOR' };
+    const payload = { nome_usuario: 'Conta temporária', email_login: 'temporaria@example.invalid', perfil: 'COMUM' };
     await write(request(app.getHttpServer()).post('/usuarios')).send({ ...payload, senha: 'senha-de-terceiro', ativo: true }).expect(400);
     const created = await write(request(app.getHttpServer()).post('/usuarios')).send(payload).expect(201);
     try {
@@ -335,7 +343,7 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
     const session = await app.get(SessionService).create(actor.id, actor.igreja_id, actor.auth_version);
     const person = 'e2000000-0000-4000-8000-000000000001';
     const foreign = 'e2000000-0000-4000-8000-000000000002';
-    const other = await prisma.usuarios.create({ data: { igreja_id: actor.igreja_id, nome_usuario: 'Temporário', email_login: 'vinculo@example.invalid', senha_hash: 'inutilizavel', perfil: 'OPERADOR', ativo: false } });
+    const other = await prisma.usuarios.create({ data: { igreja_id: actor.igreja_id, nome_usuario: 'Temporário', email_login: 'vinculo@example.invalid', senha_hash: 'inutilizavel', perfil: 'COMUM', ativo: false } });
     const segunda = await prisma.usuarios.create({ data: { igreja_id: actor.igreja_id, nome_usuario: 'Segunda conta', email_login: 'segunda-conta@example.invalid', senha_hash: 'inutilizavel', perfil: 'COMUM' } });
     const patch = (id: string, pessoa_id: string | null) => request(app.getHttpServer()).patch(`/usuarios/${id}/pessoa`).set('Cookie', `provisao_session=${session}`).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ pessoa_id });
     try {
@@ -394,7 +402,7 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
   it('preserva aprovação quando SMTP falha e retoma tarefa reservada', async () => {
     const prisma = app.get(PrismaService);
     const actor = await prisma.usuarios.findUniqueOrThrow({ where: { id: 'e1000000-0000-4000-8000-000000000001' } });
-    const user = await prisma.usuarios.create({ data: { igreja_id: actor.igreja_id, nome_usuario: 'Fila teste', email_login: 'fila@example.invalid', senha_hash: 'inutilizavel', perfil: 'OPERADOR', ativo: false } });
+    const user = await prisma.usuarios.create({ data: { igreja_id: actor.igreja_id, nome_usuario: 'Fila teste', email_login: 'fila@example.invalid', senha_hash: 'inutilizavel', perfil: 'COMUM', ativo: false } });
     const spy = jest.spyOn(app.get(EmailService), 'sendPasswordSetup').mockRejectedValueOnce(new Error('erro smtp sintético')).mockResolvedValue(undefined);
     try {
       await app.get(UsuariosService).activate(user.id, actor.igreja_id, actor.id);
@@ -425,7 +433,7 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
   it('reverte aprovação se a fila não puder ser cifrada', async () => {
     const prisma = app.get(PrismaService);
     const actor = await prisma.usuarios.findUniqueOrThrow({ where: { id: 'e1000000-0000-4000-8000-000000000001' } });
-    const user = await prisma.usuarios.create({ data: { igreja_id: actor.igreja_id, nome_usuario: 'Chave ausente', email_login: 'sem-chave@example.invalid', senha_hash: 'inutilizavel', perfil: 'OPERADOR', ativo: false } });
+    const user = await prisma.usuarios.create({ data: { igreja_id: actor.igreja_id, nome_usuario: 'Chave ausente', email_login: 'sem-chave@example.invalid', senha_hash: 'inutilizavel', perfil: 'COMUM', ativo: false } });
     const previous = process.env.EMAIL_OUTBOX_KEY;
     try {
       process.env.EMAIL_OUTBOX_KEY = 'invalida';
@@ -672,7 +680,7 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
       expect(JSON.stringify(noKey.body)).toContain('chave pública');
       process.env.MFA_RECOVERY_PUBLIC_KEY = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' }).toString();
       await request(app.getHttpServer()).patch('/auth/mfa/policy').set('Cookie', adminCookie).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ senha: password, codigo: nextOtp, obrigatorio: true }).expect(200);
-      const peer = await prisma.usuarios.create({ data: { igreja_id: user.igreja_id, nome_usuario: 'Gestor MFA', email_login: 'gestor-mfa@example.invalid', senha_hash: await bcrypt.hash(password, 4), perfil: 'GESTOR', ativo: true } });
+      const peer = await prisma.usuarios.create({ data: { igreja_id: user.igreja_id, nome_usuario: 'Gestor MFA', email_login: 'gestor-mfa@example.invalid', senha_hash: await bcrypt.hash(password, 4), perfil: 'COMUM', ativo: true } });
       peerId = peer.id;
       const peerLogin = await request(app.getHttpServer()).post('/auth/login').set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ igreja_id: user.igreja_id, login: peer.email_login, senha: password }).expect(200);
       expect(peerLogin.body.mfa_enrollment_required).toBe(false);
@@ -713,7 +721,7 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
     const prisma = app.get(PrismaService);
     const admin = await prisma.usuarios.findUniqueOrThrow({ where: { id: 'e1000000-0000-4000-8000-000000000001' } });
     const pessoa = 'e2000000-0000-4000-8000-000000000001';
-    const manager = await prisma.usuarios.create({ data: { igreja_id: admin.igreja_id, nome_usuario: 'Gestor habilitado', email_login: 'gestor-competente@example.invalid', senha_hash: 'inutilizavel', perfil: 'GESTOR', ativo: true, pessoa_id: pessoa } });
+    const manager = await prisma.usuarios.create({ data: { igreja_id: admin.igreja_id, nome_usuario: 'Gestor habilitado', email_login: 'gestor-competente@example.invalid', senha_hash: 'inutilizavel', perfil: 'COMUM', ativo: true, pessoa_id: pessoa } });
     const adminSession = await app.get(SessionService).create(admin.id, admin.igreja_id, admin.auth_version);
     const managerSession = await app.get(SessionService).create(manager.id, manager.igreja_id, manager.auth_version);
     const adminCookie = `provisao_session=${adminSession}`;
@@ -740,8 +748,8 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
       await request(app.getHttpServer()).get('/solicitacoes-acesso').set('Cookie', managerCookie).expect(403);
       const regrant = await write(request(app.getHttpServer()).post('/solicitacoes-acesso/competencias'), adminCookie).send({ usuario_id: manager.id, referencia: 'Ata institucional revisada 002/2026' }).expect(201);
       authorityId = regrant.body.id; authorityIds.push(authorityId!);
-      await write(request(app.getHttpServer()).patch(`/usuarios/${manager.id}`), adminCookie).send({ perfil: 'OPERADOR' }).expect(200);
-      await write(request(app.getHttpServer()).patch(`/usuarios/${manager.id}`), adminCookie).send({ perfil: 'GESTOR' }).expect(200);
+      await write(request(app.getHttpServer()).patch(`/usuarios/${manager.id}`), adminCookie).send({ perfil: 'COMUM' }).expect(200);
+      await write(request(app.getHttpServer()).patch(`/usuarios/${manager.id}`), adminCookie).send({ perfil: 'COMUM' }).expect(200);
       await request(app.getHttpServer()).get('/solicitacoes-acesso').set('Cookie', managerCookie).expect(403);
       const finalGrant = await write(request(app.getHttpServer()).post('/solicitacoes-acesso/competencias'), adminCookie).send({ usuario_id: manager.id, referencia: 'Ata institucional revisada 003/2026' }).expect(201);
       authorityId = finalGrant.body.id; authorityIds.push(authorityId!);
@@ -786,10 +794,10 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
   it('impede colisões canônicas por igreja sem bloquear o mesmo e-mail em outra igreja', async () => {
     const prisma = app.get(PrismaService);
     const church = 'e0000000-0000-4000-8000-000000000001';
-    await expect(prisma.usuarios.create({ data: { igreja_id: church, nome_usuario: 'Colisão', email_login: '  COMPARTILHADO@EXAMPLE.INVALID  ', senha_hash: 'inutilizavel', perfil: 'OPERADOR', ativo: false } })).rejects.toThrow();
+    await expect(prisma.usuarios.create({ data: { igreja_id: church, nome_usuario: 'Colisão', email_login: '  COMPARTILHADO@EXAMPLE.INVALID  ', senha_hash: 'inutilizavel', perfil: 'COMUM', ativo: false } })).rejects.toThrow();
     const actor = await prisma.usuarios.findUniqueOrThrow({ where: { id: 'e1000000-0000-4000-8000-000000000001' } });
     const session = await app.get(SessionService).create(actor.id, church, actor.auth_version);
-    try { await request(app.getHttpServer()).post('/usuarios').set('Cookie', `provisao_session=${session}`).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ nome_usuario: 'Colisão', email_login: 'COMPARTILHADO@EXAMPLE.INVALID', perfil: 'OPERADOR' }).expect(409); }
+    try { await request(app.getHttpServer()).post('/usuarios').set('Cookie', `provisao_session=${session}`).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1').send({ nome_usuario: 'Colisão', email_login: 'COMPARTILHADO@EXAMPLE.INVALID', perfil: 'COMUM' }).expect(409); }
     finally { await app.get(SessionService).revoke(session); }
     const register = await request(app.getHttpServer()).post('/auth/register').send({ igreja_id: church, nome_usuario: 'Pedido duplicado', email_login: 'COMPARTILHADO@EXAMPLE.INVALID' }).expect(201);
     expect(register.body.message).toContain('Se os dados puderem');
@@ -865,7 +873,7 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
         confirmations.push(confirmation.id);
         await prisma.outbox_email.create({ data: { confirmacao_id: confirmation.id, estado: 'FALHOU', tentativas: 8, payload: 'segredo-sintetico' } });
       }
-      const manager = await prisma.usuarios.create({ data: { igreja_id: churches[0], nome_usuario: 'Gestor fila', email_login: 'gestor-fila@example.invalid', senha_hash: 'inutilizavel', perfil: 'GESTOR', ativo: true } });
+      const manager = await prisma.usuarios.create({ data: { igreja_id: churches[0], nome_usuario: 'Gestor fila', email_login: 'gestor-fila@example.invalid', senha_hash: 'inutilizavel', perfil: 'COMUM', ativo: true } });
       managerId = manager.id;
       managerSession = await app.get(SessionService).create(manager.id, manager.igreja_id, manager.auth_version);
       await request(app.getHttpServer()).get('/usuarios/indicadores-fila').expect(401);
@@ -890,7 +898,7 @@ integration('isolamento de usuários entre igrejas (fixture local)', () => {
     const prisma = app.get(PrismaService);
     const church = 'e0000000-0000-4000-8000-000000000001';
     const password = 'senha-emergencial-teste';
-    const user = await prisma.usuarios.create({ data: { igreja_id: church, nome_usuario: 'Gestor recuperação', email_login: 'emergencia@example.invalid', senha_hash: await bcrypt.hash(password, 4), perfil: 'GESTOR', ativo: true } });
+    const user = await prisma.usuarios.create({ data: { igreja_id: church, nome_usuario: 'Gestor recuperação', email_login: 'emergencia@example.invalid', senha_hash: await bcrypt.hash(password, 4), perfil: 'COMUM', ativo: true } });
     const session = await app.get(SessionService).create(user.id, church, user.auth_version);
     const cookie = `provisao_session=${session}`;
     const write = (r: request.Test) => r.set('Cookie', cookie).set('Origin', 'http://localhost:3001').set('X-Provisao-Request', '1');

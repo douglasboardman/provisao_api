@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { PrismaService } from '../prisma/prisma.service';
@@ -20,13 +21,13 @@ export class ManutencaoOrgaoService {
     const { idempotencia, ...v } = parsed.data, chave = idempotencia.toLowerCase();
     return transacaoSerializavel(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuario} AND igreja_id = ${igreja} FOR UPDATE`;
-      const operador = await tx.usuarios.findFirst({ where: { id: usuario, igreja_id: igreja, ativo: true, perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO'] } } });
+      const operador = await exigirServicoDoUsuario(tx, igreja, usuario, 'ORGAOS_CONFIGURAR');
       if (!operador) throw new ForbiddenException('Operador não autorizado.');
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgao} AND igreja_id = ${igreja} FOR UPDATE`;
       const anterior = await tx.orgao_interno.findFirst({ where: { id: orgao, igreja_id: igreja, gestao_presidencial: false, tipo: { in: ['CONSELHO', 'JUNTA', 'UNIDADE_MINISTERIAL'] } } });
       if (!anterior) throw new NotFoundException('Órgão não encontrado nesta igreja.');
       const hoje = new Date(`${await hojeDaIgreja(tx, igreja)}T00:00:00Z`);
-      if (anterior.tipo === 'UNIDADE_MINISTERIAL' && (operador.perfil !== 'GESTOR' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igreja, usuario_id: usuario, pessoa_id: operador.pessoa_id, inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] } }))) throw new ForbiddenException('Competência institucional não comprovada.');
+      if (anterior.tipo === 'UNIDADE_MINISTERIAL' && (operador.perfil !== 'COMUM' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igreja, usuario_id: usuario, pessoa_id: operador.pessoa_id, inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] } }))) throw new ForbiddenException('Competência institucional não comprovada.');
       const repetido = await atoAnterior(tx, { igreja, usuario, orgao, idempotencia: chave, tipo: 'MANUTENCAO', hash: hashAto({ orgao, dados: v }) }, 'orgao_id');
       if (repetido) return { ato_id: repetido.ato_id, orgao_id: orgao };
       if (!anterior.ativo) throw new BadRequestException('Órgão desativado.');
@@ -42,7 +43,7 @@ export class ManutencaoOrgaoService {
     if (!parsed.success) throw new BadRequestException('Condução de reunião inválida.');
     const { idempotencia, ...v } = parsed.data, chave = idempotencia.toLowerCase(), hash = hashAto({ orgao, dados: v });
     return transacaoSerializavel(this.prisma, async tx => {
-      if (!await tx.usuarios.findFirst({ where: { id: usuario, igreja_id: igreja, ativo: true, perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO'] } } })) throw new ForbiddenException('Operador não autorizado.');
+      if (!await exigirServicoDoUsuario(tx, igreja, usuario, 'ORGAOS_CONFIGURAR')) throw new ForbiddenException('Operador não autorizado.');
       await tx.$queryRaw`SELECT id FROM orgao_interno WHERE id = ${orgao} AND igreja_id = ${igreja} FOR UPDATE`;
       if (!await tx.orgao_interno.findFirst({ where: { id: orgao, igreja_id: igreja, tipo: 'CONSELHO', ativo: true } })) throw new NotFoundException('Conselho não encontrado nesta igreja.');
       const repetido = await atoAnterior(tx, { igreja, usuario, orgao, idempotencia: chave, tipo: 'CONDUCAO_REUNIAO', hash }, 'orgao_id');

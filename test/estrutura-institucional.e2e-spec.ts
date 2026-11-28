@@ -22,7 +22,7 @@ integration('Instalação da estrutura institucional', () => {
   const criarIgreja = () => igrejas.create({ nome: 'Igreja de ensaio', congregacao: false });
   const criarLegada = () => db.igreja.create({ data: { nome: 'Cadastro anterior' } });
 
-  async function operador(igreja_id: string, perfil: 'GESTOR' | 'ADMINISTRADOR') {
+  async function operador(igreja_id: string, perfil: 'COMUM' | 'ADMINISTRADOR') {
     const email = randomUUID() + '@example.invalid';
     const pessoa = await db.pessoas.create({ data: {
       igreja_id, nome_completo: 'Pessoa de ensaio', sexo: 'FEMININO', data_nascimento: new Date('1990-01-01'),
@@ -129,7 +129,7 @@ integration('Instalação da estrutura institucional', () => {
 
   it('cria o contexto e a versão do ministério junto com o ato e conserva ambos na repetição', async () => {
     const { id: igreja_id } = await criarIgreja();
-    const gestor = await operador(igreja_id, 'GESTOR'), admin = await operador(igreja_id, 'ADMINISTRADOR');
+    const gestor = await operador(igreja_id, 'COMUM'), admin = await operador(igreja_id, 'ADMINISTRADOR');
     await unidades.registrarCompetencia(igreja_id, admin.id, { usuario_id: gestor.id, inicio: '2020-01-01',
       autoridade: 'Conselho', evidencia: 'Registro de ensaio', idempotencia: randomUUID() });
     const dados = { nome: 'Ministério local', sigla: 'ML', finalidade: 'Participação local', constituicao: 'DESIGNACAO' as const,

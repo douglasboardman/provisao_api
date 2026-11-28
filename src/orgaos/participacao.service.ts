@@ -21,8 +21,8 @@ export class ParticipacaoService {
     const tipo = `PARTICIPACAO_${acao}`, hash = hashAto({ operacao: tipo, orgaoId, dados: v });
     return transacaoComRetentativa(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const gestor = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: 'GESTOR' }, select: { id: true, pessoa_id: true } });
-      if (!gestor?.pessoa_id) throw new ForbiddenException('Gestor institucional vinculado a pessoa é obrigatório.');
+      const gestor = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: 'COMUM' }, select: { id: true, pessoa_id: true } });
+      if (!gestor?.pessoa_id) throw new ForbiddenException('Responsável institucional vinculado a pessoa é obrigatório.');
       const hoje = await hojeDaIgreja(tx, igrejaId), data = new Date(`${hoje}T00:00:00.000Z`);
       const competencia = await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: gestor.pessoa_id, inicio: { lte: data }, OR: [{ fim: null }, { fim: { gt: data } }] }, select: { id: true } });
       if (!competencia) throw new ForbiddenException('Competência institucional não comprovada.');

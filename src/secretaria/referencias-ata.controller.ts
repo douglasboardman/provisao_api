@@ -16,7 +16,7 @@ const pagina = (valor: unknown) => validar(paginaAta, valor);
 
 @Controller('secretaria')
 @UseGuards(AuthGuard, RolesGuard, SecretariaGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR, Perfil.TESOUREIRO)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 export class ReferenciasAtaController {
   constructor(private readonly service: ReferenciasAtaService) {}
 
@@ -45,6 +45,13 @@ export class ReferenciasAtaController {
   @Header('Cache-Control', 'private, no-store')
   vinculados(@Request() req: Req, @Param('id', ParseUUIDPipe) id: string, @Query('pagina') p: unknown) {
     return this.service.vinculados(req.user, id, pagina(p));
+  }
+
+  @ServicoDaRota('VINCULOS_DOCUMENTAIS_CONSULTAR')
+  @Get('documentos/:id/atos-para-reatribuir')
+  @Header('Cache-Control', 'private, no-store')
+  prepararReatribuicao(@Request() req: Req, @Param('id', ParseUUIDPipe) id: string) {
+    return this.service.prepararReatribuicao(req.user, id);
   }
 
   @ServicoDaRota('VINCULOS_DOCUMENTAIS_CONSULTAR')

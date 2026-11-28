@@ -12,7 +12,7 @@ export class SecretariaGuard implements CanActivate {
 
 /** Essas rotas consultam a autorização do contexto e do documento no serviço. */
 export const OperacaoContextual = () => applyDecorators(ContaComum(),
-  Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR, Perfil.COMUM));
+  Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM));
 
 /** Rotas que verificam também o mandato para leitura ou classificação da ata. */
 export const ConsultaContextualAtas = () => applyDecorators(ContaComum(), Roles(...Object.values(Perfil)));

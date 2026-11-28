@@ -1,10 +1,11 @@
+import { quorumDoModelo, configuracaoReuniao, validarIntervalo } from './regras-modelo-reuniao';
 import { permissoesAtas } from './sigilo-ata';
 import { contextosDasAtasRestritas, filtroVisibilidadeDocumentos } from './visibilidade-documentos';
 import { periodoOrgao } from '../orgaos/acesso-sociedades';
-import { comparar, decidirAcaoModelo, papeisDaConta } from '../autorizacao/politica';
+import { decidirAcaoModelo, papeisDaConta } from '../autorizacao/politica';
 import { contextoPorExtenso } from './contexto-por-extenso';
 import { ehPapelMesa, conferirVotacao, mesaVigente } from './mesa-assembleia';
-import { hojeDaIgreja } from '../orgaos/relogio-igreja';
+import { dataCivilNoFuso, hojeDaIgreja } from '../orgaos/relogio-igreja';
 import { opcoesAtuacao, validarAtuacao, permissoesModelo } from './atuacao-modelo.service';
 import { createHash, randomUUID } from 'node:crypto';
 import { horariosDaReuniao } from './horario-reuniao';
@@ -35,7 +36,7 @@ function comDataHora<T extends { data: Date; dados: Prisma.JsonValue }>(reuniao:
 export function planejamentoDaReuniao(reuniao: { dados: Prisma.JsonValue; local_id: string | null; local_retrato: Prisma.JsonValue; itens_pauta: { descricao: string; proponente_id: string | null }[] }) {
   const dados = reuniao.dados as unknown as dto.ReuniaoInput;
   const local = reuniao.local_retrato as ReturnType<typeof retratoLocal> | null;
-  return createHash('sha256').update(JSON.stringify([dados.modalidade, dados.data, dados.horario_previsto, reuniao.local_id, dados.local, local?.endereco_extenso, local?.endereco_declarativo,
+  return createHash('sha256').update(JSON.stringify([...(dados.modelo_reuniao_id ? [dados.modelo_reuniao_id,dados.formato,dados.carater,dados.convocacao,dados.primeira_reuniao_id] : []), dados.modalidade, dados.data, dados.horario_previsto, reuniao.local_id, dados.local, local?.endereco_extenso, local?.endereco_declarativo,
     reuniao.itens_pauta.map(i => [i.descricao, i.proponente_id])])).digest('hex');
 }
 
@@ -105,7 +106,7 @@ export class SecretariaCadastrosService {
       const planejamentoAtual = planejamentoDaReuniao(r);
       const emCurso = await this.convocacaoEmCurso(tx, a, r.contexto_id, r.id, !restritos);
       let podeEditar = false;
-      if (usuario.perfil !== 'COMUM' && emCurso?.documento.estado === 'EM_EDICAO' && await this.base.podePreparar(tx, a, r.contexto_id, usuario)) {
+      if (emCurso?.documento.estado === 'EM_EDICAO' && await this.base.podePreparar(tx, a, r.contexto_id, usuario)) {
         const regra = dto.configuracaoSchema.parse(emCurso.modelo?.configuracao).atuacao;
         const papeis = await this.base.atuacao.papeis(tx, await this.base.contexto(tx, a, r.contexto_id), usuario.pessoa_id);
         const permissoes = permissoesModelo(regra, papeis);
@@ -130,10 +131,10 @@ export class SecretariaCadastrosService {
       const visiveis = (await Promise.all(contextos.map(async c => ({ c, visivel: await this.base.contextoVisivel(tx, c, u) })))).filter(x => x.visivel || acessoAtas.get(x.c.id)?.ler);
       return Promise.all(visiveis.map(async ({ c: { igreja, ...c }, visivel }) => {
         const grants = visivel ? concessoes.filter(g => g.contexto_id === c.id) : [];
-        const podePreparar = visivel && c.orgao.ativo && (['GESTOR','SECRETARIO'].includes(u.perfil) || (u.perfil === 'COMUM' && (await this.base.papeisContextuais(tx, c, u)).size > 0) || (u.perfil !== 'AUDITOR' && grants.some(g => g.pode_aprovar || g.pode_deliberar)));
-        return { ...c, somente_atas: !visivel, pode_classificar_ata: !!acessoAtas.get(c.id)?.classificar, ...((!visivel || u.perfil === 'COMUM') && { registro_livro: false }), nome: c.orgao.nome, sigla: c.orgao.sigla ?? c.sigla, por_extenso: contextoPorExtenso(c.orgao.nome, igreja.nome), editor_pagina: editorPaginaHabilitado(c.id), pode_preparar: podePreparar,
+        const podePreparar = visivel && c.orgao.ativo && ((u.perfil === 'COMUM' && (await this.base.papeisContextuais(tx, c, u)).size > 0) || (u.perfil !== 'AUDITOR' && grants.some(g => g.pode_aprovar || g.pode_deliberar)));
+        return { ...c, pode_gerir_modelos: visivel && c.orgao.ativo && (u.perfil === 'ADMINISTRADOR' || await this.base.podeEditarAtaLegada(tx, c, u)), pode_editar_ata_legada: visivel && await this.base.podeEditarAtaLegada(tx, c, u), somente_atas: !visivel, pode_classificar_ata: !!acessoAtas.get(c.id)?.classificar, ...(!visivel && { registro_livro: false }), nome: c.orgao.nome, sigla: c.orgao.sigla ?? c.sigla, por_extenso: contextoPorExtenso(c.orgao.nome, igreja.nome), editor_pagina: editorPaginaHabilitado(c.id), pode_preparar: podePreparar,
           pode_instalar_mesa: c.orgao.ativo && c.tipo === 'ASSEMBLEIA_GERAL' && u.perfil !== 'AUDITOR' && grants.some(g => g.pode_instalar_mesa),
-          pode_agendar: u.perfil !== 'COMUM' && podePreparar && await this.base.atuacao.podeAgendar(tx, c, u.pessoa_id),
+          pode_agendar: podePreparar && await this.base.atuacao.podeAgendar(tx, c, u.pessoa_id),
           pode_aprovar: c.orgao.ativo && u.perfil !== 'AUDITOR' && !!u.pessoa_id && grants.some(g => g.pode_aprovar),
           pode_deliberar: c.orgao.ativo && u.perfil !== 'AUDITOR' && !!u.pessoa_id && grants.some(g => g.pode_deliberar),
           pode_consultar_restritos: grants.some(g => g.pode_consultar_restritos) };
@@ -148,7 +149,7 @@ export class SecretariaCadastrosService {
       const contexto = await this.base.contexto(tx, a, v.contexto_id);
       if (v.pode_instalar_mesa && contexto.tipo !== 'ASSEMBLEIA_GERAL') throw new BadRequestException('Instalação de mesa exige o contexto da Assembleia Geral.');
       const titular = await tx.usuarios.findFirst({ where: { id: v.usuario_id, igreja_id: a.igreja_id, ativo: true } });
-      if (!titular || !titular.pessoa_id || !['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', 'AUDITOR', 'COMUM'].includes(titular.perfil) || (titular.perfil === 'AUDITOR' && (v.pode_aprovar || v.pode_deliberar || v.pode_instalar_mesa))) throw new BadRequestException('Titular exige pessoa vinculada e perfil compatível.');
+      if (!titular || !titular.pessoa_id || (titular.perfil === 'AUDITOR' && (v.pode_aprovar || v.pode_deliberar || v.pode_instalar_mesa))) throw new BadRequestException('Titular exige pessoa vinculada e perfil compatível.');
       if (titular.perfil === 'COMUM') {
         const admin = await this.base.operador(tx, a);
         if (!admin.pessoa_id || admin.pessoa_id === titular.pessoa_id) throw new ForbiddenException('Outra pessoa identificada deve conceder esta competência.');
@@ -301,7 +302,7 @@ export class SecretariaCadastrosService {
     return this.base.comando(a, 'CRIAR_MODELO', v.contexto_id, v, async tx => {
       const u = await this.base.operador(tx, a);
       await this.base.contextoAtivo(tx, a, v.contexto_id);
-      if (u.perfil !== 'ADMINISTRADOR') await this.base.preparar(tx, a, v.contexto_id);
+      await this.exigirGestaoModelo(tx, a, v.contexto_id);
       if (v.configuracao.composicao_padrao) exigirEditorPagina(v.contexto_id);
       await this.configurar(tx, a, v.contexto_id, v.configuracao);
       validarAtuacao(v.configuracao.atuacao, await opcoesAtuacao(tx, await this.base.contexto(tx, a, v.contexto_id)), !!v.publicar);
@@ -319,13 +320,19 @@ export class SecretariaCadastrosService {
     });
   }
 
+  private async exigirGestaoModelo(tx: Tx, a: AtorSecretaria, contextoId: string) {
+    const u = await this.base.operador(tx, a), c = await this.base.contextoAtivo(tx, a, contextoId);
+    if (u.perfil !== 'ADMINISTRADOR' && !await this.base.podeEditarAtaLegada(tx, c, u))
+      throw new ForbiddenException('Gestão de modelos reservada à administração ou à secretaria em exercício neste contexto.');
+  }
+
   private async modeloParaEditar(tx: Tx, a: AtorSecretaria, id: string, revisao: number) {
     const m = await tx.modelo_documento.findFirst({ where: { id, igreja_id: a.igreja_id },
       include: { rascunho: true, versoes: { orderBy: { numero: 'desc' }, take: 1 } } });
     if (!m) throw new NotFoundException('Modelo não encontrado.');
     const u = await this.base.operador(tx, a);
     await this.base.contextoAtivo(tx, a, m.contexto_id);
-    if (u.perfil !== 'ADMINISTRADOR') await this.base.preparar(tx, a, m.contexto_id);
+    await this.exigirGestaoModelo(tx, a, m.contexto_id);
     this.base.conferirRevisao(m.revisao, revisao);
     return m;
   }
@@ -442,7 +449,8 @@ export class SecretariaCadastrosService {
       const vinculo = rascunho ? await tx.imagem_modelo_rascunho.findFirst({ where: { modelo_id: versao, arquivo_id: arquivo, igreja_id: a.igreja_id }, include: { arquivo: true } }) : await tx.imagem_modelo_documento.findFirst({ where: { versao_id: versao, arquivo_id: arquivo, igreja_id: a.igreja_id }, include: { arquivo: true } });
       if (!vinculo) throw new NotFoundException('Imagem não encontrada nesta versão.');
       await this.base.contexto(tx, a, vinculo.contexto_id);
-      if (a.perfil === 'COMUM' && !await tx.modelo_documento_versao.findFirst({ where: { id: versao, igreja_id: a.igreja_id, modelo: { rascunho: null } }, select: { id: true } }))
+      const conta = await this.base.operador(tx, a), contexto = await this.base.contexto(tx, a, vinculo.contexto_id);
+      if (conta.perfil !== 'ADMINISTRADOR' && !await this.base.podeEditarAtaLegada(tx, contexto, conta) && !await tx.modelo_documento_versao.findFirst({ where: { id: versao, igreja_id: a.igreja_id, modelo: { rascunho: null } }, select: { id: true } }))
         throw new NotFoundException('Versão indisponível.');
       return vinculo.arquivo;
     });
@@ -460,7 +468,8 @@ export class SecretariaCadastrosService {
       const papeis = habilitado ? exercicio : new Set<string>();
       const proposta = await papeisDaConta(tx, u, exercicio, dia);
       const papeisComuns = u.perfil === 'COMUM' ? await this.base.papeisContextuais(tx, c, u, dia) : null;
-      const visiveis = u.perfil === 'COMUM' ? modelos.filter(m => !m.rascunho && m.versoes.length).map(m => ({ ...m, versoes: m.versoes.slice(0,1) })) : modelos;
+      const gerencia = u.perfil === 'ADMINISTRADOR' || await this.base.podeEditarAtaLegada(tx, c, u);
+      const visiveis = !gerencia ? modelos.filter(m => !m.rascunho && m.versoes.length).map(m => ({ ...m, versoes: m.versoes.slice(0,1) })) : modelos;
       return Promise.all(visiveis.map(async m => {
         const versao = m.versoes[0];
         const config = dto.configuracaoSchema.safeParse(versao?.configuracao);
@@ -468,11 +477,7 @@ export class SecretariaCadastrosService {
         const permissoes = permissoesModelo(regra, papeis);
         if (papeisComuns) {
           const operacoes = permissoesModelo(regra, papeisComuns);
-          return { ...m, permissoes: c.orgao.tipo === 'ASSEMBLEIA_GERAL' ? { criar: false, preparar: m.versoes[0].tipo === 'ATA' && operacoes.preparar } : operacoes, estado: 'PUBLICADO' };
-        }
-        for (const acao of ['criar','preparar'] as const) {
-          await comparar(tx, u, 'MODELO_' + acao.toUpperCase(), versao?.id ?? m.id, permissoes[acao],
-            decidirAcaoModelo(acao, regra, proposta), 'PERFIL_COMPETENCIA_E_MODELO');
+          return { ...m, permissoes: c.orgao.tipo === 'ASSEMBLEIA_GERAL' ? { criar: false, preparar: m.versoes[0].tipo === 'ATA' && operacoes.preparar } : operacoes, estado: m.rascunho ? 'EM_EDICAO' : 'PUBLICADO' };
         }
         return { ...m, permissoes: { ...permissoes, ...(!u.pessoa_id && { sem_pessoa_vinculada: true }) }, estado: m.rascunho ? 'EM_EDICAO' : 'PUBLICADO' };
       }));
@@ -501,12 +506,31 @@ export class SecretariaCadastrosService {
   }
 
   async validarReuniao(tx: Tx, a: AtorSecretaria, contexto: string, v: dto.ReuniaoInput) {
+    // A confirmação antiga só subsiste como resultado calculado, para leitores do acervo.
+    const presentes = v.participantes.filter((p) => p.presente).length;
+    const realizada = ['ENCERRADA', 'EM_ANDAMENTO'].includes(v.situacao ?? '') || !v.situacao;
+    v.quorum_conferido =
+      realizada &&
+      !v.modelo_reuniao &&
+      v.quorum_minimo > 0 &&
+      presentes >= v.quorum_minimo &&
+      !!v.fundamento_quorum &&
+      !!v.competencia;
+    if (v.modelo_reuniao) {
+      v.competencia = v.modelo_reuniao.finalidade;
+      v.fundamento_quorum = v.modelo_reuniao.configuracao.fundamentacao;
+    }
+    if (v.total_presentes != null && v.total_presentes < presentes)
+      throw new BadRequestException('Total inferior aos participantes registrados como presentes.');
     this.validarModalidadeReuniao(await this.base.contexto(tx, a, contexto), v.modalidade);
     if (v.restrito) await this.base.competente(tx, a, contexto, 'pode_consultar_restritos');
-    const ids = v.participantes.map(p => p.pessoa_id);
-    if (new Set(ids).size !== ids.length) throw new BadRequestException('Informe cada pessoa uma única vez, com seus vários papéis.');
-    if (await tx.pessoas.count({ where: { igreja_id: a.igreja_id, id: { in: ids } } }) !== ids.length) throw new BadRequestException('Participante não pertence à igreja.');
-    if (v.participantes.filter(p => p.presente).length > v.universo_informado) throw new BadRequestException('Presença maior que universo informado.');
+    const ids = v.participantes.map((p) => p.pessoa_id);
+    if (new Set(ids).size !== ids.length)
+      throw new BadRequestException('Informe cada pessoa uma única vez, com seus vários papéis.');
+    if ((await tx.pessoas.count({ where: { igreja_id: a.igreja_id, id: { in: ids } } })) !== ids.length)
+      throw new BadRequestException('Participante não pertence à igreja.');
+    if (!v.modelo_reuniao_id && v.participantes.filter((p) => p.presente).length > v.universo_informado)
+      throw new BadRequestException('Presença maior que universo informado.');
   }
 
   async participantes(tx: Tx, a: Pick<AtorSecretaria,'igreja_id'>, r: { id: string; contexto_id: string }, v: dto.ReuniaoInput) {
@@ -575,51 +599,289 @@ export class SecretariaCadastrosService {
       throw new ForbiddenException('O agendamento exige a presidência ou um cargo autorizado a emitir a convocação.');
   }
 
+  async primeirasConvocacoes(a: AtorSecretaria, contexto: string, modelo: string) {
+    return this.base.prisma.$transaction(async (tx) => {
+      await this.base.operador(tx, a);
+      await this.base.contexto(tx, a, contexto);
+      const restritos = (await this.base.concessoes(tx, a, contexto)).some((g) => g.pode_consultar_restritos);
+      const registros = await tx.reuniao.findMany({
+        where: {
+          igreja_id: a.igreja_id,
+          contexto_id: contexto,
+          ...(!restritos && { restrito: false }),
+          AND: [
+            { dados: { path: ['modelo_reuniao_id'], equals: modelo } },
+            { dados: { path: ['convocacao'], equals: 'Primeira' } },
+          ],
+        },
+        orderBy: { data: 'desc' },
+        select: { id: true, dados: true },
+      });
+      return registros.flatMap((r) => {
+        const d = dto.reuniaoDadosSchema.parse(r.dados);
+        return ['AGENDADA', 'NAO_INSTALADA'].includes(d.situacao ?? '')
+          ? [{ id: r.id, data: d.data, horario: d.horario_previsto, pauta: d.pauta }]
+          : [];
+      });
+    });
+  }
+
+  private async contextoConfiguracao(tx: Tx, a: AtorSecretaria, id: string) {
+    const operador = await this.base.operador(tx, a);
+    if (operador.perfil !== 'ADMINISTRADOR') return this.base.contexto(tx, a, id);
+    const contexto = await tx.contexto_secretaria.findFirst({
+      where: { id, igreja_id: a.igreja_id },
+      select: { id: true, orgao_id: true },
+    });
+    if (!contexto) throw new NotFoundException('Contexto indisponível nesta igreja.');
+    return contexto;
+  }
+
+  async opcoesOrgaos(a: AtorSecretaria) {
+    return this.base.prisma.$transaction(async (tx) => {
+      await this.admin(tx, a);
+      return tx.orgao_interno.findMany({
+        where: { igreja_id: a.igreja_id },
+        select: { id: true, nome: true },
+        orderBy: { nome: 'asc' },
+      });
+    });
+  }
+
+  listarModelosReuniao(a: AtorSecretaria, contexto: string) {
+    return this.base.prisma.$transaction(async (tx) => {
+      await this.contextoConfiguracao(tx, a, contexto);
+      return tx.modelo_reuniao.findMany({
+        where: { igreja_id: a.igreja_id, contexto_id: contexto },
+        orderBy: { finalidade: 'asc' },
+      });
+    });
+  }
+
+  salvarModeloReuniao(a: AtorSecretaria, contexto: string, body: unknown) {
+    const v = dto.validar(
+      z.strictObject({
+        idempotencia: z.uuid(),
+        id: z.uuid().optional(),
+        revisao: z.number().int().positive().optional(),
+        finalidade: z.string().trim().min(1).max(255),
+        configuracao: configuracaoReuniao,
+      }),
+      body,
+    );
+    return this.base.comando(
+      a,
+      'CONFIGURAR_MODELO_REUNIAO',
+      contexto,
+      v,
+      async (tx) => {
+        await this.admin(tx, a);
+        const c = await this.contextoConfiguracao(tx, a, contexto);
+        const ids = v.configuracao.orgaos_participantes;
+        if (
+          (c.orgao_id && ids.includes(c.orgao_id)) ||
+          (await tx.orgao_interno.count({ where: { igreja_id: a.igreja_id, id: { in: ids } } })) !== ids.length
+        )
+          throw new BadRequestException('Selecione outros órgãos desta igreja, sem repetição.');
+        const where = { contexto_id: contexto, igreja_id: a.igreja_id };
+        const data = { finalidade: v.finalidade, configuracao: json(v.configuracao) };
+        if (
+          await tx.modelo_reuniao.findFirst({
+            where: { ...where, finalidade: v.finalidade, ...(v.id && { id: { not: v.id } }) },
+          })
+        )
+          throw new ConflictException('Já existe um modelo com esta finalidade no órgão.');
+        if (!v.id) return tx.modelo_reuniao.create({ data: { ...where, ...data } });
+        const atual = await tx.modelo_reuniao.findFirst({ where: { ...where, id: v.id } });
+        if (!atual || atual.revisao !== v.revisao) throw new ConflictException('Recarregue o modelo antes de editar.');
+        return tx.modelo_reuniao.update({ where: { id: atual.id }, data: { ...data, revisao: { increment: 1 } } });
+      },
+      (tx) => this.admin(tx, a),
+    );
+  }
+
+  async conferirConvocacao(
+    tx: Tx,
+    a: AtorSecretaria,
+    contexto: string,
+    v: dto.ReuniaoInput,
+    id?: string,
+    anterior?: dto.ReuniaoInput,
+  ) {
+    const modeloId = v.modelo_reuniao_id;
+    if (v.situacao === 'NAO_INSTALADA') {
+      const agora = new Date();
+      const fuso = (await fusoDaReuniao(tx,a.igreja_id)) ?? 'UTC';
+      const hoje = dataCivilNoFuso(agora,fuso);
+      const hora = horariosDaReuniao(agora.toISOString(),null,fuso).horario_inicio_reuniao!;
+      if (v.inicio || v.fim || v.data > hoje || (v.data === hoje && v.horario_previsto && v.horario_previsto > hora))
+        throw new BadRequestException('Registre a não instalação após o horário previsto, sem abertura da reunião.');
+    }
+    if (!modeloId) {
+      delete v.modelo_reuniao;
+      if (!id || anterior?.modelo_reuniao_id || v.primeira_reuniao_id || v.convocacao === 'Segunda')
+        throw new BadRequestException('Selecione o modelo da reunião.');
+      return;
+    }
+    const modelo = await tx.modelo_reuniao.findFirst({
+      where: { id: modeloId, igreja_id: a.igreja_id, contexto_id: contexto },
+    });
+    if (!modelo || !v.formato || !v.carater || !v.convocacao)
+      throw new BadRequestException('Informe modelo, modalidade, caráter e convocação.');
+    const retrato =
+      anterior?.modelo_reuniao_id === modeloId && anterior.modelo_reuniao
+        ? anterior.modelo_reuniao
+        : {
+            finalidade: modelo.finalidade,
+            revisao: modelo.revisao,
+            configuracao: configuracaoReuniao.parse(modelo.configuracao),
+          };
+    v.modelo_reuniao = retrato;
+    const c = await this.base.contexto(tx, a, contexto);
+    if (v.convocacao === 'Segunda') {
+      if (!v.primeira_reuniao_id || v.primeira_reuniao_id === id)
+        throw new BadRequestException('Confira a previsão de segunda convocação e selecione a primeira.');
+      const primeira = await this.reuniao(tx, a, v.primeira_reuniao_id);
+      const original = dto.reuniaoDadosSchema.parse(primeira.dados);
+      if (
+        primeira.contexto_id !== contexto ||
+        original.convocacao !== 'Primeira' ||
+        original.modelo_reuniao_id !== modeloId ||
+        (v.situacao !== 'CANCELADA' && !['AGENDADA', 'NAO_INSTALADA'].includes(original.situacao ?? '')) ||
+        (!v.restrito && primeira.restrito) ||
+        ((v.inicio || v.fim || ['EM_ANDAMENTO', 'ENCERRADA'].includes(v.situacao ?? '')) &&
+          original.situacao !== 'NAO_INSTALADA')
+      )
+        throw new BadRequestException(
+          'A primeira convocação precisa corresponder à reunião e estar não instalada antes da realização da segunda.',
+        );
+      if (original.modelo_reuniao) v.modelo_reuniao = original.modelo_reuniao;
+      if (['Não prevista', 'Pendente'].includes(v.modelo_reuniao.configuracao.segunda))
+        throw new BadRequestException('O modelo da primeira convocação não prevê segunda convocação confirmada.');
+      const outra = await tx.reuniao.findFirst({
+        where: {
+          igreja_id: a.igreja_id,
+          dados: { path: ['primeira_reuniao_id'], equals: primeira.id },
+          ...(id && { id: { not: id } }),
+        },
+        select: { id: true },
+      });
+      if (outra) throw new ConflictException('Já existe segunda convocação para esta reunião.');
+      validarIntervalo(original, v, v.modelo_reuniao.configuracao.intervalo_minutos);
+    } else if (v.primeira_reuniao_id)
+      throw new BadRequestException('Vínculo com primeira chamada permitido somente na segunda convocação.');
+    if (v.modelo_reuniao.configuracao.tipo === 'A confirmar')
+      throw new BadRequestException('Configure o tipo ordinário ou extraordinário deste modelo.');
+    const ordinaria = v.modelo_reuniao.configuracao.tipo === 'Ordinária';
+    v.modalidade =
+      c.tipo === 'ASSEMBLEIA_GERAL' ? (ordinaria ? 'AGO' : 'AGE') : ordinaria ? 'ORDINARIA' : 'EXTRAORDINARIA';
+    if (
+      id &&
+      (await tx.reuniao.findFirst({
+        where: { igreja_id: a.igreja_id, dados: { path: ['primeira_reuniao_id'], equals: id } },
+        select: { id: true },
+      }))
+    ) {
+      if (
+        !anterior ||
+        anterior.modelo_reuniao_id !== modeloId ||
+        anterior.data !== v.data ||
+        anterior.horario_previsto !== v.horario_previsto ||
+        v.convocacao !== 'Primeira' ||
+        (anterior.situacao === 'NAO_INSTALADA' && v.situacao !== 'NAO_INSTALADA')
+      )
+        throw new BadRequestException('Esta convocação já fundamenta uma segunda chamada.');
+    }
+  }
+
   criarReuniao(a: AtorSecretaria, dados: unknown) {
     const v = dto.validar(dto.reuniaoSchema, dados);
     return this.base.comando(a, 'CRIAR_REUNIAO', v.contexto_id, v, tx => this.gravarReuniao(tx, a, v));
   }
 
   async gravarReuniao(tx: Tx, a: AtorSecretaria, v: z.infer<typeof dto.reuniaoSchema>) {
-      await this.base.preparar(tx, a, v.contexto_id);
-      if (v.dados.situacao === 'AGENDADA' || (!v.dados.situacao && v.dados.data >= await hojeDaIgreja(tx, a.igreja_id)))
-        await this.exigirAgendamento(tx, a, v.contexto_id);
-      if (v.dados.situacao === 'AGENDADA' && !v.local_id) throw new BadRequestException('Selecione um local cadastrado para agendar.');
-      await this.validarReuniao(tx, a, v.contexto_id, v.dados);
-      const { itens_pauta, ...dadosReuniao } = v.dados;
-      const local = await this.localParaReuniao(tx, a.igreja_id, v.local_id, dadosReuniao.local);
-      dadosReuniao.local = local.nome;
-      const efetivo = await this.localEfetivo(tx, a.igreja_id, v.local_efetivo_id);
-      const instalacaoFormal = ['AGO','AGE'].includes(dadosReuniao.modalidade) &&
-        (!!dadosReuniao.situacao || dadosReuniao.data >= await hojeDaIgreja(tx, a.igreja_id));
-      if (instalacaoFormal && dadosReuniao.participantes.some(p => p.papeis.some(ehPapelMesa)))
-        throw new BadRequestException('Registre a eleição dos titulares na instalação da mesa.');
-      const r = await tx.reuniao.create({ data: { instalacao_formal: instalacaoFormal, ...efetivo, ...local.vinculo, igreja_id: a.igreja_id, contexto_id: v.contexto_id, restrito: v.dados.restrito, modalidade: v.dados.modalidade, data: dataCivil(v.dados.data), dados: json(dadosReuniao) } });
-      await this.salvarPauta(tx, r, dadosReuniao.pauta, itens_pauta);
-      await this.participantes(tx, a, r, v.dados);
-      return { id: r.id, revisao: 1 };
+    await this.base.preparar(tx, a, v.contexto_id);
+    if (v.dados.situacao === 'AGENDADA' || v.dados.data >= (await hojeDaIgreja(tx, a.igreja_id)))
+      await this.exigirAgendamento(tx, a, v.contexto_id);
+    if (v.dados.situacao === 'AGENDADA' && !v.local_id)
+      throw new BadRequestException('Selecione um local cadastrado para agendar.');
+    await this.conferirConvocacao(tx, a, v.contexto_id, v.dados);
+    await this.validarReuniao(tx, a, v.contexto_id, v.dados);
+    const { itens_pauta, ...dadosReuniao } = v.dados;
+    const local = await this.localParaReuniao(tx, a.igreja_id, v.local_id, dadosReuniao.local);
+    dadosReuniao.local = local.nome;
+    const efetivo = await this.localEfetivo(tx, a.igreja_id, v.local_efetivo_id);
+    const instalacaoFormal =
+      ['AGO', 'AGE'].includes(dadosReuniao.modalidade) &&
+      (!!dadosReuniao.situacao || dadosReuniao.data >= (await hojeDaIgreja(tx, a.igreja_id)));
+    if (instalacaoFormal && dadosReuniao.participantes.some((p) => p.papeis.some(ehPapelMesa)))
+      throw new BadRequestException('Registre a eleição dos titulares na instalação da mesa.');
+    const r = await tx.reuniao.create({
+      data: {
+        instalacao_formal: instalacaoFormal,
+        ...efetivo,
+        ...local.vinculo,
+        igreja_id: a.igreja_id,
+        contexto_id: v.contexto_id,
+        restrito: v.dados.restrito,
+        modalidade: v.dados.modalidade,
+        data: dataCivil(v.dados.data),
+        dados: json(dadosReuniao),
+      },
+    });
+    await this.salvarPauta(tx, r, dadosReuniao.pauta, itens_pauta);
+    await this.participantes(tx, a, r, v.dados);
+    return { id: r.id, revisao: 1 };
   }
 
   editarReuniao(a: AtorSecretaria, id: string, dados: unknown) {
     const v = dto.validar(dto.editarReuniaoSchema, dados);
-    return this.base.comando(a, 'EDITAR_REUNIAO', id, v, async tx => {
+    return this.base.comando(a, 'EDITAR_REUNIAO', id, v, async (tx) => {
       const r = await this.reuniao(tx, a, id);
       await this.base.preparar(tx, a, r.contexto_id);
       this.base.conferirRevisao(r.revisao, v.revisao);
-      if (await tx.documento_versao.count({ where: { reuniao_id: id, documento: { tipo: 'ATA' }, OR: [{ congelado_em: { not: null } }, { deliberacoes: { some: {} } }] } }) || await tx.deliberacao_ata.count({ where: { reuniao_id: id } })) throw new BadRequestException('Reunião formalizada é preservada; registre reunião/ato complementar.');
+      if (
+        (await tx.documento_versao.count({
+          where: {
+            reuniao_id: id,
+            documento: { tipo: 'ATA' },
+            OR: [{ congelado_em: { not: null } }, { deliberacoes: { some: {} } }],
+          },
+        })) ||
+        (await tx.deliberacao_ata.count({ where: { reuniao_id: id } }))
+      )
+        throw new BadRequestException('Reunião formalizada é preservada; registre reunião/ato complementar.');
+      await this.conferirConvocacao(tx, a, r.contexto_id, v.dados, id, dto.reuniaoDadosSchema.parse(r.dados));
       await this.validarReuniao(tx, a, r.contexto_id, v.dados);
       const anterior = dto.validar(dto.reuniaoDadosSchema, r.dados);
-      const reagendada = v.dados.situacao === 'AGENDADA' || (anterior.data !== v.dados.data && v.dados.data >= await hojeDaIgreja(tx, a.igreja_id));
-      const instalacaoFormal = r.instalacao_formal || (['AGO','AGE'].includes(v.dados.modalidade) && reagendada);
+      const reagendada =
+        v.dados.situacao === 'AGENDADA' ||
+        (anterior.data !== v.dados.data && v.dados.data >= (await hojeDaIgreja(tx, a.igreja_id)));
+      const instalacaoFormal = r.instalacao_formal || (['AGO', 'AGE'].includes(v.dados.modalidade) && reagendada);
       if (instalacaoFormal) {
-        const mesa = (participantes: dto.ReuniaoInput['participantes']) => participantes.flatMap(p =>
-          p.papeis.filter(ehPapelMesa).map(papel => [p.pessoa_id, papel, p.presente].join('/'))).sort().join('|');
+        const mesa = (participantes: dto.ReuniaoInput['participantes']) =>
+          participantes
+            .flatMap((p) => p.papeis.filter(ehPapelMesa).map((papel) => [p.pessoa_id, papel, p.presente].join('/')))
+            .sort()
+            .join('|');
         if ((r.instalacao_formal ? mesa(anterior.participantes) : '') !== mesa(v.dados.participantes))
           throw new BadRequestException('Altere os titulares pela instalação da mesa da assembleia.');
-        if (mesa(anterior.participantes) && (anterior.data !== v.dados.data || !['EM_ANDAMENTO','ENCERRADA'].includes(v.dados.situacao ?? '')))
+        if (
+          mesa(anterior.participantes) &&
+          (anterior.data !== v.dados.data || !['EM_ANDAMENTO', 'ENCERRADA'].includes(v.dados.situacao ?? ''))
+        )
           throw new BadRequestException('Preserve a data e a realização da assembleia instalada.');
-        if (v.dados.quorum_conferido)
-          conferirVotacao(await mesaVigente(tx, r), v.dados.participantes, v.dados.quorum_minimo, true);
+        const instalada = await mesaVigente(tx, r);
+        if (instalada && v.dados.modelo_reuniao) {
+          const apuracao = conferirVotacao(instalada, v.dados.participantes, 0, false);
+          const quorum = quorumDoModelo(v.dados, {
+            universo: v.dados.universo_informado,
+            habilitados_presentes: apuracao.votantes_presentes?.length ?? 0,
+          });
+          v.dados.quorum_conferido = quorum?.atingido ?? false;
+          v.dados.quorum_minimo = quorum?.minimo ?? 0;
+        } else if (v.dados.quorum_conferido)
+          conferirVotacao(instalada, v.dados.participantes, v.dados.quorum_minimo, true);
       }
       if (anterior.situacao && (!v.dados.situacao || (anterior.horario_previsto && !v.dados.horario_previsto)))
         throw new ConflictException('Atualize o formulário para preservar o agendamento.');
@@ -628,12 +890,32 @@ export class SecretariaCadastrosService {
       const local = await this.localParaReuniao(tx, a.igreja_id, v.local_id, dadosReuniao.local, r);
       dadosReuniao.local = local.nome;
       const efetivo = await this.localEfetivo(tx, a.igreja_id, v.local_efetivo_id, r.local_efetivo_id);
-      await tx.reuniao.update({ where: { id }, data: { instalacao_formal: instalacaoFormal, ...efetivo, ...local.vinculo, restrito: v.dados.restrito, modalidade: v.dados.modalidade, data: dataCivil(v.dados.data), dados: json(dadosReuniao), revisao: { increment: 1 } } });
+      if (v.local_efetivo_id !== undefined && v.local_efetivo_id !== r.local_efetivo_id)
+        delete dadosReuniao.local_efetivo;
+      await tx.reuniao.update({
+        where: { id },
+        data: {
+          instalacao_formal: instalacaoFormal,
+          ...efetivo,
+          ...local.vinculo,
+          restrito: v.dados.restrito,
+          modalidade: v.dados.modalidade,
+          data: dataCivil(v.dados.data),
+          dados: json(dadosReuniao),
+          revisao: { increment: 1 },
+        },
+      });
       await this.salvarPauta(tx, r, dadosReuniao.pauta, itens_pauta);
       await this.participantes(tx, a, r, v.dados);
-      const mudouSituacaoAgendada = v.dados.situacao && anterior.situacao !== v.dados.situacao &&
+      const mudouSituacaoAgendada =
+        v.dados.situacao &&
+        anterior.situacao !== v.dados.situacao &&
         ['ADIADA', 'CANCELADA', 'AGENDADA'].includes(v.dados.situacao);
-      if ((reagendada && !r.instalacao_formal && instalacaoFormal) || mudouSituacaoAgendada || (anterior.situacao && planejamentoDaReuniao(r) !== planejamentoDaReuniao(await this.reuniao(tx, a, id))))
+      if (
+        (reagendada && !r.instalacao_formal && instalacaoFormal) ||
+        mudouSituacaoAgendada ||
+        (anterior.situacao && planejamentoDaReuniao(r) !== planejamentoDaReuniao(await this.reuniao(tx, a, id)))
+      )
         await this.exigirAgendamento(tx, a, r.contexto_id);
       return { id, revisao: r.revisao + 1 };
     });

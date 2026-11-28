@@ -4,14 +4,15 @@ const igreja = 'e0000000-0000-4000-8000-000000000001', pessoa = 'e2000000-0000-4
 const dados = { pessoa_id: pessoa, politica_id: politica, data_eleicao: '2026-01-01', candidatura_aprovada_conselho: true };
 const admissao = { id: 'admissao', data_evento: new Date('2025-01-01'), rol: 'COMUNGANTES', rol_origem: null, tipo_evento: 'ADMISSAO', motivacao_evento: 'PROFISSAO_DE_FE' };
 const cadastro = { id: pessoa, data_nascimento: new Date('1990-01-01'), sexo: 'MASCULINO' };
-const tx = { $queryRaw: jest.fn().mockResolvedValue([]), pessoas: { findFirst: jest.fn() }, politica_eleicao_oficial: { findFirst: jest.fn() }, usuarios: { findFirst: jest.fn() }, eventos_membresia: { findMany: jest.fn() }, conferencia_eleicao_oficial: { create: jest.fn() }, logs_atividades: { create: jest.fn() } };
+const tx = { liberacao_servico: { findUnique: jest.fn() }, $queryRaw: jest.fn().mockResolvedValue([]), pessoas: { findFirst: jest.fn() }, politica_eleicao_oficial: { findFirst: jest.fn() }, usuarios: { findFirst: jest.fn() }, eventos_membresia: { findMany: jest.fn() }, conferencia_eleicao_oficial: { create: jest.fn() }, logs_atividades: { create: jest.fn() } };
 const prisma = { $transaction: jest.fn((fn: (value: typeof tx) => unknown) => fn(tx)) };
 const service = new ConferenciaEleicaoService(prisma as unknown as PrismaService);
 beforeEach(() => {
   jest.clearAllMocks();
   tx.pessoas.findFirst.mockResolvedValue(cadastro);
   tx.politica_eleicao_oficial.findFirst.mockResolvedValue({ id: politica, idade_minima: 18, fonte: 'Norma', versao: '1', vigente_desde: new Date('2025-01-01'), aniversario_bissexto: 'DIA_28_FEVEREIRO' });
-  tx.usuarios.findFirst.mockResolvedValue({ id: usuario });
+  tx.liberacao_servico.findUnique.mockResolvedValue(null);
+  tx.usuarios.findFirst.mockResolvedValue({ id: usuario, igreja_id: igreja, ativo: true, perfil: 'ADMINISTRADOR', pessoa_id: pessoa });
   tx.eventos_membresia.findMany.mockResolvedValue([admissao]);
   tx.conferencia_eleicao_oficial.create.mockImplementation(({ data }) => Promise.resolve({ id: 'conferencia', ...data }));
   tx.logs_atividades.create.mockResolvedValue({});

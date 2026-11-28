@@ -18,7 +18,7 @@ integration('E02: sigilo de eventos e trilha geral', () => {
     await p.pessoas.create({ data: { id: pessoaId, igreja_id: igreja, nome_completo: 'Pessoa sintética sigilo', data_nascimento: new Date('1990-01-01'), sexo: 'MASCULINO' } });
     await p.eventos_membresia.create({ data: { id: membroId, igreja_id: igreja, pessoa_id: pessoaId, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: new Date('2024-01-01'), ordem_dia: 1 } });
     oficialId = (await p.oficial.create({ data: { igreja_id: igreja, pessoa_id: pessoaId, tipo: 'DIACONO' } })).id;
-    for (const [id, perfil] of [[secretario, 'SECRETARIO'], [auditor, 'AUDITOR']] as const) await p.usuarios.create({ data: { id, igreja_id: igreja, nome_usuario: 'Usuário sintético', email_login: `${id}@example.invalid`, senha_hash: 'sem-senha', perfil, ativo: true } });
+    for (const [id, perfil] of [[secretario, 'COMUM'], [auditor, 'AUDITOR']] as const) await p.usuarios.create({ data: { id, igreja_id: igreja, nome_usuario: 'Usuário sintético', email_login: `${id}@example.invalid`, senha_hash: 'sem-senha', perfil, ativo: true } });
     const sessions = app.get(SessionService), user = await p.usuarios.findUniqueOrThrow({ where: { id: admin } });
     adminCookie = `provisao_session=${await sessions.create(admin, igreja, user.auth_version)}`;
     secretarioCookie = `provisao_session=${await sessions.create(secretario, igreja, 0)}`;

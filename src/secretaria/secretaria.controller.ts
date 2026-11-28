@@ -1,3 +1,4 @@
+import { ContaComum as ContaContextual } from '../autorizacao/politica';
 import { ContaComum } from '../autorizacao/politica';
 import { tipoImagemDocumental } from './imagens-documentais';
 import { Body, Controller, Get, Header, HttpCode, UploadedFile, UseInterceptors, Param, ParseIntPipe, ParseUUIDPipe, Patch, Post, Query, Request, Res, UseGuards, DefaultValuePipe, BadRequestException } from '@nestjs/common';
@@ -20,13 +21,14 @@ import { AtasLegadasService } from './atas-legadas.service';
 
 type RequestSecretaria = { user: AtorSecretaria };
 
+@ContaContextual()
 @Controller('secretaria')
 @UseGuards(AuthGuard, RolesGuard, SecretariaGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.AUDITOR)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 export class SecretariaController {
   constructor(readonly cadastros: SecretariaCadastrosService, readonly documentos: DocumentosService, readonly storage: PrivateStorageService, readonly rascunhos: RascunhosService, readonly atuacao: AtuacaoService, readonly atasLegadas: AtasLegadasService) {}
   @Post('imagens')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 2 * 1024 * 1024 } }))
   enviarImagem(@Request() req: RequestSecretaria, @Body('idempotencia', ParseUUIDPipe) chave: string, @UploadedFile() arquivo?: Express.Multer.File) {
     if (!arquivo?.buffer?.length) throw new BadRequestException('Imagem obrigatória.');
@@ -45,11 +47,11 @@ export class SecretariaController {
   campos(@Request() req: RequestSecretaria) { return this.cadastros.listarCampos(req.user); }
 
   @Post('campos')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   criarCampo(@Request() req: RequestSecretaria, @Body() dados: unknown) { return this.cadastros.salvarCampo(req.user, dados); }
 
   @Patch('campos/:id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   editarCampo(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() dados: unknown) { return this.cadastros.salvarCampo(req.user, dados, id); }
 
   @Post('atas-legadas')
@@ -63,6 +65,7 @@ export class SecretariaController {
     return this.atasLegadas.extrairTeor(req.user, dados);
   }
   @Patch('atas-legadas/:id')
+  @OperacaoContextual()
   editarAtaLegada(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() dados: unknown) {
     return this.atasLegadas.editar(req.user, id, dados);
   }
@@ -142,6 +145,14 @@ export class SecretariaController {
   @Header('Cache-Control', 'private, no-store')
   @OperacaoContextual()
   @Get('reunioes') reunioes(@Request() req: RequestSecretaria, @Query('contexto', ParseUUIDPipe) c: string, @Query('pagina', new DefaultValuePipe(0), ParseIntPipe) p: number) { this.pagina(p); return this.cadastros.listarReunioes(req.user, c, p); }
+  @OperacaoContextual()
+  @Get('contextos/:id/primeiras-convocacoes') primeirasConvocacoes(@Request() req: RequestSecretaria,@Param('id',ParseUUIDPipe) id:string,@Query('modelo', ParseUUIDPipe) modelo:string) { return this.cadastros.primeirasConvocacoes(req.user,id,modelo); }
+  @OperacaoContextual()
+  @Get('contextos/:id/modelos-reuniao') modelosReuniao(@Request() req: RequestSecretaria,@Param('id',ParseUUIDPipe) id:string) { return this.cadastros.listarModelosReuniao(req.user,id); }
+  @Roles(Perfil.ADMINISTRADOR)
+  @Get('modelos-reuniao/orgaos-participantes') opcoesOrgaos(@Request() req: RequestSecretaria) { return this.cadastros.opcoesOrgaos(req.user); }
+  @Roles(Perfil.ADMINISTRADOR)
+  @Post('contextos/:id/modelos-reuniao') salvarModeloReuniao(@Request() req: RequestSecretaria,@Param('id',ParseUUIDPipe) id:string,@Body() body:unknown) { return this.cadastros.salvarModeloReuniao(req.user,id,body); }
   @Post('reunioes') criarReuniao(@Request() req: RequestSecretaria, @Body() b: unknown) { return this.cadastros.criarReuniao(req.user, b); }
   @Patch('reunioes/:id') editarReuniao(@Request() req: RequestSecretaria, @Param('id', ParseUUIDPipe) id: string, @Body() b: unknown) { return this.cadastros.editarReuniao(req.user, id, b); }
   @Header('Cache-Control', 'private, no-store')

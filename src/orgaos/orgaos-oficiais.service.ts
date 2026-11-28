@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { logs_atividades_acao } from '@prisma/client';
 import { z } from 'zod';
@@ -21,7 +22,7 @@ export class OrgaosOficiaisService {
     if (!Number.isFinite(data.getTime()) || data.toISOString().slice(0, 10) !== v.data_criacao) throw new BadRequestException('Data de criação inválida.');
     return transacaoSerializavel(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO'] } }, select: { id: true } });
+      const operador = await exigirServicoDoUsuario(tx, igrejaId, usuarioId, 'ORGAOS_CONFIGURAR');
       if (!operador) throw new ForbiddenException('Operador não autorizado.');
       const hoje = await hojeDaIgreja(tx, igrejaId);
       const repetido = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, idempotencia, tipo: 'CADASTRO_OFICIAL', hash }, 'orgao_id');

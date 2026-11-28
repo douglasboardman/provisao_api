@@ -131,8 +131,6 @@ export class UsuariosService {
            (updateUsuarioDto.email_login && updateUsuarioDto.email_login !== atual.email_login) ||
            (updateUsuarioDto.ativo !== undefined && updateUsuarioDto.ativo !== atual.ativo)))
         throw new ForbiddenException('Outra pessoa deve alterar a segurança de uma conta vinculada a você.');
-      if (updateUsuarioDto.perfil === 'COMUM' && ['GESTOR','OPERADOR','SECRETARIO','TESOUREIRO'].includes(atual.perfil))
-        throw new BadRequestException('Converta a conta pela prévia em Atuação.');
       const dataToUpdate: Record<string, unknown> = { ...updateUsuarioDto };
       if ((updateUsuarioDto.email_login !== undefined && updateUsuarioDto.email_login !== atual.email_login) || (updateUsuarioDto.ativo !== undefined && updateUsuarioDto.ativo !== atual.ativo)) dataToUpdate.auth_version = { increment: 1 };
       if ((updateUsuarioDto.perfil !== undefined && updateUsuarioDto.perfil !== atual.perfil) || (updateUsuarioDto.ativo === false && atual.ativo)) {

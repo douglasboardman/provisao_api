@@ -9,19 +9,19 @@ import { RolesGuard } from 'src/auth/guards/roles/roles.guard';
 import { Roles } from 'src/auth/decorators/roles.decorator';
 
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO, Perfil.OPERADOR, Perfil.AUDITOR, Perfil.SECRETARIO)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 @Controller('cat-receita')
 export class CatReceitaController {
   constructor(private readonly catReceitaService: CatReceitaService) {}
 
   /**
    * Cria uma nova categoria de receita na mesma igreja do solicitante.
-   * Restrito a ADMIN e TESOUREIRO.
+   * Exige a atribuição de serviço correspondente.
    * Rota: POST /cat-receita
    */
   @ServicoDaRota('CATEGORIAS_RECEITA_CADASTRAR')
   @Post()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   create(@Request() req, @Body() createCatReceitaDto: CreateCatReceitaDto) {
     return this.catReceitaService.create(req.user.igreja_id, createCatReceitaDto, req.user);
   }
@@ -48,12 +48,12 @@ export class CatReceitaController {
 
   /**
    * Atualiza uma categoria de receita da mesma igreja.
-   * Restrito a ADMIN e TESOUREIRO.
+   * Exige a atribuição de serviço correspondente.
    * Rota: PATCH /cat-receita/:id
    */
   @ServicoDaRota('CATEGORIAS_RECEITA_EDITAR')
   @Patch(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   update(@Request() req, @Param('id', ParseIntPipe) id: number, @Body() updateCatReceitaDto: UpdateCatReceitaDto) {
     return this.catReceitaService.update(id, req.user.igreja_id, updateCatReceitaDto, req.user);
   }
@@ -64,7 +64,7 @@ export class CatReceitaController {
    */
   @ServicoDaRota('CATEGORIAS_RECEITA_EXCLUIR')
   @Delete(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   remove(@Request() req, @Param('id', ParseIntPipe) id: number) {
     return this.catReceitaService.remove(id, req.user.igreja_id, req.user);
   }

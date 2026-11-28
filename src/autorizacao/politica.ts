@@ -32,21 +32,14 @@ export async function contaDaSessao(tx: Tx, a: Ator) {
 
 
 export function compativel(perfil: usuarios_perfil, acao: Servico) {
-  if (acao === 'ACESSO_CONSULTAR' || acao === 'ACESSO_ANALISAR')
-    return ['ADMINISTRADOR', 'GESTOR', 'COMUM'].includes(perfil);
-  if ((servicosDeHistorico as readonly Servico[]).includes(acao))
-    return ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO', 'COMUM'].includes(perfil) ||
-      perfil === 'AUDITOR' && servicosDeConsulta.has(acao);
-  if (acao === 'CARGOS_REGISTRAR' && perfil === 'ADMINISTRADOR') return true;
-  if (acao === 'MANDATOS_REGISTRAR' || acao === 'CARGOS_REGISTRAR') return perfil === 'COMUM' || perfil === 'GESTOR' || perfil === 'SECRETARIO';
   if (acao === 'PRESIDENCIA_CONFERIR') return perfil === 'ADMINISTRADOR';
   return perfil !== 'AUDITOR' || servicosDeConsulta.has(acao);
 }
 
 function registroAdministrativo(conta: Conta, acao: Servico) {
-  if (conta.ativo && conta.pessoa_id && conta.perfil === 'ADMINISTRADOR' &&
-      (acao === 'MANDATOS_REGISTRAR' || acao === 'CARGOS_REGISTRAR'))
-    return { permite: true, motivo: 'PERFIL_ADMINISTRADOR' };
+  if (!conta.ativo || conta.perfil !== 'ADMINISTRADOR' || acao === 'PRESIDENCIA_CONFERIR') return;
+  if (['MANDATOS_REGISTRAR', 'CARGOS_REGISTRAR'].includes(acao) && !conta.pessoa_id) return;
+  return { permite: true, motivo: 'ADMINISTRACAO' };
 }
 
 export async function decidirServico(tx: Tx, conta: Conta, acao: Servico, agora = new Date()): Promise<{ permite: boolean; motivo: string; origem?: string }> {
@@ -72,16 +65,6 @@ export function decisaoAtribuicoes(conta: Conta, acao: Servico, registros: {
   const motivo = ultima.geracao_vinculo !== conta.geracao_vinculo ? 'VINCULO_ALTERADO' : ultima.revogado_em ? 'ATRIBUICAO_REVOGADA'
     : ultima.inicio > agora ? 'ATRIBUICAO_FUTURA' : 'ATRIBUICAO_EXPIRADA';
   return { permite: false, motivo, origem: ultima.id };
-}
-
-export async function comparar(tx: Tx, conta: Conta, acao: string, recurso: string, legado: boolean,
-  proposta: { permite: boolean; motivo: string; origem?: string }, origemLegada: string, operador = conta) {
-  if (legado === proposta.permite) return;
-  await tx.evento_autorizacao.create({ data: { igreja_id: conta.igreja_id, operador_id: operador.id,
-    operador_pessoa_id: operador.pessoa_id, destinatario_id: conta.id, pessoa_id: conta.pessoa_id,
-    acao: 'DIVERGENCIA', recurso_id: recurso, fundamento: proposta.motivo,
-    dados: { acao, perfil: conta.perfil, legado, proposta: proposta.permite, origem_legada: origemLegada,
-      origem_proposta: proposta.origem ?? null } } });
 }
 
 export async function papeisDaConta(tx: Tx, conta: Conta, papeis: Set<string>, dia: string) {

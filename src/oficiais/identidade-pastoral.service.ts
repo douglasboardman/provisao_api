@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { createHash, randomBytes } from 'crypto';
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { logs_atividades_acao, Prisma, usuarios_perfil } from '@prisma/client';
@@ -14,7 +15,7 @@ type Tx = Prisma.TransactionClient;
 export class IdentidadePastoralService {
   constructor(private readonly prisma: PrismaService) {}
   private async autorizar(tx: Tx, igreja: string, usuario: string) {
-    const operador = await tx.usuarios.findFirst({ where: { id: usuario, igreja_id: igreja, ativo: true, perfil: { in: [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO] } }, select: { id: true } });
+    const operador = await exigirServicoDoUsuario(tx, igreja, usuario, 'OFICIAIS_REGISTRAR');
     if (!operador) throw new ForbiddenException('Operador não autorizado nesta igreja.');
   }
   private async docente(tx: Tx, igreja: string, oficialId: string) {

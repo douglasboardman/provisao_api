@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { decidirServico } from '../autorizacao/politica';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { membresia_rol, Prisma, usuarios_perfil } from '@prisma/client';
@@ -14,10 +15,7 @@ export class SituacaoExercicioService {
     const data = new Date(`${dataReferencia}T00:00:00.000Z`);
     if (!Number.isFinite(data.getTime()) || data.toISOString().slice(0, 10) !== dataReferencia) throw new BadRequestException('Data inválida.');
     return this.prisma.$transaction(async tx => {
-      const usuario = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true } });
-      if (!usuario || !(usuario.perfil === 'COMUM' ? (await decidirServico(tx, usuario, 'OFICIAIS_CONSULTAR')).permite
-        : [usuarios_perfil.ADMINISTRADOR, usuarios_perfil.GESTOR, usuarios_perfil.SECRETARIO].some(perfil => perfil === usuario.perfil)))
-        throw new ForbiddenException('Operador não autorizado nesta igreja.');
+      await exigirServicoDoUsuario(tx, igrejaId, usuarioId, 'OFICIAIS_CONSULTAR');
       const oficial = await tx.oficial.findFirst({ where: { id: oficialId, igreja_id: igrejaId }, select: { id: true, tipo: true, pessoa_id: true } });
       if (!oficial) throw new NotFoundException('Oficial não encontrado nesta igreja.');
       const eventos = await tx.evento_oficial.findMany({ where: { igreja_id: igrejaId, oficial_id: oficialId, data_efeito: { lte: data } }, orderBy: [{ data_efeito: 'asc' }, { ordem: 'asc' }] });

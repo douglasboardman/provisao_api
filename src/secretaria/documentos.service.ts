@@ -1,3 +1,4 @@
+import { ReferenciasAtaService } from './referencias-ata.service';
 import { contextosDasAtasRestritas, visibilidadeDocumentosSql } from './visibilidade-documentos';
 import { permissoesAtasDaConta } from './sigilo-ata';
 import { verificarSigiloDosAnexos } from './sigilo-anexos';
@@ -12,7 +13,7 @@ import { ehCampoNumeracao } from './numeracao-campos';
 import { exigirEditorPagina } from './liberacao-editor';
 import { copiarOrigem, resolverOrigem, versoesElegiveis } from './encadeamento';
 import { assinaturaFontes, prepararCampos } from './campos-documento';
-import { pendenciasConteudo, pendenciasMesa, pendenciasAssinaturasReuniao, type PendenciaTramitacao } from './pendencias-tramitacao';
+import { dadosConsolidadosAta, pendenciasConteudo, pendenciasMesa, pendenciasAssinaturasReuniao, type PendenciaTramitacao } from './pendencias-tramitacao';
 import { z } from 'zod';
 import { buscaNumero, selecionarDocumentos, tabelasDocumentais } from './selecao-documental';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
@@ -40,7 +41,7 @@ type LinhaDocumento = Pick<documento,
 
 @Injectable()
 export class DocumentosService {
-  constructor(readonly base: SecretariaBaseService, readonly cadastros: SecretariaCadastrosService, private readonly artefatos: RascunhosService, private readonly storage: PrivateStorageService, private readonly livros: LivrosService) {}
+  constructor(private readonly referencias: ReferenciasAtaService, readonly base: SecretariaBaseService, readonly cadastros: SecretariaCadastrosService, private readonly artefatos: RascunhosService, private readonly storage: PrivateStorageService, private readonly livros: LivrosService) {}
 
   async validarVersao(tx: Tx, a: AtorSecretaria, contexto: string, documento: string, v: dto.VersaoInput, anterior?: Pick<documento_versao, 'id' | 'conteudo' | 'modelo_versao_id' | 'reuniao_id'>, restrito = false, numero: number | null = null, novoDocumento = false, opcoes: { sugerirSignatarios?: boolean; preparar?: boolean; convocante?: string | null; previa?: boolean } = {}) {
     const atualId = anterior?.id;
@@ -370,7 +371,10 @@ export class DocumentosService {
       const r = await this.cadastros.reuniao(tx, a, atual.reuniao_id!);
       const dados = dto.validar(dto.reuniaoDadosSchema, r.dados);
       if (r.data > dataCivil(entrada.data_documento) || r.data > dataCivil(await hojeDaIgreja(tx, a.igreja_id))) throw new BadRequestException('Confira a data do ato e aguarde a realização da reunião para formalizar a ata.');
-      const pendencias = pendenciasMesa(dados, r.participantes, d.identificacao_livro || dados.situacao ? entrada.conteudo : undefined);
+      const consolidados = dadosConsolidadosAta(dados, entrada.conteudo);
+      if (Date.parse(consolidados.fim!) > Date.now()) throw new BadRequestException('Confira o encerramento efetivo da ata.');
+      await this.cadastros.conferirConvocacao(tx,a,r.contexto_id,consolidados,r.id,dados);
+      const pendencias = pendenciasMesa(consolidados, r.participantes, d.identificacao_livro || dados.situacao ? entrada.conteudo : undefined);
       pendencias.push(...pendenciasAssinaturasReuniao(config.assinaturas_reuniao, r.participantes, entrada.conteudo));
       if (pendencias.length) throw new BadRequestException(pendencias[0].mensagem);
     }
@@ -477,6 +481,14 @@ export class DocumentosService {
             where: { id: porPessoa.get(p.pessoa_id)! }, data: { retrato: json(retrato) },
           }));
         }
+        if (d.tipo === 'ATA' && atual.reuniao_id) {
+          const origem = await this.cadastros.reuniao(tx,a,atual.reuniao_id);
+          const consolidado = dadosConsolidadosAta(dto.reuniaoDadosSchema.parse(origem.dados),entrada.conteudo);
+          const endereco=origem.local_efetivo_retrato as {descritivo?:string} | null;
+          const mudouLocal=endereco && endereco.descritivo!==consolidado.local_efetivo;
+          await tx.reuniao.update({where:{id:origem.id},data:{dados:json(consolidado),revisao:{increment:1},
+            ...(mudouLocal && {local_efetivo_id:null,local_efetivo_retrato:Prisma.DbNull})}});
+        }
         const reuniao = atual.reuniao_id ? await this.cadastros.reuniao(tx, a, atual.reuniao_id) : null;
         const numero = identificacaoDocumento(d);
         const nomeContexto = c.orgao?.nome ?? c.nome;
@@ -512,10 +524,12 @@ export class DocumentosService {
       const atual = d.versoes.find(r => r.numero === d.versao_atual)!;
       const r = await this.cadastros.reuniao(tx, a, v.reuniao_id);
       const origem = await this.cadastros.reuniao(tx, a, atual.reuniao_id!);
-      const rd = dto.validar(dto.reuniaoDadosSchema, r.dados);
+      const registro = dto.validar(dto.reuniaoDadosSchema, r.dados);
+      const rd = r.id===origem.id ? dadosConsolidadosAta(registro,dto.conteudoSchema.parse(atual.conteudo)) : registro;
+      await this.cadastros.conferirConvocacao(tx,a,r.contexto_id,rd,r.id,registro);
       if (rd.situacao && !['EM_ANDAMENTO', 'ENCERRADA'].includes(rd.situacao))
         throw new BadRequestException('A reunião deliberativa exige realização registrada.');
-      if (r.contexto_id !== d.contexto_id || r.data < origem.data || dataCivil(v.data).getTime() !== r.data.getTime() || (r.restrito && !d.restrito) || !rd.quorum_conferido || r.participantes.filter(p => p.presente).length < rd.quorum_minimo) throw new BadRequestException('Reunião deliberativa, data, sigilo ou quórum incompatíveis.');
+      if (r.contexto_id !== d.contexto_id || r.data < origem.data || dataCivil(v.data).getTime() !== r.data.getTime() || (r.restrito && !d.restrito) || !rd.quorum_conferido || (rd.total_presentes ?? r.participantes.filter(p => p.presente).length) < rd.quorum_minimo) throw new BadRequestException('Reunião deliberativa, data, sigilo ou quórum incompatíveis.');
       for (const papel of ['PRESIDENTE', 'SECRETARIO']) if (!r.participantes.some(p => p.presente && p.papeis.includes(papel))) throw new BadRequestException('Mesa deliberativa incompleta.');
       const mesa = r.instalacao_formal ? await mesaVigente(tx, r) : null;
       if (r.instalacao_formal && !mesa) throw new BadRequestException('Instale a mesa da assembleia antes de registrar a deliberação.');
@@ -550,14 +564,16 @@ export class DocumentosService {
       if (d.estado === 'EXPEDIDO' || d.estado === 'ANULADO') {
         const novo = await tx.documento.create({ data: { igreja_id: a.igreja_id, contexto_id: d.contexto_id, tipo: d.tipo, perfil: d.perfil, restrito: d.restrito } });
         await numerarAta(tx, novo, versao, vinculo?.livro, c.orgao?.nome ?? c.nome);
-        await this.novaVersao(tx, a, novo.id, d.contexto_id, 1, versao, atual.id);
+        const nova = await this.novaVersao(tx, a, novo.id, d.contexto_id, 1, versao, atual.id);
+        if (d.tipo === 'ATA') await this.referencias.reatribuirNaEdicao(tx, a, id, novo.id, nova.id, v.reatribuicao_atos);
         return { id: novo.id, revisao: 1 };
       }
       if (d.ano && d.ano !== Number(v.versao.data_documento.slice(0, 4))) throw new BadRequestException('Ano reservado não pode mudar.');
       if (d.numero !== null && atual.livro_id !== (versao.livro_id ?? null)) throw new BadRequestException('Preserve o livro ao retificar a versão. Transfira a minuta após a retificação.');
       await cancelarExpedicao(tx, atual.id);
       if (atual.livro_id) await this.livros.cancelarReserva(tx, atual.id);
-      await this.novaVersao(tx, a, id, d.contexto_id, d.versao_atual + 1, versao, atual.id);
+      const nova = await this.novaVersao(tx, a, id, d.contexto_id, d.versao_atual + 1, versao, atual.id);
+      if (d.tipo === 'ATA') await this.referencias.reatribuirNaEdicao(tx, a, id, id, nova.id, v.reatribuicao_atos);
       await tx.documento.update({ where: { id }, data: { versao_atual: { increment: 1 }, revisao: { increment: 1 }, estado: 'EM_EDICAO', encaminhado_em: null } });
       return { id, revisao: d.revisao + 1 };
     });
@@ -627,7 +643,7 @@ export class DocumentosService {
   }
 
   consultar(a: AtorSecretaria, parametros: unknown) {
-    const { contexto, pagina, visao, modelo, estado, busca, de, ate } = dto.validar(dto.consultaDocumentosSchema, parametros);
+    const { contexto, pagina, tipo, visao, modelo, estado, busca, de, ate } = dto.validar(dto.consultaDocumentosSchema, parametros);
     return this.base.prisma.$transaction(async tx => {
       await this.base.operador(tx, a, true);
       const { somenteAtas } = await this.base.contextoDeAtas(tx, a, contexto);
@@ -642,6 +658,7 @@ export class DocumentosService {
         LEFT JOIN modelo_documento_versao mv ON mv.id = v.modelo_versao_id AND mv.igreja_id = d.igreja_id AND mv.contexto_id = d.contexto_id
         LEFT JOIN modelo_documento m ON m.id = mv.modelo_id AND m.igreja_id = mv.igreja_id AND m.contexto_id = mv.contexto_id
         WHERE d.igreja_id = ${a.igreja_id} AND d.contexto_id = ${contexto}
+          ${tipo ? Prisma.sql`AND d.tipo = ${tipo}::documento_tipo` : Prisma.empty}
           ${visao === 'expedidos' ? Prisma.sql`AND d.estado = 'EXPEDIDO'` : visao === 'andamento' ? Prisma.sql`AND d.estado IN ('EM_EDICAO', 'APROVADO')` : Prisma.empty}
           ${estado === 'ENCAMINHADO' ? Prisma.sql`AND d.estado = 'EM_EDICAO' AND d.encaminhado_em IS NOT NULL` :
             estado === 'EM_EDICAO' ? Prisma.sql`AND d.estado = 'EM_EDICAO' AND d.encaminhado_em IS NULL` :
@@ -738,10 +755,11 @@ export class DocumentosService {
             pendencias.push(...pendenciasAssinaturasReuniao(config.data.assinaturas_reuniao, r.participantes, conteudo.data));
             sugestoes_arrolados = await this.base.atuacao.sugerirArrolados(tx, await this.base.contexto(tx, a, d.contexto_id),
               config.data, atual.data_documento.toISOString().slice(0,10), r.participantes);
-            if (dados.success) pendencias.push(...pendenciasMesa(dados.data, r.participantes, d.identificacao_livro || dados.data.situacao ? conteudo.data : undefined));
+            if (dados.success) pendencias.push(...pendenciasMesa(dadosConsolidadosAta(dados.data, conteudo.data), r.participantes, d.identificacao_livro || dados.data.situacao ? conteudo.data : undefined));
           } catch (erro) {
-            if (!(erro instanceof NotFoundException)) throw erro;
-            pendencias.push({ destino: 'reuniao', mensagem: 'Selecione uma reunião disponível.' });
+            if (erro instanceof BadRequestException) pendencias.push({ destino:'efetivos', mensagem:erro.message });
+            else if (erro instanceof NotFoundException) pendencias.push({destino:'reuniao',mensagem:'Selecione uma reunião disponível.'});
+            else throw erro;
           }
         }
       }

@@ -10,22 +10,22 @@ import { usuarios_perfil as Perfil } from '@prisma/client';
 
 /**
  * Controller responsável por gerir todas as operações relacionadas a Contas bancárias.
- * Leitura: todos os perfis. Escrita: ADMIN, GESTOR, TESOUREIRO. Exclusão: ADMIN.
+ * Acesso conforme as atribuições de serviço da conta.
  */
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO, Perfil.OPERADOR, Perfil.AUDITOR, Perfil.SECRETARIO)
+@Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
 @Controller('contas')
 export class ContasController {
   constructor(private readonly contasService: ContasService) {}
 
   /**
    * Cria uma nova conta na mesma igreja do solicitante.
-   * Restrito a ADMIN e GESTOR.
+ * Acesso conforme as atribuições de serviço da conta.
    * Rota: POST /contas
    */
   @ServicoDaRota('CONTAS_CADASTRAR')
   @Post()
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   create(@Request() req, @Body() createContaDto: CreateContaDto) {
     return this.contasService.create(req.user.igreja_id, createContaDto, req.user);
   }
@@ -52,12 +52,12 @@ export class ContasController {
 
   /**
    * Atualiza uma conta da mesma igreja.
-   * Restrito a ADMIN e GESTOR.
+ * Acesso conforme as atribuições de serviço da conta.
    * Rota: PATCH /contas/:id
    */
   @ServicoDaRota('CONTAS_EDITAR')
   @Patch(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   update(@Request() req, @Param('id') id: string, @Body() updateContaDto: UpdateContaDto) {
     return this.contasService.update(id, req.user.igreja_id, updateContaDto, req.user);
   }
@@ -68,7 +68,7 @@ export class ContasController {
    */
   @ServicoDaRota('CONTAS_EXCLUIR')
   @Delete(':id')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.TESOUREIRO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   remove(@Request() req, @Param('id') id: string) {
     return this.contasService.remove(id, req.user.igreja_id, req.user);
   }

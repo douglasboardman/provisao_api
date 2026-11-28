@@ -21,7 +21,7 @@ integration('E02: correção de conteúdo de membresia', () => {
       if (!regra) { regra = await p.regras_relacao_enum.create({ data: { modulo: 'membresia', nome, tipo_regra: 'FILTRO', enum_classificador: 'membresia_tipo_evento', enum_classificado: nome.startsWith('Rols') ? 'membresia_rol' : 'membresia_motivacao_evento' } }); regrasCriadas.push(regra.id); }
       if (!await p.relacao_enum_valores.findFirst({ where: { regra_id: regra.id, valor_classificador: 'ADMISSAO', valor_classificado: destino } })) valoresCriados.push((await p.relacao_enum_valores.create({ data: { regra_id: regra.id, valor_classificador: 'ADMISSAO', valor_classificado: destino } })).id);
     }
-    await p.usuarios.create({ data: { id: usuario, igreja_id: igreja, nome_usuario: 'Secretário sintético', email_login: `${usuario}@example.invalid`, senha_hash: 'sem-senha', perfil: 'SECRETARIO', ativo: true } });
+    await p.usuarios.create({ data: { id: usuario, igreja_id: igreja, nome_usuario: 'Secretário sintético', email_login: `${usuario}@example.invalid`, senha_hash: 'sem-senha', perfil: 'COMUM', ativo: true } });
     await p.pessoas.create({ data: { id: pessoa, igreja_id: igreja, nome_completo: 'Pessoa sintética', data_nascimento: new Date('1990-01-01'), sexo: 'MASCULINO' } });
     await p.eventos_membresia.create({ data: { id: evento, igreja_id: igreja, pessoa_id: pessoa, tipo_evento: 'ADMISSAO', rol: 'COMUNGANTES', motivacao_evento: 'PROFISSAO_DE_FE', data_evento: new Date('2024-01-01') } });
     await p.eventos_membresia.create({ data: { igreja_id: igreja, pessoa_id: pessoa, tipo_evento: 'DEMISSAO', rol: 'EXCLUIDOS', motivacao_evento: 'EXCLUSAO_A_PEDIDO', data_evento: new Date('2025-01-01') } });

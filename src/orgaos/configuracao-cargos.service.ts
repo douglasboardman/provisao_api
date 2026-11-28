@@ -1,3 +1,4 @@
+import { exigirServicoDoUsuario } from '../autorizacao/operacao-atual';
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { logs_atividades_acao } from '@prisma/client';
 import { z } from 'zod';
@@ -18,7 +19,7 @@ export class ConfiguracaoCargosService {
     const { idempotencia: chave, ...v } = parsed.data, idempotencia = chave.toLowerCase(), hash = hashAto({ operacao: 'CONFIGURACAO_CARGO', orgaoId, dados: v });
     return transacaoSerializavel(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO'] } }, select: { id: true, perfil: true, pessoa_id: true } });
+      const operador = await exigirServicoDoUsuario(tx, igrejaId, usuarioId, 'ORGAOS_CONFIGURAR');
       if (!operador) throw new ForbiddenException('Operador não autorizado.');
       const hoje = new Date(`${await hojeDaIgreja(tx, igrejaId)}T00:00:00Z`);
       await bloquearChave(tx, igrejaId, idempotencia);
@@ -26,7 +27,7 @@ export class ConfiguracaoCargosService {
       const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, gestao_presidencial: false, tipo: { in: ['CONSELHO', 'JUNTA', 'UNIDADE_MINISTERIAL'] }, ativo: true }, select: { tipo: true } });
       if (!orgao) throw new NotFoundException('Órgão não encontrado nesta igreja.');
       if (orgao.tipo === 'UNIDADE_MINISTERIAL') {
-        if (operador.perfil !== 'GESTOR' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: operador.pessoa_id, inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] }, select: { id: true } })) throw new ForbiddenException('Competência institucional não comprovada.');
+        if (operador.perfil !== 'COMUM' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: operador.pessoa_id, inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] }, select: { id: true } })) throw new ForbiddenException('Competência institucional não comprovada.');
       }
       const repetido = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, orgao: orgaoId, idempotencia, tipo: 'CONFIGURACAO_CARGO', hash }, 'cargo_id');
       if (repetido) {
@@ -48,7 +49,7 @@ export class ConfiguracaoCargosService {
     const { idempotencia: chave, ...v } = parsed.data, idempotencia = chave.toLowerCase(), hash = hashAto({ operacao: 'CONFIGURACAO_ACUMULACAO', orgaoId, cargoId, dados: v });
     return transacaoSerializavel(this.prisma, async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${usuarioId} AND igreja_id = ${igrejaId} FOR UPDATE`;
-      const operador = await tx.usuarios.findFirst({ where: { id: usuarioId, igreja_id: igrejaId, ativo: true, perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'SECRETARIO'] } }, select: { perfil: true, pessoa_id: true } });
+      const operador = await exigirServicoDoUsuario(tx, igrejaId, usuarioId, 'ORGAOS_CONFIGURAR');
       if (!operador) throw new ForbiddenException('Operador não autorizado.');
       const hoje = new Date(`${await hojeDaIgreja(tx, igrejaId)}T00:00:00Z`);
       await bloquearChave(tx, igrejaId, idempotencia);
@@ -56,7 +57,7 @@ export class ConfiguracaoCargosService {
       const orgao = await tx.orgao_interno.findFirst({ where: { id: orgaoId, igreja_id: igrejaId, gestao_presidencial: false, tipo: { in: ['CONSELHO', 'JUNTA', 'UNIDADE_MINISTERIAL'] }, ativo: true }, select: { tipo: true } });
       if (!orgao) throw new NotFoundException('Órgão não encontrado nesta igreja.');
       if (orgao.tipo === 'UNIDADE_MINISTERIAL') {
-        if (operador.perfil !== 'GESTOR' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: operador.pessoa_id, inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] }, select: { id: true } })) throw new ForbiddenException('Competência institucional não comprovada.');
+        if (operador.perfil !== 'COMUM' || !operador.pessoa_id || !await tx.competencia_unidades.findFirst({ where: { igreja_id: igrejaId, usuario_id: usuarioId, pessoa_id: operador.pessoa_id, inicio: { lte: hoje }, OR: [{ fim: null }, { fim: { gt: hoje } }] }, select: { id: true } })) throw new ForbiddenException('Competência institucional não comprovada.');
       }
       const repetido = await atoAnterior(tx, { igreja: igrejaId, usuario: usuarioId, orgao: orgaoId, idempotencia, tipo: 'CONFIGURACAO_ACUMULACAO', hash }, 'cargo_id');
       if (repetido) {

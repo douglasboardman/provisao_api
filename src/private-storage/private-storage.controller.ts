@@ -1,9 +1,11 @@
+import { ContaComum } from '../autorizacao/politica';
 import { BadRequestException, Controller, Get, Param, Post, Request, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { AuthGuard } from 'src/auth/auth.guard';
 import { PrivateStorageService } from './private-storage.service';
 
+@ContaComum()
 @Controller('arquivos-privados')
 @UseGuards(AuthGuard)
 export class PrivateStorageController {

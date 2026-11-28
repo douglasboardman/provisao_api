@@ -86,12 +86,12 @@ export class MfaService {
   async setup(userId: string, churchId: string, password: string) {
     const user = await this.prisma.usuarios.findFirst({ where: { id: userId, igreja_id: churchId, ativo: true } });
     if (!user || !await bcrypt.compare(password, user.senha_hash)) throw new UnauthorizedException('Credenciais inválidas.');
-    if (!user.mfa_reinscricao_obrigatoria && !(['ADMINISTRADOR', 'GESTOR', 'COMUM'] as usuarios_perfil[]).includes(user.perfil)) throw new ForbiddenException('Configuração não disponível para este perfil.');
+    if (!user.mfa_reinscricao_obrigatoria && !(['ADMINISTRADOR', 'AUDITOR', 'COMUM'] as usuarios_perfil[]).includes(user.perfil)) throw new ForbiddenException('Configuração não disponível para este perfil.');
     const secret = generateSecret();
     const encrypted = this.encrypt(secret, userId);
     await this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${userId} FOR UPDATE`;
-      const current = await tx.usuarios.findFirst({ where: { id: userId, igreja_id: churchId, ativo: true, auth_version: user.auth_version, OR: [{ perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'COMUM'] } }, { mfa_reinscricao_obrigatoria: true }] } });
+      const current = await tx.usuarios.findFirst({ where: { id: userId, igreja_id: churchId, ativo: true, auth_version: user.auth_version, OR: [{ perfil: { in: ['ADMINISTRADOR', 'AUDITOR', 'COMUM'] } }, { mfa_reinscricao_obrigatoria: true }] } });
       if (!current) throw new UnauthorizedException('Conta indisponível.');
       const existing = await tx.mfa_credencial.findUnique({ where: { usuario_id: userId } });
       if (existing?.estado === 'ATIVO') throw new BadRequestException('MFA já está ativo.');
@@ -106,7 +106,7 @@ export class MfaService {
     const codes = Array.from({ length: 10 }, () => randomBytes(12).toString('hex'));
     const result = await this.prisma.$transaction(async tx => {
       await tx.$queryRaw`SELECT id FROM usuarios WHERE id = ${userId} FOR UPDATE`;
-      const user = await tx.usuarios.findFirst({ where: { id: userId, igreja_id: churchId, ativo: true, auth_version: version, OR: [{ perfil: { in: ['ADMINISTRADOR', 'GESTOR', 'COMUM'] } }, { mfa_reinscricao_obrigatoria: true }] } });
+      const user = await tx.usuarios.findFirst({ where: { id: userId, igreja_id: churchId, ativo: true, auth_version: version, OR: [{ perfil: { in: ['ADMINISTRADOR', 'AUDITOR', 'COMUM'] } }, { mfa_reinscricao_obrigatoria: true }] } });
       const mfa = await tx.mfa_credencial.findUnique({ where: { usuario_id: userId } });
       if (!user || !mfa || mfa.estado !== 'PENDENTE' || !mfa.expira_em || mfa.expira_em <= new Date() || (mfa.bloqueado_ate && mfa.bloqueado_ate > new Date())) return false;
       const verified = /^\d{6}$/.test(code) ? verifySync({ secret: this.decrypt(mfa.segredo_cifrado, userId), token: code, epochTolerance: 30 }) : { valid: false as const };

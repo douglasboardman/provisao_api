@@ -18,11 +18,6 @@ export class RotasServicosService {
     return this.catalogo().filter(r => r.retirada === acao);
   }
 
-  legado(perfil: usuarios_perfil) {
-    return this.catalogo().filter(r => !r.acao && r.perfis.includes(perfil))
-      .map(r => r.rota);
-  }
-
   private catalogo() {
     return this.discovery.getControllers().flatMap(({ instance }) => {
       if (!instance) return [];
@@ -32,7 +27,7 @@ export class RotasServicosService {
         const metodo = instance[nome];
         const metodoHttp = Reflect.getMetadata(METHOD_METADATA, metodo) as RequestMethod | undefined;
         if (metodoHttp === undefined) return [];
-        const acao = (Reflect.getMetadata('servico_da_rota', metodo) ?? Reflect.getMetadata('servico_em_contexto', metodo)) as Servico | undefined;
+        const acao = (Reflect.getMetadata('servico_da_rota', metodo) ?? Reflect.getMetadata('servico_em_contexto', metodo) ?? (Reflect.getMetadata('aceita_conta_comum', metodo) || ((Reflect.getMetadata(ROLES_KEY, metodo) as usuarios_perfil[] | undefined)?.length === 1 && Reflect.getMetadata(ROLES_KEY, metodo)[0] === usuarios_perfil.ADMINISTRADOR) ? undefined : Reflect.getMetadata('servico_da_rota', classe))) as Servico | undefined;
         const perfis = (Reflect.getMetadata(ROLES_KEY, metodo) ?? Reflect.getMetadata(ROLES_KEY, classe) ?? []) as usuarios_perfil[];
         const verbo = RequestMethod[metodoHttp];
         const caminho = [base, Reflect.getMetadata(PATH_METADATA, metodo)].map(p => String(p ?? '').replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/');

@@ -16,21 +16,21 @@ export class RegrasRelacaoEnumController {
 
   @ServicoDaRota('PARAMETROS_CONSULTAR')
   @Get('enums')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   getEnums() {
     return this.service.getEnumsDisponiveis();
   }
 
   @ServicoDaRota('PARAMETROS_CONSULTAR')
   @Get('modulo/:modulo')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.GESTOR, Perfil.SECRETARIO, Perfil.TESOUREIRO, Perfil.OPERADOR, Perfil.AUDITOR)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.AUDITOR, Perfil.COMUM)
   getByModulo(@Request() req, @Param('modulo') modulo: string) {
     return this.service.getRegrasPorModulo(modulo, req.user.igreja_id);
   }
 
   @ServicoDaRota('PARAMETROS_EDITAR')
   @Put('modulo/membresia/:id/valores')
-  @Roles(Perfil.ADMINISTRADOR, Perfil.SECRETARIO)
+  @Roles(Perfil.ADMINISTRADOR, Perfil.COMUM)
   replaceValoresDaIgreja(@Request() req, @Param('id') id: string, @Body() dto: ReplaceValoresDto) {
     return this.service.replaceValoresDaIgreja(req.user.igreja_id, id, dto.valores, req.user);
   }
